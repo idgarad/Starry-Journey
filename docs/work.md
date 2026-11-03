@@ -9,8 +9,32 @@
 | `feature/expanded-buildings` | 9 extension kinds; wide footprints (see product.md) | Merged |
 | `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Merged |
 | `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Merged |
-| `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Planned |
+| `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Merged |
 | `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Planned |
+
+### feature/landmark-decorations
+
+- **Delivered:**
+  - [src/model/building.rs](../src/model/building.rs):
+    - `Decoration` record (outline kind, light mode, hue, and flattened `(x, h)` points) and the `DecorationKind`/`LightMode` enums.
+    - The optional `Building::decoration` field.
+    - Validation that every point lies on the building.
+  - [src/model/decorations.rs](../src/model/decorations.rs):
+    - `is_eligible`: the main tier, meaning the widest grounded tier, is at least 5 wide, and the roof reaches 40% of `max_h`.
+    - `maybe_decorate`: a 6% roll on eligible buildings.
+    - `make_decoration`, with four outlines:
+      - crown: top row of the highest tier plus 2 rows of its sides;
+      - band: one row at 55–80% of the main tier;
+      - spire: center column of the highest tier;
+      - roofline: the top cell of every covered column.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 66 tests.
+    - Decorations validate for all 28 kinds over 30 seeds.
+    - The measured decoration share is 5% to 7%.
+    - All four outline kinds and both light modes occur.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: no new warnings.
+- **Interpretation:** the spec lists crown, band, spire, and roofline without exact geometry. These outline definitions are this rebuild's choice and satisfy the spec's "outlines must lie on geometry" rule.
 
 ### feature/window-patterns
 
