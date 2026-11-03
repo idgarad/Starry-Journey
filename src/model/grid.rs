@@ -1,10 +1,13 @@
 //! Logical cell grid derived from the device surface
 //! (Rebuild Prompt, "Coordinates, Arithmetic, And Data").
 //!
-//! The grid replaces SKY-001's fixed 320 x 180 canvas: cell size follows the
-//! device height (about 240 rows) and the column count follows the width, so
-//! the scene fills the window. The grid may overrun the device size by less
-//! than one cell; the rasterizer clips.
+//! By default ([`CellScaling::Spec`]) the cell size follows the device height
+//! (about 240 rows) and the column count follows the width, so the scene
+//! fills the window with the same look on every screen. With
+//! [`CellScaling::Fixed`] (the `--pixel-size` launch option) the cell size is
+//! fixed, so bigger screens get more city and more sky; building heights then
+//! come from the 240-row reference so towers keep their proportions. The grid
+//! may overrun the device size by less than one cell; the rasterizer clips.
 
 use super::rng::js_round;
 
@@ -18,6 +21,16 @@ pub const MIN_CELL: u32 = 2;
 pub const MIN_MAX_HEIGHT: i32 = 8;
 /// Fraction of the ground row available to building heights.
 pub const MAX_HEIGHT_FRACTION: f64 = 0.82;
+
+/// How the cell size is chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellScaling {
+    /// Rebuild Prompt formula: `max(2, round(deviceHeight / 240))`.
+    #[default]
+    Spec,
+    /// A fixed number of device pixels per cell (at least 1).
+    Fixed(u32),
+}
 
 /// Grid dimensions for one device surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,9 +60,28 @@ impl Grid {
     /// When an endless surface is too short for the road, `ground_row` is
     /// clamped at 0 rather than going negative (assumption AS-R001).
     pub fn new(device_width: u32, device_height: u32, endless: bool) -> Self {
+        Self::with_scaling(device_width, device_height, endless, CellScaling::Spec)
+    }
+
+    /// Builds the grid with a chosen [`CellScaling`]. O(1).
+    ///
+    /// With `Fixed`, `max_h` is computed from the smaller of the real ground
+    /// row and the 240-row reference ground row, so a taller screen adds sky
+    /// rather than stretching every tower.
+    pub fn with_scaling(
+        device_width: u32,
+        device_height: u32,
+        endless: bool,
+        scaling: CellScaling,
+    ) -> Self {
         let device_width = device_width.max(1);
         let device_height = device_height.max(1);
-        let cell = (js_round(f64::from(device_height) / TARGET_ROWS) as u32).max(MIN_CELL);
+        let cell = match scaling {
+            CellScaling::Spec => {
+                (js_round(f64::from(device_height) / TARGET_ROWS) as u32).max(MIN_CELL)
+            }
+            CellScaling::Fixed(cell) => cell.max(1),
+        };
         let cols = device_width.div_ceil(cell) as i32;
         let rows = device_height.div_ceil(cell) as i32;
         let ground_row = if endless {
@@ -57,8 +89,15 @@ impl Grid {
         } else {
             rows
         };
+        let height_ground = match scaling {
+            CellScaling::Spec => ground_row,
+            CellScaling::Fixed(_) => {
+                let reference = TARGET_ROWS as i32 - if endless { ROAD_ROWS } else { 0 };
+                ground_row.min(reference)
+            }
+        };
         let max_h =
-            ((f64::from(ground_row) * MAX_HEIGHT_FRACTION).floor() as i32).max(MIN_MAX_HEIGHT);
+            ((f64::from(height_ground) * MAX_HEIGHT_FRACTION).floor() as i32).max(MIN_MAX_HEIGHT);
         Self {
             device_width,
             device_height,
@@ -132,6 +171,35 @@ mod tests {
         let grid = Grid::new(3840, 2160, false);
         assert_eq!(grid.cell, 9);
         assert_eq!((grid.cols, grid.rows), (427, 240));
+    }
+
+    #[test]
+    fn fixed_cells_add_city_and_sky_without_stretching_towers() {
+        let fixed = |w, h| Grid::with_scaling(w, h, false, CellScaling::Fixed(4));
+        let hd = fixed(1920, 1080);
+        assert_eq!((hd.cell, hd.cols, hd.rows), (4, 480, 270));
+        let uhd = fixed(3840, 2160);
+        assert_eq!((uhd.cell, uhd.cols, uhd.rows), (4, 960, 540));
+        // Height limit comes from the 240-row reference: floor(240 * 0.82).
+        assert_eq!((hd.max_h, uhd.max_h), (196, 196));
+        // A short window uses its own (smaller) ground row.
+        let small = fixed(1280, 720);
+        assert_eq!((small.rows, small.max_h), (180, 147));
+        let endless = Grid::with_scaling(3840, 2160, true, CellScaling::Fixed(4));
+        assert_eq!((endless.ground_row, endless.max_h), (533, 191)); // floor(233 * 0.82)
+        assert_eq!(
+            Grid::with_scaling(100, 100, false, CellScaling::Fixed(0)).cell,
+            1
+        );
+    }
+
+    #[test]
+    fn spec_scaling_is_the_default() {
+        assert_eq!(CellScaling::default(), CellScaling::Spec);
+        assert_eq!(
+            Grid::new(1920, 1080, false),
+            Grid::with_scaling(1920, 1080, false, CellScaling::Spec)
+        );
     }
 
     #[test]
