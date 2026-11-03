@@ -74,6 +74,7 @@ fn main() -> ExitCode {
                 accent_roll: 0.0,
                 windows: WindowSet::default(),
                 mast: None,
+                decoration: None,
             };
             let windows = generate_windows(&building, &mut rng);
             for i in 0..windows.len() {
