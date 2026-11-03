@@ -17,7 +17,9 @@ use starry_journey::config::{parse_args, LaunchOptions, USAGE};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
 use starry_journey::model::grid::{CellScaling, Grid};
+use starry_journey::model::palette::Rgb;
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
+use starry_journey::moon::{moon_at, moon_cells, MoonState};
 use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::street::StreetLayer;
@@ -247,6 +249,8 @@ struct Scene {
     street: StreetLayer,
     /// The image to present: the city view with the street drawn over it.
     frame: Vec<u8>,
+    /// Moon cells to draw on sky (behind the city and street).
+    moon: Vec<(usize, Rgb)>,
 }
 
 impl Scene {
@@ -281,16 +285,23 @@ impl Scene {
             view,
             street,
             frame: Vec::new(),
+            moon: Vec::new(),
         };
         scene.compose();
         scene
     }
 
-    /// Rebuilds the presented frame: city view, then the street's back
-    /// layer (road and background trees), then its front layer.
-    /// O(grid cells + street cells).
+    /// Rebuilds the presented frame: city view, then the moon on cells that
+    /// currently show sky, then the street's back layer (road and background
+    /// trees), then its front layer. O(grid cells + street + moon cells).
     fn compose(&mut self) {
         self.frame.clone_from(&self.view.rgba);
+        for &(cell, color) in &self.moon {
+            let building_shown = self.ownership.owner[cell] >= 0 && self.reveal.is_revealed(cell);
+            if !building_shown {
+                self.frame[cell * 4..cell * 4 + 3].copy_from_slice(&color.0);
+            }
+        }
         self.street.apply_back(&mut self.frame);
         self.street.apply_front(&mut self.frame);
     }
@@ -351,6 +362,10 @@ struct Renderer {
     clock: ConstructionClock,
     /// When construction (re)started, for the duration clock.
     construction_start: Instant,
+    /// When the app started; the moon follows real time from here.
+    app_start: Instant,
+    /// The moon as last drawn; `None` forces a redraw.
+    moon_state: Option<MoonState>,
     options: LaunchOptions,
     scale_factor: f64,
 }
@@ -499,6 +514,8 @@ impl Renderer {
             last_frame: None,
             clock: options.clock,
             construction_start: Instant::now(),
+            app_start: Instant::now(),
+            moon_state: None,
             options,
             scale_factor,
         };
@@ -544,6 +561,9 @@ impl Renderer {
                 progress,
                 self.scaling(),
             );
+            self.moon_state = None;
+            self.update_moon(Instant::now());
+            self.scene.compose();
             self.upload();
         }
     }
@@ -560,6 +580,9 @@ impl Renderer {
         );
         // Restart restarts a duration timer (Rebuild Prompt); resizing keeps it.
         self.construction_start = Instant::now();
+        self.moon_state = None;
+        self.update_moon(Instant::now());
+        self.scene.compose();
         self.upload();
     }
 
@@ -568,6 +591,9 @@ impl Renderer {
     fn next_palette(&mut self) {
         self.palette_index = (self.palette_index + 1) % palettes().len();
         self.scene.set_palette(palette_at(self.palette_index));
+        self.moon_state = None;
+        self.update_moon(Instant::now());
+        self.scene.compose();
         self.upload();
     }
 
@@ -589,10 +615,27 @@ impl Renderer {
             .clock
             .progress(self.scene.reveal.progress(), dt, self.speed, elapsed);
         self.scene.advance_to(progress);
-        if self.scene.view.take_dirty() {
+        let moon_moved = self.update_moon(now);
+        if self.scene.view.take_dirty() || moon_moved {
             self.scene.compose();
             self.upload();
         }
+    }
+
+    /// Recomputes the moon if its position or (visibly) its phase changed.
+    /// Returns true when the frame needs composing again.
+    fn update_moon(&mut self, now: Instant) -> bool {
+        let seconds = now.duration_since(self.app_start).as_secs_f64();
+        let moon = moon_at(&self.scene.grid, seconds);
+        // Phase changes are only visible in small steps; 1/400 of a pass
+        // (0.75 s) is finer than any single cell's change.
+        let quantized = |m: &MoonState| (m.x, m.row, (m.phase * 400.0) as i32);
+        if self.moon_state.as_ref().map(quantized) == Some(quantized(&moon)) {
+            return false;
+        }
+        self.moon_state = Some(moon);
+        self.scene.moon = moon_cells(&self.scene.grid, &moon, palette_at(self.palette_index));
+        true
     }
 
     /// Window title with construction progress and speed.
@@ -825,6 +868,48 @@ mod tests {
             scene.advance_to(clock.progress(scene.reveal.progress(), 0.0, speed, 10.0));
             assert!(scene.reveal.is_complete(), "speed {speed}");
         }
+    }
+
+    #[test]
+    fn moon_is_drawn_on_sky_but_hidden_behind_revealed_buildings() {
+        let mut scene = Scene::new(17, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3));
+        let grid = scene.grid;
+        // A full moon low over the city, partly behind the skyline: search
+        // upward from the road for a height where it overlaps both open sky
+        // and buildings (the moon lives on the sky layer).
+        let x = grid.cols / 2;
+        let row = (0..grid.ground_row)
+            .rev()
+            .find(|&row| {
+                let probe = MoonState { x, row, phase: 1.0 };
+                let cells = moon_cells(&grid, &probe, classic());
+                let owned = cells
+                    .iter()
+                    .filter(|&&(cell, _)| scene.ownership.owner[cell] >= 0)
+                    .count();
+                owned > 0 && owned < cells.len() / 2
+            })
+            .expect("the skyline crosses the moon's column");
+        let moon = MoonState { x, row, phase: 1.0 };
+        scene.moon = moon_cells(&grid, &moon, classic());
+        scene.compose();
+        let mut on_sky = 0;
+        let mut behind = 0;
+        for &(cell, color) in &scene.moon.clone() {
+            let shown = &scene.frame[cell * 4..cell * 4 + 3];
+            let row = cell as i32 / grid.cols;
+            if row >= grid.ground_row {
+                continue; // the street covers the moon at the horizon
+            }
+            if scene.ownership.owner[cell] >= 0 {
+                behind += 1;
+                assert_ne!(shown, &color.0[..], "a building hides the moon");
+            } else {
+                on_sky += 1;
+                assert_eq!(shown, &color.0[..], "the moon shows on open sky");
+            }
+        }
+        assert!(on_sky > 0 && behind > 0, "sky {on_sky}, behind {behind}");
     }
 
     #[test]
