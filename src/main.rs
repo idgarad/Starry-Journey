@@ -24,7 +24,7 @@ use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::station::StationFate;
 use starry_journey::street::{apply_paint, CellPaint, StreetLayer};
-use starry_journey::traffic::Traffic;
+use starry_journey::traffic::{Traffic, Verge};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -321,14 +321,17 @@ impl Scene {
                 // Headlights light up the roadside trees ahead of each car.
                 let grid = self.grid;
                 let light = self.palette.headlight;
-                let glow = |x, row| traffic.glow(&grid, x, row);
+                // Top trees take light from the top lane, bottom trees from
+                // the bottom lane.
+                let back_glow = |x, row| traffic.glow(&grid, x, row, Verge::Back);
+                let front_glow = |x, row| traffic.glow(&grid, x, row, Verge::Front);
                 self.street
-                    .apply_back_lit(&mut self.frame, grid.cols, light, glow);
+                    .apply_back_lit(&mut self.frame, grid.cols, light, back_glow);
                 let mut paint = CellPaint::new();
                 traffic.paint(&grid, self.palette, &mut paint);
                 apply_paint(&paint, &mut self.frame);
                 self.street
-                    .apply_front_lit(&mut self.frame, grid.cols, light, glow);
+                    .apply_front_lit(&mut self.frame, grid.cols, light, front_glow);
             }
         }
     }

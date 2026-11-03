@@ -24,7 +24,9 @@
     - Each headlight casts a cone up to 8 cells ahead, widening one row on each side every 2 cells.
     - Tree pixels inside it are tinted toward the headlight color (up to 45%), fading with distance ahead and with distance off the beam's row.
     - Nothing behind a car is lit, and overlapping cones take the brightest, never a sum.
-    - Both verges are lit; `StreetLayer` now keeps background trees apart from the road so they can be lit.
+    - `StreetLayer` now keeps background trees apart from the road so they can be lit.
+    - Owner feedback: only the bottom trees were getting light. Each lane now lights its own verge: the top lane lights the top (background) trees and the bottom lane the bottom (foreground) trees.
+    - The top lane's cone rises 0.75 rows per cell ahead, aiming at mid-tree at full reach. This is deliberately more than realistic.
 - **Delivered:**
   - [src/traffic.rs](../src/traffic.rs): `Traffic`, following the spec's road rules:
     - two opposing lanes (upper drives left, lower drives right) starting at ground + 1 and ground + 4;
@@ -37,7 +39,7 @@
   - [src/street.rs](../src/street.rs): `apply_paint` is now public.
   - [src/main.rs](../src/main.rs): traffic starts when construction completes (immediately for a finished city after a resize), is cleared by `R`, steps every frame with the speed setting, and is drawn between the street's back layer (road and background trees) and front layer (foreground trees). `Scene` now remembers its palette.
 - **Verification (2026-11-03):**
-  - `cargo test`: PASS, 162 tests, including the tree glow: strongest at the bumper, fading to the reach limit, nothing behind, a widening cone weaker off-axis, left-driving cars lighting to their left, and in the app a trunk ahead of a parked car lit. They also check:
+  - `cargo test`: PASS, 162 tests, including the lane-to-verge pairing (the lower lane never lights top trees and the upper lane never lights bottom trees), the upper cone centered mid-tree at full reach, and the tree glow: strongest at the bumper, fading to the reach limit, nothing behind, a widening cone weaker off-axis, left-driving cars lighting to their left, and in the app a trunk ahead of a parked car lit. They also check:
     - vehicle count by width;
     - starting off-screen in both lanes and arriving;
     - opposite directions and spec speeds;

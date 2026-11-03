@@ -44,6 +44,38 @@ pub const BEAM_SPREAD_FROM: usize = 2;
 pub const GLOW_REACH: i32 = 8;
 /// Tree tint toward the headlight color just ahead of the bumper.
 pub const GLOW_STRENGTH: f64 = 0.45;
+/// How many rows the upper lane's cone rises per cell ahead, so it reaches
+/// the background trees above the road (stylized, owner request 2026-11-03).
+pub const UPPER_CONE_TILT: f64 = 0.75;
+
+/// Which row of roadside trees a glow query is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verge {
+    /// Background trees along the top edge of the road: lit by the upper
+    /// lane only.
+    Back,
+    /// Foreground trees at the bottom of the screen: lit by the lower lane
+    /// only.
+    Front,
+}
+
+impl Lane {
+    /// The verge this lane's headlights light.
+    pub fn verge(self) -> Verge {
+        match self {
+            Lane::Upper => Verge::Back,
+            Lane::Lower => Verge::Front,
+        }
+    }
+
+    /// Rows the cone's center rises per cell ahead.
+    pub fn cone_tilt(self) -> f64 {
+        match self {
+            Lane::Upper => UPPER_CONE_TILT,
+            Lane::Lower => 0.0,
+        }
+    }
+}
 
 /// Direction of travel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,29 +255,35 @@ impl Traffic {
         }
     }
 
-    /// How strongly headlights light the cell `(x, row)`, from 0 to
-    /// [`GLOW_STRENGTH`]: the brightest of all vehicles' cones.
+    /// How strongly headlights light the tree cell `(x, row)` on `verge`,
+    /// from 0 to [`GLOW_STRENGTH`]: the brightest cone among the vehicles in
+    /// the lane that lights that verge (upper lane for background trees,
+    /// lower lane for foreground trees).
     ///
     /// Each cone starts at the headlight and reaches [`GLOW_REACH`] cells
-    /// forward, widening by one row on each side every two cells. Strength
-    /// falls off with distance ahead and with distance from the beam's row.
-    /// Nothing behind a vehicle is lit. O(vehicles).
-    pub fn glow(&self, grid: &Grid, x: i32, row: i32) -> f64 {
+    /// forward, widening by one row on each side every two cells. The upper
+    /// lane's cone also rises [`UPPER_CONE_TILT`] rows per cell so it reaches
+    /// the trees above the road. Strength falls off with distance ahead and
+    /// with distance from the cone's center. Nothing behind a vehicle is lit.
+    /// O(vehicles).
+    pub fn glow(&self, grid: &Grid, x: i32, row: i32, verge: Verge) -> f64 {
         self.vehicles
             .iter()
+            .filter(|vehicle| vehicle.lane.verge() == verge)
             .map(|vehicle| {
                 let beam_row = grid.ground_row + vehicle.lane.top_offset() + 1;
                 let ahead = (x - vehicle.front()) * vehicle.lane.direction() as i32;
                 if !(1..=GLOW_REACH).contains(&ahead) {
                     return 0.0;
                 }
-                let spread = 1 + ahead / 2;
-                let off_axis = (row - beam_row).abs();
+                let center = f64::from(beam_row) - vehicle.lane.cone_tilt() * f64::from(ahead);
+                let spread = f64::from(1 + ahead / 2);
+                let off_axis = (f64::from(row) - center).abs();
                 if off_axis > spread {
                     return 0.0;
                 }
                 let along = 1.0 - f64::from(ahead - 1) / f64::from(GLOW_REACH);
-                let across = 1.0 - f64::from(off_axis) / f64::from(spread + 1);
+                let across = 1.0 - off_axis / (spread + 1.0);
                 GLOW_STRENGTH * along * across
             })
             .fold(0.0, f64::max)
@@ -506,8 +544,8 @@ mod tests {
         }];
         let beam_row = grid.ground_row + 5;
         let front = 104;
-        let near = traffic.glow(&grid, front + 1, beam_row);
-        let far = traffic.glow(&grid, front + GLOW_REACH, beam_row);
+        let near = traffic.glow(&grid, front + 1, beam_row, Verge::Front);
+        let far = traffic.glow(&grid, front + GLOW_REACH, beam_row, Verge::Front);
         assert!(
             near > far && far > 0.0,
             "fades with distance: {near} > {far}"
@@ -517,28 +555,59 @@ mod tests {
             "full strength at the bumper"
         );
         assert_eq!(
-            traffic.glow(&grid, front + GLOW_REACH + 1, beam_row),
+            traffic.glow(&grid, front + GLOW_REACH + 1, beam_row, Verge::Front),
             0.0,
             "out of reach"
         );
         assert_eq!(
-            traffic.glow(&grid, front, beam_row),
+            traffic.glow(&grid, front, beam_row, Verge::Front),
             0.0,
             "not the car itself"
         );
-        assert_eq!(traffic.glow(&grid, 99, beam_row), 0.0, "nothing behind");
+        assert_eq!(
+            traffic.glow(&grid, 99, beam_row, Verge::Front),
+            0.0,
+            "nothing behind"
+        );
         // The cone widens: off-axis rows light up further ahead.
-        assert_eq!(traffic.glow(&grid, front + 1, beam_row - 3), 0.0);
-        assert!(traffic.glow(&grid, front + 6, beam_row - 3) > 0.0);
+        assert_eq!(
+            traffic.glow(&grid, front + 1, beam_row - 3, Verge::Front),
+            0.0
+        );
+        assert!(traffic.glow(&grid, front + 6, beam_row - 3, Verge::Front) > 0.0);
         assert!(
-            traffic.glow(&grid, front + 6, beam_row - 3) < traffic.glow(&grid, front + 6, beam_row),
+            traffic.glow(&grid, front + 6, beam_row - 3, Verge::Front)
+                < traffic.glow(&grid, front + 6, beam_row, Verge::Front),
             "weaker off the beam's row"
         );
-        // Left-driving vehicles light to their left.
+        // The lower lane never lights the background trees.
+        assert_eq!(traffic.glow(&grid, front + 4, beam_row, Verge::Back), 0.0);
+
+        // Left-driving upper-lane vehicles light to their left, angled up
+        // toward the background trees, and never the foreground trees.
         traffic.vehicles[0].lane = Lane::Upper;
         let upper_row = grid.ground_row + 2;
-        assert!(traffic.glow(&grid, 99, upper_row) > 0.0);
-        assert_eq!(traffic.glow(&grid, 106, upper_row), 0.0);
+        let upper_front = 100;
+        assert!(traffic.glow(&grid, upper_front - 1, upper_row, Verge::Back) > 0.0);
+        assert_eq!(
+            traffic.glow(&grid, upper_front + 6, upper_row, Verge::Back),
+            0.0,
+            "behind"
+        );
+        assert_eq!(
+            traffic.glow(&grid, upper_front - 4, upper_row, Verge::Front),
+            0.0
+        );
+        // At full reach the cone is centered 6 rows up, on the middle of a
+        // background tree (rows ground - 7 .. ground - 1).
+        let mid_tree = grid.ground_row - 4;
+        let reach = upper_front - GLOW_REACH;
+        assert!(traffic.glow(&grid, reach, mid_tree, Verge::Back) > 0.0);
+        assert!(
+            traffic.glow(&grid, reach, mid_tree, Verge::Back)
+                > traffic.glow(&grid, reach, upper_row + 1, Verge::Back),
+            "aimed up, not along the road"
+        );
     }
 
     #[test]
