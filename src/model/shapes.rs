@@ -85,6 +85,11 @@ pub fn min_height(kind: BuildingKind) -> i32 {
         Watertank => 9,
         Needle | Invpyramid => 12,
         Tvtower | Clocktower => 14,
+        Warehouse | Quonset | BigBox => 5,
+        ParkingGarage => 6,
+        Terraced => 8,
+        FiveOverOne | Silos => 10,
+        Taper | Cantilever => 12,
     }
 }
 
@@ -134,6 +139,15 @@ pub fn build_tiers(
         Jenga => jenga(&mut stack, x0, width, height, rng),
         Factory => factory(&mut stack, x0, width, height, rng),
         Pagoda => pagoda(&mut stack, x0, width, height, rng),
+        FiveOverOne => five_over_one(&mut stack, x0, width, height, rng),
+        Warehouse => warehouse(&mut stack, x0, width, height, rng),
+        Quonset => quonset(&mut stack, x0, width, height),
+        Silos => silos(&mut stack, x0, width, height, rng),
+        BigBox => big_box(&mut stack, x0, width, height, rng),
+        ParkingGarage => parking_garage(&mut stack, x0, width, height, rng),
+        Taper => taper(&mut stack, x0, width, height),
+        Cantilever => cantilever(&mut stack, x0, width, height, rng),
+        Terraced => terraced(&mut stack, x0, width, height, rng),
     }
     if stack.tiers.is_empty() {
         return (
@@ -465,6 +479,242 @@ fn pagoda(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     stack.push_dark(ta, tb, floor, (floor + 2).min(h));
 }
 
+// ----- Starry Journey extensions (docs/product.md, "Expanded buildings") -----
+//
+// Low-rise kinds pick their own modest height and treat `h` only as an upper
+// bound, so they stay low however tall the layer's height sample is.
+
+/// Lit retail podium, five residential floors, a broken parapet, and a
+/// taller corner element, as in a typical "5-over-1" apartment block.
+fn five_over_one(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
+    let mut podium = 3;
+    let mut floor_rows = rng.rand_int(2, 3) as i32;
+    let corner_rows = rng.rand_int(2, 3) as i32;
+    let total = |podium: i32, floor_rows: i32| podium + 5 * floor_rows + 1 + corner_rows;
+    if total(podium, floor_rows) > h {
+        floor_rows = 2;
+    }
+    if total(podium, floor_rows) > h {
+        podium = 2;
+    }
+    // Squeeze floors further only on very short sites.
+    let floors = ((h - podium - 1 - corner_rows) / floor_rows).clamp(1, 5);
+    let roof = podium + floors * floor_rows;
+    stack.push_solid(x0, x0 + w, 0, podium);
+    stack.push(x0, x0 + w, podium, roof);
+
+    // Parapet: segments alternate between a raised dark lip and nothing.
+    let segments = rng.rand_int(2, 4) as i32;
+    let segment_w = w / segments;
+    for index in 0..segments {
+        let a = x0 + index * segment_w;
+        let b = if index + 1 == segments {
+            x0 + w
+        } else {
+            a + segment_w
+        };
+        if rng.next_f64() < 0.6 {
+            stack.push_dark(a, b, roof, roof + 1);
+        }
+    }
+
+    // Corner element: a slightly taller block at one end.
+    let corner_w = rng.rand_int(3, 5) as i32;
+    let (a, b) = if rng.next_f64() < 0.5 {
+        (x0, x0 + corner_w)
+    } else {
+        (x0 + w - corner_w, x0 + w)
+    };
+    stack.push(a, b, roof, (roof + corner_rows).min(h));
+}
+
+/// Wide, low warehouse: dark loading-dock doors along the ground, a body,
+/// and either a flat roof or a very shallow gable.
+fn warehouse(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
+    let low = h.min(rng.rand_int(6, 12) as i32);
+    let gable_rows = if rng.next_f64() < 0.5 { 2 } else { 0 };
+    let body_top = (low - gable_rows).max(3);
+    // Dock row: alternating wall and door segments, each 2 rows tall.
+    let door_w = rng.rand_int(2, 3) as i32;
+    let mut x = x0;
+    let mut is_door = false;
+    while x < x0 + w {
+        let span = if is_door {
+            door_w
+        } else {
+            rng.rand_int(2, 5) as i32
+        };
+        let end = (x + span).min(x0 + w);
+        if is_door {
+            stack.push_dark(x, end, 0, 2);
+        } else {
+            stack.push(x, end, 0, 2);
+        }
+        x = end;
+        is_door = !is_door;
+    }
+    stack.push(x0, x0 + w, 2, body_top);
+    let step = (w / 8).max(2);
+    for row in 0..gable_rows {
+        let inset = (row + 1) * step;
+        if body_top + row < h {
+            stack.push_dark(
+                x0 + inset,
+                x0 + w - inset,
+                body_top + row,
+                body_top + row + 1,
+            );
+        }
+    }
+}
+
+/// Half-cylinder Quonset hut: windowed lower walls under a dark curved roof.
+fn quonset(stack: &mut Stack, x0: i32, w: i32, h: i32) {
+    let rows = (w / 3).clamp(4, 10).min(h);
+    let walls = (rows * 2) / 5;
+    for row in 0..rows {
+        let y = (f64::from(row) + 0.5) / f64::from(rows);
+        let row_w = js_round(f64::from(w) * (1.0 - y * y).sqrt()) as i32;
+        let row_w = match_parity(row_w.min(w), w, 1);
+        let (a, b) = centered(x0, w, row_w);
+        if row < walls {
+            stack.push(a, b, row, row + 1);
+        } else {
+            stack.push_dark(a, b, row, row + 1);
+        }
+    }
+}
+
+/// Row of silos or tanks beside a taller headhouse, with either domed caps
+/// or a conveyor gallery across the tops.
+fn silos(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
+    let head_w = rng.rand_int(3, 4) as i32;
+    let head_top = h.min(rng.rand_int(12, 20) as i32);
+    let silo_top = (head_top - rng.rand_int(2, 5) as i32).max(6).min(head_top);
+    let head_left = rng.next_f64() < 0.5;
+    let (head_a, head_b) = if head_left {
+        (x0, x0 + head_w)
+    } else {
+        (x0 + w - head_w, x0 + w)
+    };
+    stack.push(head_a, head_b, 0, head_top);
+
+    let silo_w = rng.rand_int(3, 4) as i32;
+    let (mut x, end) = if head_left {
+        (head_b + 1, x0 + w)
+    } else {
+        (x0, head_a - 1)
+    };
+    let gallery = rng.next_f64() < 0.5 && silo_top < h;
+    let mut first = i32::MAX;
+    let mut last = i32::MIN;
+    while x + silo_w <= end {
+        stack.push_dark(x, x + silo_w, 0, silo_top);
+        if !gallery && silo_top < h {
+            stack.push_dark(x + 1, x + silo_w - 1, silo_top, silo_top + 1);
+        }
+        first = first.min(x);
+        last = last.max(x + silo_w);
+        x += silo_w + 1;
+    }
+    if gallery && first < last {
+        // The gallery reaches the headhouse so it rests on real structure.
+        let (a, b) = if head_left {
+            (head_a, last)
+        } else {
+            (first, head_b)
+        };
+        stack.push_dark(a, b, silo_top, silo_top + 1);
+    }
+}
+
+/// Big-box store: low body, dark parapet, and a lit sign over the entrance.
+fn big_box(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
+    let low = (h - 2).min(rng.rand_int(6, 9) as i32).max(3);
+    stack.push(x0, x0 + w, 0, low - 1);
+    stack.push_dark(x0, x0 + w, low - 1, low);
+    let sign_w = (w / 4).clamp(3, 10);
+    let offset = rng.rand_int(0, i64::from(w - sign_w)) as i32;
+    stack.push_solid(x0 + offset, x0 + offset + sign_w, low, (low + 2).min(h));
+}
+
+/// Parking garage: dark slabs between lit open decks, plus a stair core.
+fn parking_garage(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
+    let decks = (rng.rand_int(3, 6) as i32).min((h - 2) / 2).max(1);
+    for deck in 0..decks {
+        stack.push_dark(x0, x0 + w, deck * 2, deck * 2 + 1);
+        stack.push_solid(x0, x0 + w, deck * 2 + 1, deck * 2 + 2);
+    }
+    let roof = decks * 2;
+    stack.push_dark(x0, x0 + w, roof, roof + 1);
+    let core_w = rng.rand_int(2, 3) as i32;
+    let core_x = if rng.next_f64() < 0.5 {
+        x0 + 1
+    } else {
+        x0 + w - 1 - core_w
+    };
+    stack.push_dark(core_x, core_x + core_w, roof + 1, (roof + 3).min(h));
+}
+
+/// Glass tower whose sides step in one column at a time all the way up.
+fn taper(stack: &mut Stack, x0: i32, w: i32, h: i32) {
+    let steps = ((w - 3) / 2).max(1);
+    let rows_per_step = (h / (steps + 1)).max(2);
+    let (mut a, mut b, mut floor) = (x0, x0 + w, 0);
+    while floor < h {
+        let narrowest = b - a - 2 < 3;
+        let top = if narrowest {
+            h
+        } else {
+            (floor + rows_per_step).min(h)
+        };
+        stack.push(a, b, floor, top);
+        floor = top;
+        if !narrowest {
+            a += 1;
+            b -= 1;
+        }
+    }
+}
+
+/// Tower with an upper block that overhangs one side.
+fn cantilever(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
+    let base_w = portion(w, frac(rng, 0.55, 0.7), 3, w - 2);
+    let block_rows = (rng.rand_int(4, 8) as i32).min(h / 3).max(2);
+    let base_top = portion(h, frac(rng, 0.5, 0.65), 2, h - block_rows);
+    let base_left = rng.next_f64() < 0.5;
+    let (a, b) = if base_left {
+        (x0, x0 + base_w)
+    } else {
+        (x0 + w - base_w, x0 + w)
+    };
+    stack.push(a, b, 0, base_top);
+    stack.push(x0, x0 + w, base_top, base_top + block_rows);
+    stack.push(a, b, base_top + block_rows, h);
+}
+
+/// Setbacks that step down on one side only, like a terraced hillside.
+fn terraced(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
+    let base = portion(h, frac(rng, 0.3, 0.45), 2, h - 1);
+    stack.push(x0, x0 + w, 0, base);
+    let from_left = rng.next_f64() < 0.5;
+    let (mut a, mut b, mut floor) = (x0, x0 + w, base);
+    while floor < h {
+        let cut = rng.rand_int(2, 3) as i32;
+        if b - a - cut < 3 {
+            break;
+        }
+        if from_left {
+            a += cut;
+        } else {
+            b -= cut;
+        }
+        let top = (floor + rng.rand_int(2, 4) as i32).min(h);
+        stack.push(a, b, floor, top);
+        floor = top;
+    }
+}
+
 /// Renders tiers as text rows, top row first, for previews and debugging.
 ///
 /// `#` is a windowed tier, `-` a dark tier, `*` a solid (lit) tier, and `.`
@@ -539,13 +789,16 @@ mod tests {
                 }
             }
         }
-        assert_eq!(cases, 19 * 50 * 12 * 6);
+        assert_eq!(cases, KIND_WEIGHTS.len() * 50 * 12 * 6);
     }
 
     #[test]
     fn kinds_keep_their_shape_when_they_fit() {
         for (kind, _) in KIND_WEIGHTS {
-            let width = kind.min_width().max(9);
+            let width = kind
+                .min_width()
+                .max(9)
+                .max(kind.own_width_range(3).map_or(0, |range| range.0 as i32));
             let mut rng = Mulberry32::new(11);
             let (_, used) = build_tiers(kind, 0, width, 60, 191, &mut rng);
             assert_eq!(

@@ -6,11 +6,35 @@
 | --- | --- | --- |
 | `feature/building-records` | Building, tier, and window records; kind weights and width fallback; layer specs and height formula | Merged |
 | `feature/tier-shapes` | Tier builders for all 19 kinds; text shape preview | Merged |
-| `feature/expanded-buildings` | New kinds and wider footprints beyond the spec (see product.md) | Design awaiting approval |
+| `feature/expanded-buildings` | 9 extension kinds; wide footprints (see product.md) | Merged |
 | `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Planned |
 | `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Planned |
 | `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Planned |
 | `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Planned |
+
+### feature/expanded-buildings
+
+- **Design decisions (user, 2026-11-03):**
+  - All four proposed groups: 5-over-1; industrial low-rise; commercial low-rise; modern towers.
+  - Occasional wide footprints.
+  - New kinds at about 10% of picks.
+  - Low-rise also in Normal mode's front layer.
+- **Delivered:**
+  - [src/model/building.rs](../src/model/building.rs): 9 new `BuildingKind`s (weights total 16; the spec's 143 are unchanged).
+    - `is_extension`, `is_low_rise`, and `allowed_in_layer` decide which kinds may appear where.
+    - `pick(rng, layer)` now chooses only among kinds allowed in that layer.
+    - `own_width_range` gives each low-rise kind its own width range, up to 50.
+  - [src/model/layers.rs](../src/model/layers.rs): `sample_footprint_width`. Low-rise kinds use their own range. Other buildings take a wide 19–25 footprint 15% of the time and otherwise use the layer's range, never above 25.
+  - [src/model/shapes.rs](../src/model/shapes.rs): builders for the 9 new kinds.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 47 tests. The contract test now covers all 28 kinds × widths 1 to 50 (100,800 buildings).
+  - Measured shares:
+    - The wide-footprint share is between 13% and 17% (test bound).
+    - Warehouses reach the 50-cell limit.
+    - No low-rise kind is picked in layer 0.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: no new warnings.
+  - Previews reviewed at width 34, height 22.
 
 ### feature/tier-shapes
 
