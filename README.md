@@ -53,6 +53,7 @@ cargo run --bin city -- 160 60 1    # columns, rows, seed
 | --- | --- |
 | `--pixel-size N` | Each virtual pixel is N screen pixels (1–16, times display scaling). Default 3. Bigger windows show more city and more sky. |
 | `--pixel-size spec` | Scale pixels with screen height instead, so every screen shows about 240 virtual rows (the Rebuild Prompt formula). |
+| `--timer D`, `--deadline D` | Finish building the city in exactly D, whatever the speed. A bare number is minutes; `90s`, `25m`, `1h30m` also work. |
 | `-h`, `--help` | Show usage. |
 
 Pass options after `--` when using cargo: `cargo run -- --pixel-size 3`.
