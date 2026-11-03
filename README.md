@@ -62,5 +62,6 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | [docs/Rebuild Prompt.md](docs/Rebuild%20Prompt.md) | Primary behavioral specification, carried over from the Python/browser version. |
 | [docs/product.md](docs/product.md) | Product scope, Rust-specific deviations, and deferred extensions. |
 | [docs/work.md](docs/work.md) | Current and completed work increments with verification results. |
+| [docs/user-notes.md](docs/user-notes.md) | The owner's reminders, to-do list, and git tips. |
 | `.ai/` | Visual references and the agent handoff note. |
 | [Sounds/Music/](Sounds/Music/README.md) | User-supplied background music for a planned later feature. Gitignored except its README; not used by the app yet. |
