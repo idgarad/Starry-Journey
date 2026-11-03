@@ -6,7 +6,22 @@
 | --- | --- | --- |
 | `feature/normal-rasterizer` | CPU rasterizer; GPU presentation of the real city; `P` and `R` keys | Merged |
 | `feature/normal-reveal` | 240-second cell-by-cell construction; speed keys; progress in the title | Merged |
+| `feature/pixel-size-option` | `--pixel-size N` fixed virtual pixel size (option C) | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/pixel-size-option
+
+- **Decision (owner, 2026-11-03):** option C. Spec scaling stays the default, and a launch option gives fixed-size virtual pixels, so bigger screens show more city.
+- **Delivered:**
+  - [src/model/grid.rs](../src/model/grid.rs): `CellScaling::{Spec, Fixed(n)}` and `Grid::with_scaling`. In fixed mode, `max_h` is computed from the smaller of the real ground row and the 240-row reference, so taller screens add sky instead of stretching towers. Widths are unchanged.
+  - [src/config.rs](../src/config.rs): `parse_args` handles `--pixel-size N` (1–16, also `--pixel-size=N`) and `-h`/`--help`. Unknown options, bad values, and repeats are errors. `cell_scaling` multiplies N by the display scale factor, never below 1 pixel.
+  - [src/main.rs](../src/main.rs): `--help` exits 0 and invalid options exit 2 with the usage text. The scene uses the chosen scaling, and `ScaleFactorChanged` (moving to a monitor with different scaling) updates it.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 109 tests. In fixed mode at 4, 1080p gives 480 × 270 and 4K gives 960 × 540, with `max_h` of 196 for both; a 1440p scene has 640 × 360 cells and over 1.5× the buildings of 720p.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - CLI: `--help` exited 0; `--pixel-size 0` and `--speed 2` were rejected, with exit 2 for the bad value.
+  - GUI run with `--pixel-size 2` in a 1280 × 720 window: a 640 × 360 grid with more buildings and more sky, construction complete at 4×.
 
 ### feature/normal-reveal
 

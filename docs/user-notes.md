@@ -126,6 +126,8 @@ Edit the file to keep the right result and delete the marker lines, then run `gi
 
 ### Running the app
 
+- `cargo run -- --pixel-size 3` uses fixed-size virtual pixels (try 2 to 5); plain `cargo run` uses the spec's about 240 rows. The `--` tells cargo that the options are for the app, not for cargo.
+
 - `cargo run` builds and launches the app.
 - `P` next palette, `R` new city, `+`/`-` speed (0.25× to 4×; 4× builds the city in 1 minute), `F` fullscreen, `Tab` next monitor, `Esc` quit. The title bar shows build progress.
 - `cargo run --bin shapes -- 15 40 1` previews the building shapes as text (width, height, seed). `o` marks a window that will be lit and `_` one that stays dark. Try different seeds to see variations.

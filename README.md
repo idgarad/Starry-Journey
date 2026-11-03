@@ -47,6 +47,15 @@ To preview a whole generated city as text:
 cargo run --bin city -- 160 60 1    # columns, rows, seed
 ```
 
+### Options
+
+| Option | Effect |
+| --- | --- |
+| `--pixel-size N` | Keep each virtual pixel N screen pixels (1–16, times display scaling). Bigger screens show more city and more sky. Without it, the scene always has about 240 virtual rows. |
+| `-h`, `--help` | Show usage. |
+
+Pass options after `--` when using cargo: `cargo run -- --pixel-size 3`.
+
 ## Test
 
 ```powershell
