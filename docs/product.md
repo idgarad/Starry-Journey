@@ -55,6 +55,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - **Widths:** ordinary buildings keep the spec's per-layer ranges, but 15% roll a wide footprint of 19–25 cells. Low-rise kinds use their own ranges, up to 50 cells. Factories widen to 10–50 cells in the nearest layer only.
   - **Heights:** low-rise kinds choose their own low height and treat the layer's height sample only as an upper bound.
 - **Fixed pixel size by default (owner decision, 2026-11-03):** every virtual pixel is 3 screen pixels (times display scaling), so bigger windows and screens get more city and more sky. Building heights use the 240-row reference so towers keep their proportions. `--pixel-size N` (1–16) picks another size, and `--pixel-size spec` restores the Rebuild Prompt formula of about 240 rows, which matches the reference screenshot's density.
+- **Street and trees in Normal mode (owner decision, 2026-11-03):** Normal mode has the 7-row road and roadside trees, which the spec reserves for Endless mode. Trees appear in every palette. Night palettes use their own tree colors; Ink on Parchment keeps the spec's rule.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
@@ -66,7 +67,6 @@ These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are 
 - Weather (rain, wind) and seasonal variation.
 - A moon and an automatic day/night cycle, including sunset sky gradients.
 - An Atari palette.
-- Roadside trees in palettes other than Ink on Parchment.
 - Android as a later target.
 - Near-side foreground layers (owner reference, 2026-11-03), drawn after traffic and overlapping the road and bottom edge, so the 240-row grid and road position are unchanged:
   - **Silhouettes:** bushes along the bottom edge and occasional framing trees, in a near-black color derived from the palette background, with little interior detail so they never compete with the city.

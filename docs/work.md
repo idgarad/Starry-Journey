@@ -10,7 +10,27 @@
 | `feature/default-pixel-size` | Fixed 3-pixel virtual pixels by default; `--pixel-size spec` for the spec formula | Merged |
 | `feature/construction-timer` | `--timer`/`--deadline` duration clock; time left in the title | Merged |
 | `feature/default-window-1080p` | Opens at 1920 × 1080 (testing size) | Merged |
+| `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
+| `feature/night-traffic` | Cars and trucks after completion, headlights on with a beam | Planned |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/normal-street
+
+- **Decisions (owner, 2026-11-03):**
+  - The street and trees belong in Normal mode too. The spec has no road or trees there.
+  - Trees appear in every palette.
+  - Night trees were near-black at first, so each palette now has its own tree colors. The owner reviewed them: "trees look good".
+- **Delivered:**
+  - [src/model/trees.rs](../src/model/trees.rs): the spec's sprites, slot spacing (23 back, 29 front), and hashed per-slot seeds. Overlapping and negative queries agree. `tree_colors` uses per-palette colors, or the spec's parchment rule.
+  - [src/model/palette.rs](../src/model/palette.rs): `TreePalette` gives each night palette leaves (3 tones), shade, and trunk, mostly reusing its own colors. A contrast test keeps every tree color at least 1.8:1 against the sky.
+  - [src/street.rs](../src/street.rs): `StreetLayer` holds a 7-row road with curbs and 4-on/4-off center dashes. Background trees are rooted on the road's top edge; foreground trees are rooted on the bottom row and drawn after traffic.
+  - [src/main.rs](../src/main.rs): the Normal grid reserves the road rows. Each frame draws the city view, then road and background trees, then foreground trees. The street is present from the start; only the city is revealed.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 129 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - The owner reviewed the result visually across palettes.
+- **Git:** this was the first merge conflict. `main` (with the timer) was merged into this branch, and both sides had added an import and a test in the same spots. Both conflicts were resolved by keeping both sides.
 
 ### feature/default-window-1080p
 

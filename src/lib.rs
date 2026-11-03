@@ -12,3 +12,4 @@ pub mod config;
 pub mod model;
 pub mod raster;
 pub mod reveal;
+pub mod street;

@@ -59,6 +59,30 @@ const fn w(color: u32, weight: u32) -> WindowColor {
     }
 }
 
+/// Roadside tree colors for a palette (Starry Journey extension).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreePalette {
+    /// Leaf tones, darkest first. Conifers use the first; broadleaf trees
+    /// pick one by their tint byte.
+    pub leaves: [Rgb; 3],
+    /// Shaded-leaf color.
+    pub shade: Rgb,
+    /// Trunk color.
+    pub trunk: Rgb,
+}
+
+const fn trees(leaves: [u32; 3], shade: u32, trunk: u32) -> Option<TreePalette> {
+    Some(TreePalette {
+        leaves: [
+            Rgb::hex(leaves[0]),
+            Rgb::hex(leaves[1]),
+            Rgb::hex(leaves[2]),
+        ],
+        shade: Rgb::hex(shade),
+        trunk: Rgb::hex(trunk),
+    })
+}
+
 /// A complete palette definition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Palette {
@@ -98,6 +122,9 @@ pub struct Palette {
     pub layer_tint: Option<Rgb>,
     /// Fixed decoration color replacing generated landmark HSL.
     pub decor: Option<Rgb>,
+    /// Tree colors; `None` uses the spec's parchment rule (body colors
+    /// faded toward the ink color).
+    pub trees: Option<TreePalette>,
 }
 
 impl Palette {
@@ -209,6 +236,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 55,
         layer_tint: None,
         decor: None,
+        trees: trees([0x2c5a2a, 0x3a6b32, 0x4b7a3c], 0x1f3f1d, 0x5a4a36),
     },
     Palette {
         key: "artdeco",
@@ -239,6 +267,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 58,
         layer_tint: None,
         decor: None,
+        trees: trees([0x3d5638, 0x4e6a44, 0x627a4c], 0x2a3c27, 0x6a5a3a),
     },
     Palette {
         key: "blackonwhite",
@@ -259,6 +288,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 30,
         layer_tint: Some(Rgb::hex(0xa3977d)),
         decor: Some(Rgb::hex(0x24221e)),
+        trees: None,
     },
     Palette {
         key: "cga",
@@ -279,6 +309,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 60,
         layer_tint: None,
         decor: None,
+        trees: trees([0x0e6a6e, 0x128a8f, 0x19a9ae], 0x0a4a4d, 0xaa00aa),
     },
     Palette {
         key: "cga2",
@@ -299,6 +330,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 60,
         layer_tint: None,
         decor: None,
+        trees: trees([0x1e7a1e, 0x2a9a2a, 0x3cb83c], 0x145214, 0xaa5500),
     },
     Palette {
         key: "ega",
@@ -330,6 +362,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 60,
         layer_tint: None,
         decor: None,
+        trees: trees([0x006e00, 0x008800, 0x00aa00], 0x004400, 0xaa5500),
     },
     Palette {
         key: "vga",
@@ -361,6 +394,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 65,
         layer_tint: None,
         decor: None,
+        trees: trees([0x2a7a50, 0x339160, 0x40a872], 0x1d5438, 0x7a5a3a),
     },
     Palette {
         key: "c64",
@@ -392,6 +426,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 55,
         layer_tint: None,
         decor: None,
+        trees: trees([0x3e6b2e, 0x588d43, 0x6fa85a], 0x2c4d21, 0x6f4f25),
     },
     Palette {
         key: "appleii",
@@ -423,6 +458,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 58,
         layer_tint: None,
         decor: None,
+        trees: trees([0x147a14, 0x1a9a1a, 0x22b822], 0x0d500d, 0x7a4a10),
     },
     Palette {
         key: "gameboy",
@@ -443,6 +479,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 50,
         layer_tint: Some(Rgb::hex(0x306230)),
         decor: Some(Rgb::hex(0x9bbc0f)),
+        trees: trees([0x306230, 0x306230, 0x8bac0f], 0x0f380f, 0x8bac0f),
     },
     Palette {
         key: "amber",
@@ -463,6 +500,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 55,
         layer_tint: Some(Rgb::hex(0x805000)),
         decor: Some(Rgb::hex(0xffb000)),
+        trees: trees([0x805000, 0xa06a00, 0xc08000], 0x523305, 0x603c08),
     },
     Palette {
         key: "green",
@@ -483,6 +521,7 @@ static PALETTES: [Palette; 12] = [
         decor_lightness: 55,
         layer_tint: Some(Rgb::hex(0x007028)),
         decor: Some(Rgb::hex(0x33ff66)),
+        trees: trees([0x008830, 0x10b848, 0x20d058], 0x054716, 0x07521b),
     },
 ];
 
@@ -567,6 +606,49 @@ mod tests {
         assert_eq!(classic.layer_tint_target(3), Rgb([128, 112, 86]));
         let gameboy = palette_by_key("gameboy").unwrap();
         assert_eq!(gameboy.layer_tint_target(1), Rgb::hex(0x306230));
+    }
+
+    #[test]
+    fn every_dark_palette_has_tree_colors_that_stand_out_from_the_sky() {
+        for palette in palettes() {
+            let Some(trees) = palette.trees else {
+                assert_eq!(
+                    palette.key, "blackonwhite",
+                    "only parchment uses the spec rule"
+                );
+                continue;
+            };
+            for (role, color) in [
+                ("leaf", trees.leaves[0]),
+                ("leaf", trees.leaves[1]),
+                ("leaf", trees.leaves[2]),
+                ("trunk", trees.trunk),
+            ] {
+                let ratio = contrast(color, palette.bg);
+                assert!(
+                    ratio >= 1.8,
+                    "{} {role} {color:?}: contrast {ratio:.2}",
+                    palette.key
+                );
+            }
+        }
+    }
+
+    /// WCAG contrast ratio between two colors.
+    fn contrast(a: Rgb, b: Rgb) -> f64 {
+        fn luminance(c: Rgb) -> f64 {
+            let channel = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.0[0]) + 0.7152 * channel(c.0[1]) + 0.0722 * channel(c.0[2])
+        }
+        let (la, lb) = (luminance(a), luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
     }
 
     #[test]
