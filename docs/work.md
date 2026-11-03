@@ -9,6 +9,25 @@
 | `feature/pixel-size-option` | `--pixel-size N` fixed virtual pixel size (option C) | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
 
+### fix/maximize-rebuild
+
+- **Report (owner, 2026-11-03):** maximize/minimize "scales the pixels up", while dragging a handle rebuilds the scene correctly.
+- **Findings:**
+  - In default (spec) mode this is the formula working as designed. Maximizing 1280 × 720 to 2560 × 1369 makes the window taller, so the cell goes from 3 to 6 (427 × 229 at 6 px). Dragging mostly changes width, so it adds city.
+  - In one scripted run a maximize during startup left a stale, stretched frame. A resize event that arrives before the renderer exists is dropped. This could not be reproduced on demand, but the code path was real.
+- **Fix:**
+  - Every frame compares the window's real size with the configured surface and resizes if they differ, so a lost event can't leave a stretched frame.
+  - Drawing is skipped while the window is minimized.
+  - The title now shows the grid, cell size, and surface size, for example `854x457 @ 3px - surface 2560x1369`.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 109 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - Scripted GUI runs:
+    - default mode, maximize: `427x229 @ 6px` (spec behavior);
+    - `--pixel-size 3`, maximize: `854x457 @ 3px`;
+    - `--pixel-size 3`, minimize then restore: `427x240 @ 3px` with surface 1280 × 720 and construction progress kept.
+
 ### feature/pixel-size-option
 
 - **Decision (owner, 2026-11-03):** option C. Spec scaling stays the default, and a launch option gives fixed-size virtual pixels, so bigger screens show more city.
