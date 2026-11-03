@@ -1,7 +1,7 @@
 # Handoff
 
 - Primary spec: [docs/Rebuild Prompt.md](../docs/Rebuild%20Prompt.md), with Rust-specific deviations and deferred extensions recorded in [docs/product.md](../docs/product.md). The photo skyline is dropped. Background music (`Sounds/Music/`) is a deferred extension.
-- Last completed: REBUILD-003 `feature/normal-reveal`. Normal mode builds the city cell by cell over 240 s (+/- speed, progress in the title). 101 tests pass; clippy is clean.
+- Last completed: `feature/pixel-size-option` (`--pixel-size N` fixed virtual pixels; default stays spec scaling). 109 tests pass; clippy is clean.
 - Rendering: CPU raster (`src/raster.rs`) uploaded as a texture; `present.wgsl` scales each cell to an exact cell×cell block.
 - Next candidates are listed in work.md. `feature/normal-ambience` (flicker after completion, beacons, landmark cycling, twinkles, shooting stars) is next.
 - Open decisions: native UI approach for controls (`egui` or keyboard only); adopting the rest of the `AGENTS.md` process (`Docs/` layout, backlog).

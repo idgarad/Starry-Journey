@@ -54,6 +54,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - **Placement:** low-rise kinds appear only in the nearest layer, in both Normal and Endless modes. 5-over-1s may also appear one layer back. The three new towers may appear in any layer.
   - **Widths:** ordinary buildings keep the spec's per-layer ranges, but 15% roll a wide footprint of 19–25 cells. Low-rise kinds use their own ranges, up to 50 cells. Factories widen to 10–50 cells in the nearest layer only.
   - **Heights:** low-rise kinds choose their own low height and treat the layer's height sample only as an upper bound.
+- **Fixed pixel size (owner decision, 2026-11-03):** `--pixel-size N` keeps every virtual pixel N screen pixels (times display scaling), so bigger screens get more city and more sky. Building heights then use the 240-row reference. Without the option, the spec's formula of about 240 rows is used, matching the reference screenshot.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
