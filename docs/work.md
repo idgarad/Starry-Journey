@@ -7,7 +7,19 @@
 | `feature/normal-rasterizer` | CPU rasterizer; GPU presentation of the real city; `P` and `R` keys | Merged |
 | `feature/normal-reveal` | 240-second cell-by-cell construction; speed keys; progress in the title | Merged |
 | `feature/pixel-size-option` | `--pixel-size N` fixed virtual pixel size (option C) | Merged |
+| `feature/default-pixel-size` | Fixed 3-pixel virtual pixels by default; `--pixel-size spec` for the spec formula | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/default-pixel-size
+
+- **Decision (owner, 2026-11-03):** pixel size 3 is the default, measured on both of the owner's systems. Bigger windows and screens now show more city and sky at the same pixel size. This matches the owner's recollection of the Python version.
+- **Delivered:** [src/config.rs](../src/config.rs) has `PixelSize::{Spec, Fixed(n)}` defaulting to `Fixed(3)` (`DEFAULT_PIXEL_SIZE`). `--pixel-size spec` (case-insensitive) restores the Rebuild Prompt formula of about 240 rows. The model's `Grid::new` keeps spec scaling as the library default.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 110 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - CLI: `--pixel-size bogus` exited 2, and `--help` lists both forms.
+  - GUI run with no options, maximized: `854x457 @ 3px`, surface 2560 × 1369.
 
 ### fix/maximize-rebuild
 
