@@ -12,6 +12,11 @@
 //!   waning moons on the left, as seen from the northern hemisphere.
 //! - Colors come from the palette: the lit side in the star color with a few
 //!   darker "seas", the unlit side faintly visible just above the sky color.
+//! - Easter egg (owner idea, 2026-11-03): on the new-moon lap, instead of a
+//!   nearly invisible disk, a battle station crosses the sky: a grey sphere
+//!   with an equatorial trench, panel bands, and a concave dish in the upper
+//!   left. It is an homage to a well-known film design (see
+//!   `docs/product.md` for the distribution note).
 //!
 //! Everything is a pure function of the grid, the palette, and the elapsed
 //! time, so the moon is the same after a resize or palette change.
@@ -40,7 +45,7 @@ pub const APEX_FRACTION: f64 = 0.22;
 /// How far the seas move from the star color toward the sky.
 pub const SEA_BLEND: f64 = 0.3;
 /// How far the unlit side moves from the sky toward the star color.
-pub const EARTHSHINE: f64 = 0.08;
+pub const EARTHSHINE: f64 = 0.04;
 
 /// Dark "seas", designed on a 19-cell disk as offsets from the center; on
 /// the 39-cell disk each becomes a 2 x 2 block.
@@ -69,6 +74,15 @@ const SEAS: [(i32, i32); 20] = [
 /// Scale from the sea design grid to the disk.
 const SEA_SCALE: i32 = 2;
 
+/// Battle-station hull: how far it moves from the star color toward the sky.
+pub const HULL_BLEND: f64 = 0.45;
+/// Dish center as offsets from the disk center (upper-left quadrant).
+pub const DISH_CENTER: (i32, i32) = (-7, -7);
+/// Dish radius in cells.
+pub const DISH_RADIUS: f64 = 6.5;
+/// Rows between the faint panel bands.
+pub const PANEL_SPACING: i32 = 6;
+
 /// The moon's position and phase at one moment.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MoonState {
@@ -92,6 +106,61 @@ pub enum MoonPixel {
     Lit,
     /// A darker sea on the lit part.
     Sea,
+}
+
+/// What one cell of the battle station shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationPixel {
+    /// Outside the sphere.
+    Outside,
+    /// Plain hull.
+    Hull,
+    /// A faint panel band, or the darkened edge of the sphere.
+    Panel,
+    /// The equatorial trench.
+    Trench,
+    /// Inside the dish.
+    Dish,
+    /// The dish's rim.
+    DishRim,
+    /// The bright focus at the dish's center.
+    Focus,
+}
+
+/// True on the new-moon lap, when the battle station replaces the moon.
+pub fn is_station(moon: &MoonState) -> bool {
+    moon.phase == 0.0
+}
+
+/// What the cell at offset `(dx, dy)` from the center shows on the station.
+/// O(1).
+pub fn station_pixel(dx: i32, dy: i32) -> StationPixel {
+    let radius = f64::from(MOON_DIAMETER) / 2.0;
+    if f64::from(dx * dx + dy * dy) > radius * radius {
+        return StationPixel::Outside;
+    }
+    let (cx, cy) = DISH_CENTER;
+    let dish = f64::from((dx - cx).pow(2) + (dy - cy).pow(2)).sqrt();
+    if dish <= 1.0 {
+        return StationPixel::Focus;
+    }
+    if dish <= DISH_RADIUS {
+        return if dish > DISH_RADIUS - 1.0 {
+            StationPixel::DishRim
+        } else {
+            StationPixel::Dish
+        };
+    }
+    if dy == 0 {
+        return StationPixel::Trench;
+    }
+    let half_width = (radius * radius - f64::from(dy * dy)).sqrt().max(0.5);
+    let edge = (f64::from(dx) / half_width).abs() > 0.82;
+    if edge || dy.rem_euclid(PANEL_SPACING) == PANEL_SPACING / 2 {
+        StationPixel::Panel
+    } else {
+        StationPixel::Hull
+    }
 }
 
 /// The moon at `seconds` since the app started. O(1).
@@ -153,14 +222,28 @@ pub fn moon_cells(grid: &Grid, moon: &MoonState, palette: &Palette) -> Vec<(usiz
     let lit = palette.star;
     let sea = mix(palette.star, palette.bg, SEA_BLEND);
     let dark = mix(palette.bg, palette.star, EARTHSHINE);
+    let hull = mix(palette.star, palette.bg, HULL_BLEND);
+    let station = is_station(moon);
     let mut cells = Vec::new();
     for dy in -MOON_RADIUS..=MOON_RADIUS {
         for dx in -MOON_RADIUS..=MOON_RADIUS {
-            let color = match moon_pixel(dx, dy, moon.phase) {
-                MoonPixel::Outside => continue,
-                MoonPixel::Dark => dark,
-                MoonPixel::Lit => lit,
-                MoonPixel::Sea => sea,
+            let color = if station {
+                match station_pixel(dx, dy) {
+                    StationPixel::Outside => continue,
+                    StationPixel::Hull => hull,
+                    StationPixel::Panel => mix(hull, palette.bg, 0.2),
+                    StationPixel::Trench => mix(hull, palette.bg, 0.55),
+                    StationPixel::Dish => mix(hull, palette.bg, 0.3),
+                    StationPixel::DishRim => mix(hull, palette.bg, 0.5),
+                    StationPixel::Focus => lit,
+                }
+            } else {
+                match moon_pixel(dx, dy, moon.phase) {
+                    MoonPixel::Outside => continue,
+                    MoonPixel::Dark => dark,
+                    MoonPixel::Lit => lit,
+                    MoonPixel::Sea => sea,
+                }
             };
             let (x, row) = (moon.x + dx, moon.row + dy);
             if (0..grid.cols).contains(&x) && (0..grid.rows).contains(&row) {
@@ -315,6 +398,47 @@ mod tests {
         let top = moon_at(&grid, (1.5 - START_FRACTION) * PASS_SECONDS);
         assert!(top.row - MOON_RADIUS >= 0, "inside the screen");
         assert!(top.row + MOON_RADIUS <= grid.ground_row - grid.max_h + 2);
+    }
+
+    #[test]
+    fn the_new_moon_lap_shows_the_battle_station() {
+        let grid = grid();
+        let lap_start = (1.0 - START_FRACTION) * PASS_SECONDS;
+        // Laps after the opening one show steps 2, 3, ..., so step 0 (new)
+        // arrives on the 7th lap after it.
+        let new_lap = moon_at(&grid, lap_start + 6.0 * PASS_SECONDS + 10.0);
+        assert!(is_station(&new_lap));
+        assert!(!is_station(&moon_at(&grid, 0.0)));
+
+        // Same silhouette as the moon.
+        for (dx, dy) in [(0, 0), (19, 0), (0, -19), (19, 19), (20, 0)] {
+            let moon_out = moon_pixel(dx, dy, FULL) == MoonPixel::Outside;
+            assert_eq!(station_pixel(dx, dy) == StationPixel::Outside, moon_out);
+        }
+        // Dish in the upper left, with a bright focus and a rim.
+        assert_eq!(station_pixel(-7, -7), StationPixel::Focus);
+        assert_eq!(station_pixel(-7, -10), StationPixel::Dish);
+        assert_eq!(station_pixel(-7, -13), StationPixel::DishRim);
+        assert!(
+            ![
+                StationPixel::Dish,
+                StationPixel::DishRim,
+                StationPixel::Focus
+            ]
+            .contains(&station_pixel(7, 7)),
+            "no dish lower right"
+        );
+        // Equatorial trench across the whole width.
+        assert!((-19..=19).all(|dx| station_pixel(dx, 0) == StationPixel::Trench));
+
+        let classic = palette_by_key("classic").unwrap();
+        let cells = moon_cells(&grid, &new_lap, classic);
+        let colors: std::collections::HashSet<Rgb> = cells.iter().map(|&(_, c)| c).collect();
+        assert!(colors.len() >= 5, "hull, panels, trench, dish, rim, focus");
+        assert!(
+            !colors.contains(&classic.bg),
+            "the station is visible against the sky"
+        );
     }
 
     #[test]
