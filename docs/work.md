@@ -5,11 +5,26 @@
 | Branch | Contents | Status |
 | --- | --- | --- |
 | `feature/building-records` | Building, tier, and window records; kind weights and width fallback; layer specs and height formula | Merged |
-| `feature/tier-shapes` | Tier builders for all 19 kinds | Planned |
+| `feature/tier-shapes` | Tier builders for all 19 kinds; text shape preview | Merged |
+| `feature/expanded-buildings` | New kinds and wider footprints beyond the spec (see product.md) | Design awaiting approval |
 | `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Planned |
 | `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Planned |
 | `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Planned |
 | `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Planned |
+
+### feature/tier-shapes
+
+- **Delivered:**
+  - [src/model/shapes.rs](../src/model/shapes.rs): `build_tiers(kind, x0, width, height, max_h, rng)` covers all 19 kinds, with per-kind minimum heights and a fallback to box.
+    - Roofs, eaves, domes, spires, and water tanks are `dark` (no windows).
+    - Crowns, observation decks, and clock faces are `solid` (densely lit).
+    - Shapes are behaviorally faithful: the original tier dimensions aren't available, so the builders follow the spec's shape descriptions and contracts.
+  - [src/bin/shapes.rs](../src/bin/shapes.rs) previews every kind as text: `cargo run --bin shapes -- [width] [height] [seed]`.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 44 tests. The contract test builds 68,400 buildings (19 kinds × widths 1 to 50 × 12 heights × 6 seeds, including negative world x) and validates each one.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: no new warnings.
+  - The preview was reviewed at width 13, height 30.
 
 ### feature/building-records
 
@@ -26,7 +41,7 @@
   - `cargo clippy --all-targets`: no new warnings.
 - **Assumptions:**
   - AS-R002: the spec says "generic setbacks require width 7" without naming the kinds. Stepped, spire, pointed, ziggurat, and crownblock are treated as generic setbacks; box has no minimum. This is non-blocking and easy to change in `BuildingKind::min_width`.
-- **Deferred to later branches:** which kinds count as "explicit tower kinds" for masts (`feature/masts-and-tints`), and roof metadata (`feature/tier-shapes`).
+- **Deferred to later branches:** which kinds count as "explicit tower kinds" for masts (`feature/masts-and-tints`), and roof metadata (`feature/tier-shapes`; not needed, because roof height is derived from the tiers).
 
 ## REBUILD-001: Model foundation (RNG, grid, palettes)
 

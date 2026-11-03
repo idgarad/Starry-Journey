@@ -49,6 +49,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
 - **CSS and device pixels:** measurements given in CSS pixels or device pixel ratio use winit's window scale factor.
 - **On-screen controls:** need a native UI. The approach, an immediate-mode UI library or a keyboard-only interface, is an open architectural decision.
 - **Photo skyline:** dropped from the product. The Rebuild Prompt's optional image import (`--image`, image analysis, and its acceptance checks) is not implemented, so no image-decoding dependency is needed.
+- **Expanded buildings (requested 2026-11-03):** more building kinds than the spec's 19, and wider footprints. General buildings may be up to 25 cells wide, and near-road low-rise buildings (factories, warehouses, 5-over-1 apartments, and other low odd shapes) up to 50. The detailed design is awaiting approval and is tracked in [work.md](work.md).
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
