@@ -23,7 +23,8 @@ use starry_journey::moon::{is_station, moon_at, sky_cells, MoonState};
 use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::station::StationFate;
-use starry_journey::street::StreetLayer;
+use starry_journey::street::{apply_paint, CellPaint, StreetLayer};
+use starry_journey::traffic::{Traffic, Verge};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -252,6 +253,11 @@ struct Scene {
     frame: Vec<u8>,
     /// Moon cells to draw on sky (behind the city and street).
     moon: Vec<(usize, Rgb)>,
+    /// Street traffic; starts once the city is finished (Starry Journey
+    /// extension: Normal mode has traffic too).
+    traffic: Option<Traffic>,
+    /// The palette the scene is drawn in (palettes are static data).
+    palette: &'static Palette,
 }
 
 impl Scene {
@@ -261,7 +267,7 @@ impl Scene {
         seed: u32,
         width: u32,
         height: u32,
-        palette: &Palette,
+        palette: &'static Palette,
         progress: f64,
         scaling: CellScaling,
     ) -> Self {
@@ -287,7 +293,10 @@ impl Scene {
             street,
             frame: Vec::new(),
             moon: Vec::new(),
+            traffic: None,
+            palette,
         };
+        scene.start_traffic_if_complete();
         scene.compose();
         scene
     }
@@ -303,8 +312,48 @@ impl Scene {
                 self.frame[cell * 4..cell * 4 + 3].copy_from_slice(&color.0);
             }
         }
-        self.street.apply_back(&mut self.frame);
-        self.street.apply_front(&mut self.frame);
+        match &self.traffic {
+            None => {
+                self.street.apply_back(&mut self.frame);
+                self.street.apply_front(&mut self.frame);
+            }
+            Some(traffic) => {
+                // Headlights light up the roadside trees ahead of each car.
+                let grid = self.grid;
+                let light = self.palette.headlight;
+                // Top trees take light from the top lane, bottom trees from
+                // the bottom lane.
+                let back_glow = |x, row| traffic.glow(&grid, x, row, Verge::Back);
+                let front_glow = |x, row| traffic.glow(&grid, x, row, Verge::Front);
+                self.street
+                    .apply_back_lit(&mut self.frame, grid.cols, light, back_glow);
+                let mut paint = CellPaint::new();
+                traffic.paint(&grid, self.palette, &mut paint);
+                apply_paint(&paint, &mut self.frame);
+                self.street
+                    .apply_front_lit(&mut self.frame, grid.cols, light, front_glow);
+            }
+        }
+    }
+
+    /// Starts traffic once the city is complete (cars then drive in from
+    /// off-screen).
+    fn start_traffic_if_complete(&mut self) {
+        if self.traffic.is_none() && self.reveal.is_complete() {
+            self.traffic = Some(Traffic::new(self.seed, self.grid.cols));
+        }
+    }
+
+    /// Moves traffic by one frame. Returns true if there is traffic (the
+    /// frame then needs composing).
+    fn step_traffic(&mut self, dt: f64, speed: f64) -> bool {
+        match &mut self.traffic {
+            Some(traffic) => {
+                traffic.step(dt, speed);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The shown image: the finished city where revealed, sky elsewhere.
@@ -322,7 +371,8 @@ impl Scene {
     }
 
     /// Re-colors the scene for another palette without regenerating it.
-    fn set_palette(&mut self, palette: &Palette) {
+    fn set_palette(&mut self, palette: &'static Palette) {
+        self.palette = palette;
         self.view = Self::view_for(
             &self.grid,
             &self.buildings,
@@ -342,6 +392,7 @@ impl Scene {
         let cells = self.reveal.advance_to(progress).to_vec();
         light_revealed(&mut self.buildings, &self.ownership, &cells);
         self.view.reveal_cells(&cells);
+        self.start_traffic_if_complete();
     }
 }
 
@@ -623,7 +674,8 @@ impl Renderer {
             .progress(self.scene.reveal.progress(), dt, self.speed, elapsed);
         self.scene.advance_to(progress);
         let moon_moved = self.update_moon(now);
-        if self.scene.view.take_dirty() || moon_moved {
+        let traffic_moved = self.scene.step_traffic(dt, self.speed);
+        if self.scene.view.take_dirty() || moon_moved || traffic_moved {
             self.scene.compose();
             self.upload();
         }
@@ -936,6 +988,51 @@ mod tests {
             }
         }
         assert!(on_sky > 0 && behind > 0, "sky {on_sky}, behind {behind}");
+    }
+
+    #[test]
+    fn traffic_with_lit_headlights_starts_only_after_the_city_is_finished() {
+        let mut scene = Scene::new(18, 1920, 1080, classic(), 0.5, CellScaling::Fixed(3));
+        assert!(scene.traffic.is_none(), "no cars while building");
+        assert!(!scene.step_traffic(1.0 / 60.0, 1.0));
+        scene.advance_to(1.0);
+        assert!(scene.traffic.is_some(), "cars start when the city is done");
+        for _ in 0..(20 * 60) {
+            scene.step_traffic(1.0 / 60.0, 1.0);
+        }
+        scene.compose();
+        let headlight = classic().headlight.0;
+        let lit = scene
+            .frame
+            .chunks(4)
+            .filter(|pixel| pixel[..3] == headlight)
+            .count();
+        assert!(lit > 0, "headlights are on");
+        let finished = Scene::new(18, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3));
+        assert!(
+            finished.traffic.is_some(),
+            "a resized finished city keeps its traffic"
+        );
+
+        // Park a car 6 cells before a background tree trunk (the cone widens with
+        // distance, so it reaches the road edge there) and check the trunk glows.
+        let mut lit_scene = Scene::new(19, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3));
+        let grid = lit_scene.grid;
+        let &(cell, plain) = lit_scene
+            .street
+            .back_trees
+            .iter()
+            .find(|&&(cell, _)| (cell as i32 / grid.cols) == grid.ground_row - 1)
+            .expect("a background tree trunk on the road edge");
+        let trunk_x = cell as i32 % grid.cols;
+        let traffic = lit_scene.traffic.as_mut().unwrap();
+        traffic.vehicles.truncate(1);
+        traffic.vehicles[0].lane = starry_journey::traffic::Lane::Upper;
+        traffic.vehicles[0].x = f64::from(trunk_x + 6); // cone is wide enough here
+        traffic.vehicles[0].length = 4;
+        lit_scene.compose();
+        let shown = &lit_scene.frame[cell * 4..cell * 4 + 3];
+        assert_ne!(shown, &plain.0[..], "the trunk ahead of the car is lit");
     }
 
     #[test]
