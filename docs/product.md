@@ -67,6 +67,11 @@ These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are 
 - An Atari palette.
 - Roadside trees in palettes other than Ink on Parchment.
 - Android as a later target.
+- Near-side foreground layers (owner reference, 2026-11-03), drawn after traffic and overlapping the road and bottom edge, so the 240-row grid and road position are unchanged:
+  - **Silhouettes:** bushes along the bottom edge and occasional framing trees, in a near-black color derived from the palette background, with little interior detail so they never compete with the city.
+  - **Motion:** in Endless mode, faster parallax than the road (about 1.3 to 1.5 times road speed). Trees sway by shifting crown rows one cell at a time with a per-tree seeded phase.
+  - **Street lamps:** warm lamps with a small glow along the road edge, colored from the palette's headlight color.
+- A river with window reflections below the road. This needs rows below the road, which means raising the city and road, so it is a separate, larger layout change.
 - Background music. The Rebuild Prompt specifies no sound, so this is a deliberate addition. Users supply their own tracks in `Sounds/Music/`, which is gitignored; the app ships no music. Playback needs an audio dependency and a decision on controls (mute, volume, track choice).
 
 ## Current increment status
