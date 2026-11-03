@@ -174,6 +174,18 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
+                    if window.is_minimized() == Some(true) {
+                        return;
+                    }
+                    // A resize can arrive before the renderer exists (for
+                    // example a maximize during startup) and be dropped.
+                    // Checking the real size every frame means the surface
+                    // and grid always match the window, so Windows never
+                    // stretches a stale frame.
+                    let size = window.inner_size();
+                    if renderer.surface_size() != (size.width, size.height) {
+                        renderer.resize(size);
+                    }
                     renderer.advance();
                     let title = renderer.title();
                     if window.title() != title {
@@ -465,6 +477,11 @@ impl Renderer {
         Ok(renderer)
     }
 
+    /// The configured surface size in physical pixels.
+    fn surface_size(&self) -> (u32, u32) {
+        (self.surface_config.width, self.surface_config.height)
+    }
+
     /// The cell scaling for the current launch options and display scale.
     fn scaling(&self) -> CellScaling {
         self.options.cell_scaling(self.scale_factor)
@@ -544,11 +561,16 @@ impl Renderer {
 
     /// Window title with construction progress and speed.
     fn title(&self) -> String {
+        let grid = &self.scene.grid;
+        let size = format!(
+            "{}x{} @ {}px - surface {}x{}",
+            grid.cols, grid.rows, grid.cell, self.surface_config.width, self.surface_config.height
+        );
         if self.scene.reveal.is_complete() {
-            format!("{TITLE} - complete - {}x", self.speed)
+            format!("{TITLE} - complete - {}x - {size}", self.speed)
         } else {
             let percent = (self.scene.reveal.progress() * 100.0).floor();
-            format!("{TITLE} - building {percent}% - {}x", self.speed)
+            format!("{TITLE} - building {percent}% - {}x - {size}", self.speed)
         }
     }
 
