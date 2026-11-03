@@ -28,6 +28,11 @@
     - About 8 one-pixel fighters orbit it on tilted orbits, hidden when behind the station.
     - Each fighter lives 3–10 s, then explodes in a 0.6 s burst (flash, sparks, embers), and a new fighter takes its slot.
     - Each station lap has a 30% chance that the station is destroyed at a random point 35–65% of the way through the lap: a 0.25 s full-disk flash, then a fireball, an expanding shockwave, and 30 debris particles fading over 4 s. After that the sky is empty for the rest of the lap.
+    - Destruction always follows a trench run (owner request: "give Red-5 credit where credit is due"):
+      - a single two-cell ship in pure red `#ff2020`, whatever the palette, flies the equatorial trench left to right in 2.5 s;
+      - it climbs away up and to the right in 1.5 s;
+      - 3 s later the station explodes.
+      - There is no trench run without destruction.
     - `--station-fate chance|destroy|survive` controls this (`destroy` blows up about 12 s after opening on the station lap). The battle is seeded per lap.
   - A `--moon-phase` option picks the opening phase, by name (`new` … `waning-crescent`) or step 0–7. Phases still advance each lap. `--moon-phase new` shows the station at launch.
   - The moon lives on the sky layer, and passing behind buildings is a feature. The sun in Endless mode will be handled the same way later.
@@ -40,7 +45,7 @@
     - `moon_cells` colors the lit side in the palette's star color, the seas 30% toward the sky, and the unlit side 8% earthshine.
   - [src/main.rs](../src/main.rs): the moon follows real time from app start and starts 30% into a pass, so a crescent is visible at launch. It is painted on cells that currently show sky, before the street, and recomputed only when its cell position or quantized phase changes. Palette change, resize, and restart redraw it.
 - **Verification (2026-11-03):**
-  - `cargo test`: PASS, 150 tests, including the battle: fighters stay near the station and explode, the battle is deterministic per lap, bursts go through their stages, the measured destruction share is 27–33% within its window, the destruction sequence ends in an empty sky, a surviving station stays under attack, and `--station-fate` parses correctly. Also the 10-minute lap, `--moon-phase` parsing (names, numbers, errors, repeats), the opening phase followed by per-lap advance, and that the station appears on the new-moon lap with the same silhouette as the moon, the dish in the upper left, the trench across the equator, and colors visible against the sky. They also check:
+  - `cargo test`: PASS, 152 tests, including the trench run (trench row, edge to edge, climb away, gone before the blast, red in 5 palettes, absent when the station survives) and the battle: fighters stay near the station and explode, the battle is deterministic per lap, bursts go through their stages, the measured destruction share is 27–33% within its window, the destruction sequence ends in an empty sky, a surviving station stays under attack, and `--station-fate` parses correctly. Also the 10-minute lap, `--moon-phase` parsing (names, numbers, errors, repeats), the opening phase followed by per-lap advance, and that the station appears on the new-moon lap with the same silhouette as the moon, the dish in the upper left, the trench across the equator, and colors visible against the sky. They also check:
     - the 39-cell disk;
     - waxing on the right and waning on the left, with mirrored crescents;
     - the phase fixed within a lap, stepping each lap, and the cycle repeating every 8 laps;

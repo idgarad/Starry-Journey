@@ -9,6 +9,10 @@
 //!   `--station-fate`) that the station is destroyed: a full-disk flash, then
 //!   a fireball, an expanding shockwave ring, and debris, fading over about
 //!   four seconds. After that the sky is empty for the rest of the lap.
+//! - Credit where credit is due (owner request): on a destruction lap, a
+//!   single red ship, always pure red whatever the palette, flies the length
+//!   of the equatorial trench, climbs away, and a few seconds later the
+//!   station explodes. No trench run, no explosion.
 //!
 //! Everything is a pure function of the lap number and the time within the
 //! lap, seeded per lap, so a resize or palette change mid-battle changes
@@ -45,6 +49,46 @@ pub const EXPLOSION_SECONDS: f64 = 4.0;
 pub const SHOCKWAVE_SPEED: f64 = 12.0;
 /// Number of debris particles.
 pub const DEBRIS: u32 = 30;
+/// The hero ship's color: pure red in every palette.
+pub const HERO_RED: Rgb = Rgb([0xff, 0x20, 0x20]);
+/// Seconds the hero takes to fly the trench, edge to edge.
+pub const TRENCH_RUN_SECONDS: f64 = 2.5;
+/// Seconds the hero takes to climb away after the trench.
+pub const ESCAPE_SECONDS: f64 = 1.5;
+/// Quiet seconds between the hero leaving and the explosion.
+pub const FUSE_SECONDS: f64 = 3.0;
+/// Cells beyond the station's edge where the trench run starts and ends.
+pub const RUN_MARGIN: f64 = 6.0;
+/// How far the hero climbs away (cells right, cells up).
+pub const ESCAPE_DISTANCE: (f64, f64) = (24.0, 25.0);
+
+/// Seconds before the explosion when the trench run begins.
+pub fn run_lead() -> f64 {
+    TRENCH_RUN_SECONDS + ESCAPE_SECONDS + FUSE_SECONDS
+}
+
+/// The hero ship's nose position (offset from the station center) at `age`
+/// seconds after the trench run began, or `None` once it has gone. The ship
+/// flies left to right along the trench (row offset 0), then climbs away to
+/// the upper right.
+pub fn hero_at(age: f64, radius: f64) -> Option<(i32, i32)> {
+    let enter = -radius - RUN_MARGIN;
+    let exit = radius + RUN_MARGIN;
+    if age < 0.0 {
+        None
+    } else if age < TRENCH_RUN_SECONDS {
+        let x = enter + (exit - enter) * age / TRENCH_RUN_SECONDS;
+        Some((js_round(x) as i32, 0))
+    } else if age < TRENCH_RUN_SECONDS + ESCAPE_SECONDS {
+        let k = (age - TRENCH_RUN_SECONDS) / ESCAPE_SECONDS;
+        let x = exit + ESCAPE_DISTANCE.0 * k;
+        // Ease into the climb so it pulls up out of the trench.
+        let y = -ESCAPE_DISTANCE.1 * k * k;
+        Some((js_round(x) as i32, js_round(y) as i32))
+    } else {
+        None
+    }
+}
 
 /// What happens to the station on its laps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -175,6 +219,15 @@ pub fn station_effects(
     let destroyed_at = destruction_time(lap, fate, pass_seconds);
     let since = destroyed_at.map(|at| t - at);
     let mut cells = Vec::new();
+
+    // The hero's trench run, ending a few seconds before the explosion. A
+    // two-cell dart: nose plus the cell behind it.
+    if let Some(at) = destroyed_at {
+        if let Some((dx, dy)) = hero_at(t - (at - run_lead()), r) {
+            cells.push((dx - 1, dy, HERO_RED));
+            cells.push((dx, dy, HERO_RED));
+        }
+    }
 
     // Fighters fight until the explosion is over.
     let fighting = since.is_none_or(|age| age < EXPLOSION_SECONDS);
@@ -334,6 +387,49 @@ mod tests {
         let after = effect(at + EXPLOSION_SECONDS + 1.0);
         assert!(!after.station_visible);
         assert!(after.cells.is_empty(), "the sky is empty afterwards");
+    }
+
+    #[test]
+    fn the_hero_runs_the_trench_climbs_away_then_the_station_blows() {
+        let r = f64::from(R);
+        // Along the trench, left to right.
+        let start = hero_at(0.0, r).unwrap();
+        let middle = hero_at(TRENCH_RUN_SECONDS / 2.0, r).unwrap();
+        let end = hero_at(TRENCH_RUN_SECONDS - 0.01, r).unwrap();
+        assert_eq!((start.1, middle.1, end.1), (0, 0, 0), "in the trench row");
+        assert!(
+            start.0 < -R && end.0 > R && middle.0.abs() <= 1,
+            "edge to edge"
+        );
+        // Then climbs away up and to the right, and is gone before the fuse.
+        let climb = hero_at(TRENCH_RUN_SECONDS + ESCAPE_SECONDS * 0.9, r).unwrap();
+        assert!(climb.0 > end.0 && climb.1 < -10, "climbing away: {climb:?}");
+        assert_eq!(hero_at(TRENCH_RUN_SECONDS + ESCAPE_SECONDS + 0.01, r), None);
+        assert_eq!(hero_at(-0.1, r), None);
+
+        // Wired into the effects: red in every palette, only before the blast.
+        for key in ["classic", "gameboy", "amber", "green", "blackonwhite"] {
+            let palette = palette_by_key(key).unwrap();
+            let at = FORCED_DESTROY_AT * PASS;
+            let run_mid = at - run_lead() + TRENCH_RUN_SECONDS / 2.0;
+            let during = station_effects(0, run_mid, R, StationFate::Destroy, PASS, palette);
+            let red: Vec<_> = during.cells.iter().filter(|c| c.2 == HERO_RED).collect();
+            assert_eq!(red.len(), 2, "{key}: one two-cell red ship");
+            assert!(red.iter().all(|c| c.1 == 0), "{key}: in the trench");
+            let fuse = station_effects(0, at - 1.0, R, StationFate::Destroy, PASS, palette);
+            assert!(
+                fuse.cells.iter().all(|c| c.2 != HERO_RED),
+                "{key}: gone before the blast"
+            );
+        }
+    }
+
+    #[test]
+    fn no_trench_run_without_destruction() {
+        for t in [100.0, 200.0, 300.0, 400.0] {
+            let effects = station_effects(0, t, R, StationFate::Survive, PASS, classic());
+            assert!(effects.cells.iter().all(|c| c.2 != HERO_RED));
+        }
     }
 
     #[test]
