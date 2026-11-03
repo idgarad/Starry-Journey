@@ -11,26 +11,34 @@
 | `feature/construction-timer` | `--timer`/`--deadline` duration clock; time left in the title | Merged |
 | `feature/default-window-1080p` | Opens at 1920 × 1080 (testing size) | Merged |
 | `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
-| `feature/moon` | 19-cell moon crossing in 5 minutes, new to full each pass | Awaiting owner review |
+| `feature/moon` | 39-cell moon crossing in 5 minutes; phase fixed per lap, 8-phase cycle | Awaiting owner review |
 | `feature/night-traffic` | Cars and trucks after completion, headlights on with a beam | Planned |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
 
 ### feature/moon
 
 - **Decisions (owner, 2026-11-03):**
-  - A diameter of 19 virtual pixels.
-  - Each pass waxes from new moon to full moon.
   - A pass crosses the sky in 5 minutes.
+  - Revised after the first version: "way bigger" (at least double), so the diameter is now 39 virtual pixels.
+  - Also revised: the phase stays fixed for a whole lap and advances one step per lap, instead of changing during the pass.
   - The moon lives on the sky layer, and passing behind buildings is a feature. The sun in Endless mode will be handled the same way later.
 - **Headroom at 1080p** (640 × 360 cells at 3 px): the top 162 rows (45%) are always clear of every possible building.
 - **Delivered:**
   - [src/moon.rs](../src/moon.rs):
-    - `moon_at` gives the position on a shallow arc. The moon rises behind the street on the left, peaks at 22% of screen height (always above the tallest possible tower), and sets on the right. Its phase equals the fraction of the pass.
-    - `moon_pixel` gives the disk (`dx² + dy² ≤ 9.5²`). The terminator sits at `cos(π · phase)` across each row, with the lit side on the right, plus 20 fixed sea cells.
+    - `moon_at` gives the position on a shallow arc. The moon rises behind the street on the left, peaks at 22% of screen height, and sets on the right.
+    - The phase step is fixed per lap and runs through the 8-phase cycle: new, waxing crescent, first quarter, waxing gibbous, full, waning gibbous, last quarter, waning crescent. A cycle takes 40 minutes, and the app opens on a waxing crescent.
+    - `moon_pixel` gives the disk (`dx² + dy² ≤ 19.5²`). Waxing moons are lit right of `cos θ` across each row, and waning moons left of `-cos θ`, with `θ = 2π · phase`. The seas are the 19-cell design scaled to 2 × 2 blocks.
     - `moon_cells` colors the lit side in the palette's star color, the seas 30% toward the sky, and the unlit side 8% earthshine.
   - [src/main.rs](../src/main.rs): the moon follows real time from app start and starts 30% into a pass, so a crescent is visible at launch. It is painted on cells that currently show sky, before the street, and recomputed only when its cell position or quantized phase changes. Palette change, resize, and restart redraw it.
 - **Verification (2026-11-03):**
-  - `cargo test`: PASS, 136 tests. They check the 19-cell disk, waxing that never reverses with the lit side on the right, rising hidden behind the street, the top of the arc clearing every tower, passes repeating every 300 s, spec scaling fitting, and the moon showing on sky but hidden behind buildings.
+  - `cargo test`: PASS, 137 tests. They check:
+    - the 39-cell disk;
+    - waxing on the right and waning on the left, with mirrored crescents;
+    - the phase fixed within a lap, stepping each lap, and the cycle repeating every 8 laps;
+    - rising hidden behind the street;
+    - the top of the arc clearing every tower at the default 3 px;
+    - the moon showing on sky but hidden behind buildings.
+  - With `--pixel-size spec` (about 216 rows) the big moon can dip 1–2 rows behind a maximum-height tower at the top of its arc. This is accepted, because the moon lives on the sky layer.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: awaiting the owner's review.

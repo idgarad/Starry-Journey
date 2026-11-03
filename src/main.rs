@@ -881,7 +881,7 @@ mod tests {
         let row = (0..grid.ground_row)
             .rev()
             .find(|&row| {
-                let probe = MoonState { x, row, phase: 1.0 };
+                let probe = MoonState { x, row, phase: 0.5 };
                 let cells = moon_cells(&grid, &probe, classic());
                 let owned = cells
                     .iter()
@@ -890,7 +890,7 @@ mod tests {
                 owned > 0 && owned < cells.len() / 2
             })
             .expect("the skyline crosses the moon's column");
-        let moon = MoonState { x, row, phase: 1.0 };
+        let moon = MoonState { x, row, phase: 0.5 };
         scene.moon = moon_cells(&grid, &moon, classic());
         scene.compose();
         let mut on_sky = 0;
