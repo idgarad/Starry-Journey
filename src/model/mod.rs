@@ -7,3 +7,4 @@ pub mod grid;
 pub mod layers;
 pub mod palette;
 pub mod rng;
+pub mod shapes;
