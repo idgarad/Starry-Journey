@@ -127,6 +127,6 @@ Edit the file to keep the right result and delete the marker lines, then run `gi
 ### Running the app
 
 - `cargo run` builds and launches the app.
-- `P` next palette, `R` new city, `F` fullscreen, `Tab` next monitor, `Esc` quit.
+- `P` next palette, `R` new city, `+`/`-` speed (0.25× to 4×; 4× builds the city in 1 minute), `F` fullscreen, `Tab` next monitor, `Esc` quit. The title bar shows build progress.
 - `cargo run --bin shapes -- 15 40 1` previews the building shapes as text (width, height, seed). `o` marks a window that will be lit and `_` one that stays dark. Try different seeds to see variations.
 - `cargo run --bin city -- 160 60 1` previews a whole city (columns, rows, seed). Layers draw as `.` `:` `+` `#` from far to near.

@@ -33,6 +33,15 @@ pub const WINDOW_BODY: i32 = -1;
 /// `window_index` value for mast cells.
 pub const WINDOW_MAST: i32 = -2;
 
+/// Which window state to paint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowLighting {
+    /// Each window's current `lit` flag.
+    Current,
+    /// Each window's `target` flag: the fully built city's look.
+    Target,
+}
+
 /// One star on the sky.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Star {
@@ -148,9 +157,21 @@ impl CityRaster {
             .map(|i| Rgb([self.rgba[i * 4], self.rgba[i * 4 + 1], self.rgba[i * 4 + 2]]))
     }
 
-    /// Rasterizes `buildings` and `stars` on `grid` in `palette`.
+    /// Rasterizes `buildings` and `stars` on `grid` in `palette`, painting
+    /// windows by their current `lit` flags.
     /// O(grid cells + building area + windows).
     pub fn render(grid: &Grid, buildings: &[Building], stars: &[Star], palette: &Palette) -> Self {
+        Self::render_with(grid, buildings, stars, palette, WindowLighting::Current)
+    }
+
+    /// Like [`CityRaster::render`], choosing which window state to paint.
+    pub fn render_with(
+        grid: &Grid,
+        buildings: &[Building],
+        stars: &[Star],
+        palette: &Palette,
+        lighting: WindowLighting,
+    ) -> Self {
         let width = grid.cols.max(1) as usize;
         let height = grid.rows.max(1) as usize;
         let cells = width * height;
@@ -171,7 +192,7 @@ impl CityRaster {
             raster.paint(star.x, star.row, mix(palette.star, palette.bg, star.fade));
         }
         raster.resolve_ownership(grid, buildings);
-        raster.paint_buildings(grid, buildings, palette);
+        raster.paint_buildings(grid, buildings, palette, lighting);
         raster
     }
 
@@ -231,7 +252,13 @@ impl CityRaster {
         }
     }
 
-    fn paint_buildings(&mut self, grid: &Grid, buildings: &[Building], palette: &Palette) {
+    fn paint_buildings(
+        &mut self,
+        grid: &Grid,
+        buildings: &[Building],
+        palette: &Palette,
+        lighting: WindowLighting,
+    ) {
         let bodies: Vec<Rgb> = buildings.iter().map(|b| body_color(b, palette)).collect();
         let beacon_rows: Vec<Option<(i32, i32)>> = buildings
             .iter()
@@ -254,7 +281,11 @@ impl CityRaster {
                 }
                 w if w >= 0 => {
                     let w = w as usize;
-                    if building.windows.lit[w] {
+                    let on = match lighting {
+                        WindowLighting::Current => building.windows.lit[w],
+                        WindowLighting::Target => building.windows.target[w],
+                    };
+                    if on {
                         let lit = palette.window_color(building.windows.tone[w]);
                         mix(lit, body, shade_from_level(building.windows.shade[w]))
                     } else {
@@ -416,6 +447,25 @@ mod tests {
         assert_eq!(raster.color_at(0, grid.row_for_height(7)), Some(decor));
         let i = raster.index(4, grid.row_for_height(10)).unwrap();
         assert_eq!(raster.window_index[i], WINDOW_MAST);
+    }
+
+    #[test]
+    fn target_lighting_paints_the_built_look_without_changing_lit_flags() {
+        let grid = small_grid();
+        let classic = palette_by_key("classic").unwrap();
+        let mut b = slab(3, 0, 10, 10, 0);
+        b.windows.push(2, 5, 0, 0, true);
+        let row = grid.row_for_height(5);
+        let current = CityRaster::render(&grid, &[b.clone()], &[], classic);
+        let target =
+            CityRaster::render_with(&grid, &[b.clone()], &[], classic, WindowLighting::Target);
+        assert_eq!(
+            current.color_at(2, row),
+            Some(body_color(&b, classic)),
+            "not lit yet"
+        );
+        assert_eq!(target.color_at(2, row), Some(classic.window_color(0)));
+        assert!(!b.windows.lit[0]);
     }
 
     #[test]
