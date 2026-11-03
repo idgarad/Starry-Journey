@@ -1,5 +1,33 @@
 # Active work
 
+## REBUILD-002: Building generation (split into feature branches)
+
+| Branch | Contents | Status |
+| --- | --- | --- |
+| `feature/building-records` | Building, tier, and window records; kind weights and width fallback; layer specs and height formula | Merged |
+| `feature/tier-shapes` | Tier builders for all 19 kinds | Planned |
+| `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Planned |
+| `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Planned |
+| `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Planned |
+| `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Planned |
+
+### feature/building-records
+
+- **Delivered:**
+  - [src/model/building.rs](../src/model/building.rs):
+    - `BuildingKind`: the 19 kinds with the spec's weights (total 143), weighted `pick`, and minimum widths with a fallback to box.
+    - `Tier`: a half-open rectangle with solid and dark flags.
+    - `WindowSet`: parallel arrays of x, height, shade, tone, target, and lit.
+    - `Building::validate`: checks that the footprint is non-empty, the layer and body index are in range, tiers stay inside the footprint and under `max_h`, every tier is grounded or rests on another tier, and every window lies inside a tier.
+  - [src/model/layers.rs](../src/model/layers.rs): the four `LayerSpec`s, with width, gap, and height sampling. Height is `max(4, round(maxH × (base + span × r^power)))`, clamped to `max_h`.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 36 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: no new warnings.
+- **Assumptions:**
+  - AS-R002: the spec says "generic setbacks require width 7" without naming the kinds. Stepped, spire, pointed, ziggurat, and crownblock are treated as generic setbacks; box has no minimum. This is non-blocking and easy to change in `BuildingKind::min_width`.
+- **Deferred to later branches:** which kinds count as "explicit tower kinds" for masts (`feature/masts-and-tints`), and roof metadata (`feature/tier-shapes`).
+
 ## REBUILD-001: Model foundation (RNG, grid, palettes)
 
 - **Outcome:** Start the pure city model from [Rebuild Prompt.md](Rebuild%20Prompt.md) with no graphics dependencies: the random generator, logical grid math, and palette data.
@@ -29,7 +57,7 @@
 
 ## Next candidates
 
-1. REBUILD-002, remaining model work: building records, the 4 layer generator specs, weighted building kinds and tier shapes, masts and beacons, body-tint contrast, window patterns, and landmark decorations, with acceptance check 1 ported.
+1. The remaining REBUILD-002 branches listed above.
 2. Launch configuration: command-line parsing for `--speed`, `--palette`, `--message`, `--timer`, `--ends-at`, and `--endless`. `--ends-at` needs a local-timezone crate.
 3. The Normal-mode rasterizer replacing the SKY-001 canvas.
 
