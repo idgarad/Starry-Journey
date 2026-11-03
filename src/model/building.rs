@@ -7,7 +7,10 @@
 
 use super::rng::Mulberry32;
 
-/// Building silhouette kinds, with their selection weights.
+/// Building silhouette kinds.
+///
+/// The first 19 come from the specification. The rest are Starry Journey
+/// extensions (see `docs/product.md`, "Expanded buildings").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildingKind {
     /// Plain slab.
@@ -48,10 +51,30 @@ pub enum BuildingKind {
     Factory,
     /// Pagoda eaves.
     Pagoda,
+    /// Extension: lit retail podium with five residential floors above.
+    FiveOverOne,
+    /// Extension: wide, low warehouse with loading docks.
+    Warehouse,
+    /// Extension: half-cylinder Quonset hut or hangar.
+    Quonset,
+    /// Extension: grain silos or tanks beside a taller headhouse.
+    Silos,
+    /// Extension: big-box store with a lit sign.
+    BigBox,
+    /// Extension: parking garage with lit open decks.
+    ParkingGarage,
+    /// Extension: glass tower tapering steadily upward.
+    Taper,
+    /// Extension: tower with an upper block overhanging one side.
+    Cantilever,
+    /// Extension: setbacks on one side only.
+    Terraced,
 }
 
-/// Every kind with its weight, in the specification's order.
-pub const KIND_WEIGHTS: [(BuildingKind, u32); 19] = [
+/// Every kind with its weight: the 19 specification kinds (total 143),
+/// then the extensions (total 16, about 10% of all picks in the nearest
+/// layer).
+pub const KIND_WEIGHTS: [(BuildingKind, u32); 28] = [
     (BuildingKind::Box, 18),
     (BuildingKind::Stepped, 18),
     (BuildingKind::Spire, 12),
@@ -71,25 +94,80 @@ pub const KIND_WEIGHTS: [(BuildingKind, u32); 19] = [
     (BuildingKind::Jenga, 5),
     (BuildingKind::Factory, 5),
     (BuildingKind::Pagoda, 4),
+    (BuildingKind::FiveOverOne, 3),
+    (BuildingKind::Warehouse, 2),
+    (BuildingKind::Quonset, 1),
+    (BuildingKind::Silos, 1),
+    (BuildingKind::BigBox, 2),
+    (BuildingKind::ParkingGarage, 1),
+    (BuildingKind::Taper, 2),
+    (BuildingKind::Cantilever, 2),
+    (BuildingKind::Terraced, 2),
 ];
 
+/// Number of kinds defined by the specification (the first entries of
+/// [`KIND_WEIGHTS`]).
+pub const SPEC_KIND_COUNT: usize = 19;
+
+/// Index of the nearest (road-side) layer.
+pub const NEAR_LAYER: u8 = 3;
+
 impl BuildingKind {
-    /// Sum of all kind weights.
-    pub fn total_weight() -> u32 {
-        KIND_WEIGHTS.iter().map(|(_, weight)| weight).sum()
+    /// True for kinds added by Starry Journey beyond the specification.
+    pub fn is_extension(self) -> bool {
+        KIND_WEIGHTS
+            .iter()
+            .position(|(kind, _)| *kind == self)
+            .is_some_and(|index| index >= SPEC_KIND_COUNT)
     }
 
-    /// Picks a kind by weight, consuming one RNG value. O(19).
-    pub fn pick(rng: &mut Mulberry32) -> Self {
-        let target = rng.next_f64() * f64::from(Self::total_weight());
+    /// True for wide, low buildings that belong beside the road.
+    pub fn is_low_rise(self) -> bool {
+        use BuildingKind::*;
+        matches!(
+            self,
+            Warehouse | Quonset | Silos | BigBox | ParkingGarage | FiveOverOne
+        )
+    }
+
+    /// Whether this kind may be generated in `layer` (0 = farthest).
+    ///
+    /// Low-rise extensions stay in the nearest layer; 5-over-1 apartments
+    /// may also appear one layer back.
+    pub fn allowed_in_layer(self, layer: u8) -> bool {
+        match self {
+            BuildingKind::FiveOverOne => layer >= NEAR_LAYER - 1,
+            kind if kind.is_low_rise() => layer == NEAR_LAYER,
+            _ => true,
+        }
+    }
+
+    /// Sum of the weights of kinds allowed in `layer`.
+    pub fn total_weight(layer: u8) -> u32 {
+        KIND_WEIGHTS
+            .iter()
+            .filter(|(kind, _)| kind.allowed_in_layer(layer))
+            .map(|(_, weight)| weight)
+            .sum()
+    }
+
+    /// Picks a kind allowed in `layer` by weight, consuming one RNG value.
+    /// O(number of kinds).
+    pub fn pick(rng: &mut Mulberry32, layer: u8) -> Self {
+        let target = rng.next_f64() * f64::from(Self::total_weight(layer));
         let mut cumulative = 0.0;
+        let mut last = BuildingKind::Box;
         for (kind, weight) in KIND_WEIGHTS {
+            if !kind.allowed_in_layer(layer) {
+                continue;
+            }
             cumulative += f64::from(weight);
+            last = kind;
             if target < cumulative {
                 return kind;
             }
         }
-        KIND_WEIGHTS[KIND_WEIGHTS.len() - 1].0
+        last
     }
 
     /// Smallest footprint width (cells) at which this kind keeps its shape.
@@ -106,6 +184,25 @@ impl BuildingKind {
             Tvtower | Onion | Watertank | Clocktower => 7,
             Needle | Twin | Invpyramid | Jenga | Pagoda => 9,
             Factory => 10,
+            Taper | Terraced => 7,
+            Cantilever | Quonset => 9,
+            Warehouse | Silos | ParkingGarage => 10,
+            FiveOverOne | BigBox => 12,
+        }
+    }
+
+    /// The kind's own footprint width range in `layer`, if it overrides the
+    /// layer's normal width sampling. Near-road low-rise buildings (and
+    /// factories in the nearest layer) may be up to 50 cells wide.
+    pub fn own_width_range(self, layer: u8) -> Option<(i64, i64)> {
+        use BuildingKind::*;
+        match self {
+            FiveOverOne => Some((16, 40)),
+            Warehouse | BigBox => Some((20, 50)),
+            Quonset | Silos => Some((12, 30)),
+            ParkingGarage => Some((16, 40)),
+            Factory if layer == NEAR_LAYER => Some((10, 50)),
+            _ => None,
         }
     }
 
@@ -367,26 +464,65 @@ mod tests {
     }
 
     #[test]
-    fn kind_weights_total_143_with_19_unique_kinds() {
-        assert_eq!(BuildingKind::total_weight(), 143);
+    fn kind_weights_keep_spec_total_and_add_about_ten_percent() {
+        let spec: u32 = KIND_WEIGHTS[..SPEC_KIND_COUNT].iter().map(|(_, w)| w).sum();
+        let extension: u32 = KIND_WEIGHTS[SPEC_KIND_COUNT..].iter().map(|(_, w)| w).sum();
+        assert_eq!(spec, 143, "specification weights are unchanged");
+        assert_eq!(extension, 16);
+        let share = f64::from(extension) / f64::from(spec + extension);
+        assert!((0.09..0.11).contains(&share), "extension share {share}");
         let unique: std::collections::HashSet<_> =
             KIND_WEIGHTS.iter().map(|(kind, _)| kind).collect();
-        assert_eq!(unique.len(), 19);
+        assert_eq!(unique.len(), KIND_WEIGHTS.len());
+        assert!(!BuildingKind::Factory.is_extension());
+        assert!(BuildingKind::Warehouse.is_extension());
+    }
+
+    #[test]
+    fn layer_eligibility_keeps_low_rise_near_the_road() {
+        assert_eq!(BuildingKind::total_weight(NEAR_LAYER), 159);
+        assert_eq!(BuildingKind::total_weight(2), 152); // + 5-over-1 + towers
+        assert_eq!(BuildingKind::total_weight(0), 149); // + towers only
+        assert!(BuildingKind::Warehouse.allowed_in_layer(3));
+        assert!(!BuildingKind::Warehouse.allowed_in_layer(2));
+        assert!(BuildingKind::FiveOverOne.allowed_in_layer(2));
+        assert!(!BuildingKind::FiveOverOne.allowed_in_layer(1));
+        assert!(BuildingKind::Taper.allowed_in_layer(0));
+        let mut rng = Mulberry32::new(8);
+        for _ in 0..5_000 {
+            assert!(!BuildingKind::pick(&mut rng, 0).is_low_rise());
+        }
+    }
+
+    #[test]
+    fn own_width_ranges_cover_wide_low_rise() {
+        assert_eq!(BuildingKind::Warehouse.own_width_range(3), Some((20, 50)));
+        assert_eq!(BuildingKind::Factory.own_width_range(3), Some((10, 50)));
+        assert_eq!(BuildingKind::Factory.own_width_range(1), None);
+        assert_eq!(BuildingKind::Box.own_width_range(3), None);
+        for (kind, _) in KIND_WEIGHTS {
+            if let Some((lo, hi)) = kind.own_width_range(NEAR_LAYER) {
+                assert!(lo >= i64::from(kind.min_width()), "{kind:?}");
+                assert!(hi <= 50, "{kind:?}");
+            }
+        }
     }
 
     #[test]
     fn kind_pick_is_deterministic_and_roughly_weighted() {
         let mut a = Mulberry32::new(42);
         let mut b = Mulberry32::new(42);
-        let first: Vec<_> = (0..50).map(|_| BuildingKind::pick(&mut a)).collect();
-        let second: Vec<_> = (0..50).map(|_| BuildingKind::pick(&mut b)).collect();
+        let first: Vec<_> = (0..50).map(|_| BuildingKind::pick(&mut a, 3)).collect();
+        let second: Vec<_> = (0..50).map(|_| BuildingKind::pick(&mut b, 3)).collect();
         assert_eq!(first, second);
 
         let mut rng = Mulberry32::new(1);
-        let draws = 143_000;
+        let draws = 159_000;
         let mut counts: HashMap<BuildingKind, u32> = HashMap::new();
         for _ in 0..draws {
-            *counts.entry(BuildingKind::pick(&mut rng)).or_default() += 1;
+            *counts
+                .entry(BuildingKind::pick(&mut rng, NEAR_LAYER))
+                .or_default() += 1;
         }
         for (kind, weight) in KIND_WEIGHTS {
             let expected = f64::from(weight) * 1000.0;

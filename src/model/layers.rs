@@ -5,10 +5,19 @@
 //! intentionally has the tallest general silhouettes; nearer layers are
 //! shorter with wider gaps, so the skyline reads as depth.
 
+use super::building::BuildingKind;
 use super::rng::{js_round, Mulberry32};
 
 /// Smallest generated building height in cells.
 pub const MIN_BUILDING_HEIGHT: i32 = 4;
+
+/// Chance that an ordinary building gets a wide footprint (extension; see
+/// `docs/product.md`, "Expanded buildings").
+pub const WIDE_CHANCE: f64 = 0.15;
+/// Inclusive width range for a wide ordinary footprint.
+pub const WIDE_RANGE: (i64, i64) = (19, 25);
+/// Widest footprint for any building that is not near-road low-rise.
+pub const MAX_GENERAL_WIDTH: i32 = 25;
 
 /// Sampling ranges for one parallax layer.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +79,29 @@ impl LayerSpec {
     /// Samples a building width, consuming one RNG value.
     pub fn sample_width(&self, rng: &mut Mulberry32) -> i32 {
         rng.rand_int(self.width.0, self.width.1) as i32
+    }
+
+    /// Samples the footprint width for a building of `kind` in `layer`.
+    ///
+    /// Kinds with their own range (near-road low-rise) use it, up to 50
+    /// cells. Otherwise the layer's specified range is used, except that
+    /// [`WIDE_CHANCE`] of buildings take a wide footprint from
+    /// [`WIDE_RANGE`], never above [`MAX_GENERAL_WIDTH`]. Consumes one or two
+    /// RNG values.
+    pub fn sample_footprint_width(
+        &self,
+        kind: BuildingKind,
+        layer: u8,
+        rng: &mut Mulberry32,
+    ) -> i32 {
+        if let Some((lo, hi)) = kind.own_width_range(layer) {
+            return rng.rand_int(lo, hi) as i32;
+        }
+        if rng.next_f64() < WIDE_CHANCE {
+            rng.rand_int(WIDE_RANGE.0, WIDE_RANGE.1) as i32
+        } else {
+            self.sample_width(rng)
+        }
     }
 
     /// Samples the gap after a building, consuming one RNG value.
@@ -143,6 +175,35 @@ mod tests {
         };
         let means: Vec<f64> = (0..4).map(|layer| mean(layer, &mut rng)).collect();
         assert!(means.windows(2).all(|pair| pair[0] > pair[1]), "{means:?}");
+    }
+
+    #[test]
+    fn footprint_widths_follow_general_and_low_rise_limits() {
+        let mut rng = Mulberry32::new(21);
+        let mut wide = 0;
+        let draws = 20_000;
+        for _ in 0..draws {
+            for layer in 0..4u8 {
+                let spec = LayerSpec::for_layer(usize::from(layer));
+                let width = spec.sample_footprint_width(BuildingKind::Stepped, layer, &mut rng);
+                assert!((5..=MAX_GENERAL_WIDTH).contains(&width), "width {width}");
+                if layer == 0 && width >= 19 {
+                    wide += 1;
+                }
+            }
+        }
+        // Layer 0's own range tops out at 16, so every width >= 19 is a wide roll.
+        let share = f64::from(wide) / f64::from(draws);
+        assert!((0.13..0.17).contains(&share), "wide share {share}");
+
+        let near = LayerSpec::for_layer(3);
+        let mut widest = 0;
+        for _ in 0..2_000 {
+            let width = near.sample_footprint_width(BuildingKind::Warehouse, 3, &mut rng);
+            assert!((20..=50).contains(&width));
+            widest = widest.max(width);
+        }
+        assert_eq!(widest, 50, "warehouses can reach the 50-cell limit");
     }
 
     #[test]
