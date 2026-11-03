@@ -8,7 +8,26 @@
 | `feature/normal-reveal` | 240-second cell-by-cell construction; speed keys; progress in the title | Merged |
 | `feature/pixel-size-option` | `--pixel-size N` fixed virtual pixel size (option C) | Merged |
 | `feature/default-pixel-size` | Fixed 3-pixel virtual pixels by default; `--pixel-size spec` for the spec formula | Merged |
+| `feature/construction-timer` | `--timer`/`--deadline` duration clock; time left in the title | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/construction-timer
+
+- **Request (owner, 2026-11-03):** a `--deadline` option so the city finishes in a set time, for testing (seconds) and for meeting screens ("the meeting starts in 10 minutes").
+- **Delivered:**
+  - [src/clock.rs](../src/clock.rs): `ConstructionClock::{Untimed, Duration}`. For a duration, progress is elapsed monotonic time over the duration, independent of speed.
+  - `parse_duration` accepts a bare number as minutes, or forms like `90s`, `25m`, `1h30m`, from 1 s to 24 h.
+  - `format_remaining` formats the time left, rounding up.
+  - [src/config.rs](../src/config.rs): `--timer D`, with `--deadline D` as an alias. Only one may be given, and invalid input exits with code 2.
+  - [src/main.rs](../src/main.rs): restarting resets the timer; resizing keeps it. With a timer the title shows `building N% - m:ss left`, and the speed keys have no effect (as the spec requires).
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 118 tests. Parsing tests cover the forms, errors, and range. A 10-second timer is half built at 5 s and complete at 10 s at 0.25×, 1×, and 4×.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - CLI: `--deadline soon` exited 2, and `--help` lists both names.
+  - GUI: not run by the agent, because the owner was using the machine. The owner can check with `cargo run -- --deadline 10s`.
+- **Units:** a bare `--deadline 10` means 10 minutes, following the spec's `--timer`. Use `10s` for seconds.
+- **Not yet:** `--ends-at TIME` (finish at a local clock time) needs a timezone dependency and arrives with the full launch configuration.
 
 ### feature/default-pixel-size
 
