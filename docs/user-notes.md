@@ -52,6 +52,36 @@ Write the message as what the commit *does*: `feat: add building generator`, not
 
 ## Tips
 
+### Doing it in VS Code instead of the terminal
+
+Open **Source Control** with the branch icon in the left bar, or `Ctrl+Shift+G`. The branch name is shown at the bottom-left of the status bar.
+
+| Terminal | VS Code |
+| --- | --- |
+| `git status` | The Source Control panel lists changed files: **M** modified, **U** untracked, **A** added. |
+| `git diff` | Click a changed file to see a side-by-side diff. |
+| `git add <file>` | Hover the file and click **+** (Stage Changes). |
+| `git commit -m "..."` | Type the message in the box at the top, then click **Commit**. |
+| `git switch -c feature/x` | Click the branch name in the status bar, choose **Create new branch...**, and type `feature/x`. |
+| `git switch main` | Click the branch name in the status bar and pick `main`. |
+| `git merge --no-ff feature/x` | `...` menu in Source Control → **Branch → Merge...** and pick the feature branch. This makes a merge commit only if the one-time setup below is done; otherwise use the terminal. |
+| `git branch -d feature/x` | `...` menu → **Branch → Delete Branch...** |
+| `git push` / `git pull` | **Sync Changes** button, or the ↑↓ arrows in the status bar. |
+| `git log --graph` | The **Source Control Graph** section under the changes list. |
+
+**One-time setup so VS Code merges like `--no-ff`.** Run this in the terminal from the project folder:
+
+```
+git config merge.ff false
+git config pull.ff only
+```
+
+- The first line makes every merge create a merge commit, including merges started from VS Code's menu.
+- The second line keeps `git pull` and Sync from creating unexpected merge commits. If GitHub has changes you don't have locally, the pull stops and asks you to deal with them instead of merging silently.
+- Both settings apply only to this repository.
+
+**Watch the branch name before you commit.** If the status bar says `main`, the commit goes straight onto `main`. When you're starting a feature, create the branch *first*.
+
 ### Looking around (safe: these change nothing)
 
 | Command | Shows |
