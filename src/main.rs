@@ -12,9 +12,10 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use starry_journey::config::{parse_args, LaunchOptions, USAGE};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
-use starry_journey::model::grid::Grid;
+use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
 use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, untimed_step, ConstructionView, Reveal};
@@ -43,6 +44,7 @@ struct App {
     renderer: Option<Renderer>,
     fullscreen: bool,
     monitor_index: usize,
+    options: LaunchOptions,
 }
 
 impl App {
@@ -99,7 +101,11 @@ impl ApplicationHandler for App {
             }
         };
 
-        match pollster::block_on(Renderer::new(Arc::clone(&window), random_seed())) {
+        match pollster::block_on(Renderer::new(
+            Arc::clone(&window),
+            random_seed(),
+            self.options,
+        )) {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
@@ -128,8 +134,9 @@ impl ApplicationHandler for App {
                     renderer.resize(size);
                 }
             }
-            WindowEvent::ScaleFactorChanged { .. } => {
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
+                    renderer.set_scale_factor(scale_factor);
                     renderer.resize(window.inner_size());
                 }
             }
@@ -227,8 +234,15 @@ struct Scene {
 impl Scene {
     /// Generates the city for a `width x height` surface and reveals it up
     /// to `progress` (0 for a new city; the old progress after a resize).
-    fn new(seed: u32, width: u32, height: u32, palette: &Palette, progress: f64) -> Self {
-        let grid = Grid::new(width, height, false);
+    fn new(
+        seed: u32,
+        width: u32,
+        height: u32,
+        palette: &Palette,
+        progress: f64,
+        scaling: CellScaling,
+    ) -> Self {
+        let grid = Grid::with_scaling(width, height, false, scaling);
         let mut buildings = generate_normal_city(seed, &grid);
         let stars = generate_stars(seed, &grid);
         let ownership = CityRaster::render(&grid, &buildings, &stars, palette);
@@ -298,10 +312,16 @@ struct Renderer {
     palette_index: usize,
     speed: f64,
     last_frame: Option<Instant>,
+    options: LaunchOptions,
+    scale_factor: f64,
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>, seed: u32) -> Result<Self, Box<dyn Error>> {
+    async fn new(
+        window: Arc<Window>,
+        seed: u32,
+        options: LaunchOptions,
+    ) -> Result<Self, Box<dyn Error>> {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window))?;
         let adapter = instance
@@ -413,12 +433,14 @@ impl Renderer {
             .iter()
             .position(|palette| palette.key == DEFAULT_PALETTE_KEY)
             .unwrap_or(0);
+        let scale_factor = window.scale_factor();
         let scene = Scene::new(
             seed,
             surface_config.width,
             surface_config.height,
             palette_at(palette_index),
             0.0,
+            options.cell_scaling(scale_factor),
         );
         let city_texture = create_city_texture(&device, &scene.grid);
         let bind_group = create_bind_group(&device, &bind_group_layout, &city_texture, &params);
@@ -436,9 +458,22 @@ impl Renderer {
             palette_index,
             speed: 1.0,
             last_frame: None,
+            options,
+            scale_factor,
         };
         renderer.upload();
         Ok(renderer)
+    }
+
+    /// The cell scaling for the current launch options and display scale.
+    fn scaling(&self) -> CellScaling {
+        self.options.cell_scaling(self.scale_factor)
+    }
+
+    /// Records a new display scale factor (for example after moving the
+    /// window to another monitor); the next resize uses it.
+    fn set_scale_factor(&mut self, scale_factor: f64) {
+        self.scale_factor = scale_factor;
     }
 
     /// Reconfigures the surface and rebuilds the city with the same seed for
@@ -450,7 +485,7 @@ impl Renderer {
         self.surface_config.width = size.width;
         self.surface_config.height = size.height;
         self.surface.configure(&self.device, &self.surface_config);
-        let new_grid = Grid::new(size.width, size.height, false);
+        let new_grid = Grid::with_scaling(size.width, size.height, false, self.scaling());
         if new_grid != self.scene.grid {
             // Same seed, same construction progress (Rebuild Prompt: resize
             // preserves progress).
@@ -461,6 +496,7 @@ impl Renderer {
                 size.height,
                 palette_at(self.palette_index),
                 progress,
+                self.scaling(),
             );
             self.upload();
         }
@@ -474,6 +510,7 @@ impl Renderer {
             self.surface_config.height,
             palette_at(self.palette_index),
             0.0,
+            self.scaling(),
         );
         self.upload();
     }
@@ -639,8 +676,22 @@ fn create_bind_group(
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let options = match parse_args(std::env::args().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("starry-journey: {message}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    if options.help {
+        println!("{USAGE}");
+        return Ok(());
+    }
     let event_loop = EventLoop::new()?;
-    let mut app = App::default();
+    let mut app = App {
+        options,
+        ..App::default()
+    };
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -648,6 +699,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_pixel_size_scene_shows_more_city_on_bigger_screens() {
+        let fixed = CellScaling::Fixed(4);
+        let small = Scene::new(14, 1280, 720, classic(), 1.0, fixed);
+        let large = Scene::new(14, 2560, 1440, classic(), 1.0, fixed);
+        assert_eq!((small.grid.cols, small.grid.rows), (320, 180));
+        assert_eq!((large.grid.cols, large.grid.rows), (640, 360));
+        assert!(large.buildings.len() > small.buildings.len() * 3 / 2);
+        let tallest = large
+            .buildings
+            .iter()
+            .map(|b| b.roof_height())
+            .max()
+            .unwrap();
+        assert!(tallest <= large.grid.max_h && large.grid.max_h == 196);
+        assert!(large.reveal.is_complete());
+    }
 
     #[test]
     fn presentation_shader_passes_wgsl_validation() {
@@ -667,7 +736,7 @@ mod tests {
 
     #[test]
     fn new_scene_covers_the_window_grid_and_starts_as_empty_sky() {
-        let scene = Scene::new(11, 1280, 720, classic(), 0.0);
+        let scene = Scene::new(11, 1280, 720, classic(), 0.0, CellScaling::Spec);
         assert_eq!(
             (scene.grid.cols, scene.grid.rows, scene.grid.cell),
             (427, 240, 3)
@@ -682,7 +751,7 @@ mod tests {
 
     #[test]
     fn scene_builds_up_over_240_seconds_and_ends_fully_built() {
-        let mut scene = Scene::new(12, 1280, 720, classic(), 0.0);
+        let mut scene = Scene::new(12, 1280, 720, classic(), 0.0, CellScaling::Spec);
         for _ in 0..(120 * 60) {
             scene.advance(1.0 / 60.0, 1.0);
         }
@@ -704,12 +773,12 @@ mod tests {
 
     #[test]
     fn resize_keeps_progress_and_palette_change_keeps_the_reveal() {
-        let mut scene = Scene::new(13, 1280, 720, classic(), 0.0);
+        let mut scene = Scene::new(13, 1280, 720, classic(), 0.0, CellScaling::Spec);
         for _ in 0..600 {
             scene.advance(0.25, 1.0); // 150 s
         }
         let progress = scene.reveal.progress();
-        let resized = Scene::new(13, 1920, 1080, classic(), progress);
+        let resized = Scene::new(13, 1920, 1080, classic(), progress, CellScaling::Spec);
         assert_eq!(resized.reveal.progress(), progress);
         let expected = (progress * resized.reveal.total() as f64).floor() as usize;
         assert_eq!(resized.reveal.shown(), expected);
