@@ -12,13 +12,14 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
+use starry_journey::clock::{format_remaining, ConstructionClock};
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
 use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
 use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
-use starry_journey::reveal::{light_revealed, untimed_step, ConstructionView, Reveal};
+use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -298,12 +299,11 @@ impl Scene {
         );
     }
 
-    /// Advances untimed construction by one frame of `dt` seconds.
-    fn advance(&mut self, dt: f64, speed: f64) {
+    /// Moves construction to `progress` (it never goes backwards).
+    fn advance_to(&mut self, progress: f64) {
         if self.reveal.is_complete() {
             return;
         }
-        let progress = untimed_step(self.reveal.progress(), dt, speed);
         let cells = self.reveal.advance_to(progress).to_vec();
         light_revealed(&mut self.buildings, &self.ownership, &cells);
         self.view.reveal_cells(&cells);
@@ -324,6 +324,10 @@ struct Renderer {
     palette_index: usize,
     speed: f64,
     last_frame: Option<Instant>,
+    /// How construction progress advances (untimed or `--timer`).
+    clock: ConstructionClock,
+    /// When construction (re)started, for the duration clock.
+    construction_start: Instant,
     options: LaunchOptions,
     scale_factor: f64,
 }
@@ -470,6 +474,8 @@ impl Renderer {
             palette_index,
             speed: 1.0,
             last_frame: None,
+            clock: options.clock,
+            construction_start: Instant::now(),
             options,
             scale_factor,
         };
@@ -529,6 +535,8 @@ impl Renderer {
             0.0,
             self.scaling(),
         );
+        // Restart restarts a duration timer (Rebuild Prompt); resizing keeps it.
+        self.construction_start = Instant::now();
         self.upload();
     }
 
@@ -553,7 +561,11 @@ impl Renderer {
             .last_frame
             .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
         self.last_frame = Some(now);
-        self.scene.advance(dt, self.speed);
+        let elapsed = now.duration_since(self.construction_start).as_secs_f64();
+        let progress = self
+            .clock
+            .progress(self.scene.reveal.progress(), dt, self.speed, elapsed);
+        self.scene.advance_to(progress);
         if self.scene.view.take_dirty() {
             self.upload();
         }
@@ -566,11 +578,18 @@ impl Renderer {
             "{}x{} @ {}px - surface {}x{}",
             grid.cols, grid.rows, grid.cell, self.surface_config.width, self.surface_config.height
         );
+        let pace = if self.clock.uses_speed() {
+            format!("{}x", self.speed)
+        } else {
+            let elapsed = self.construction_start.elapsed().as_secs_f64();
+            let left = self.clock.remaining(elapsed).unwrap_or(0.0);
+            format!("{} left", format_remaining(left))
+        };
         if self.scene.reveal.is_complete() {
-            format!("{TITLE} - complete - {}x - {size}", self.speed)
+            format!("{TITLE} - complete - {size}")
         } else {
             let percent = (self.scene.reveal.progress() * 100.0).floor();
-            format!("{TITLE} - building {percent}% - {}x - {size}", self.speed)
+            format!("{TITLE} - building {percent}% - {pace} - {size}")
         }
     }
 
@@ -741,6 +760,24 @@ mod tests {
     }
 
     #[test]
+    fn duration_clock_finishes_the_scene_on_time_at_any_speed() {
+        let clock = ConstructionClock::Duration { seconds: 10.0 };
+        for speed in [0.25, 1.0, 4.0] {
+            let mut scene = Scene::new(16, 1280, 720, classic(), 0.0, CellScaling::Fixed(3));
+            let mut elapsed = 0.0;
+            while elapsed < 5.0 {
+                elapsed += 1.0 / 60.0;
+                let progress = clock.progress(scene.reveal.progress(), 1.0 / 60.0, speed, elapsed);
+                scene.advance_to(progress);
+            }
+            let half = scene.reveal.shown() as f64 / scene.reveal.total() as f64;
+            assert!((half - 0.5).abs() < 0.01, "speed {speed}: {half}");
+            scene.advance_to(clock.progress(scene.reveal.progress(), 0.0, speed, 10.0));
+            assert!(scene.reveal.is_complete(), "speed {speed}");
+        }
+    }
+
+    #[test]
     fn presentation_shader_passes_wgsl_validation() {
         let module = naga::front::wgsl::parse_str(include_str!("present.wgsl"))
             .expect("shader should parse");
@@ -774,13 +811,18 @@ mod tests {
     #[test]
     fn scene_builds_up_over_240_seconds_and_ends_fully_built() {
         let mut scene = Scene::new(12, 1280, 720, classic(), 0.0, CellScaling::Spec);
+        let clock = ConstructionClock::Untimed;
+        let step = |scene: &mut Scene| {
+            let progress = clock.progress(scene.reveal.progress(), 1.0 / 60.0, 1.0, 0.0);
+            scene.advance_to(progress);
+        };
         for _ in 0..(120 * 60) {
-            scene.advance(1.0 / 60.0, 1.0);
+            step(&mut scene);
         }
         let half = scene.reveal.shown() as f64 / scene.reveal.total() as f64;
         assert!((half - 0.5).abs() < 0.001, "half built after 120 s: {half}");
         for _ in 0..(121 * 60) {
-            scene.advance(1.0 / 60.0, 1.0);
+            step(&mut scene);
         }
         assert!(scene.reveal.is_complete());
         let built = CityRaster::render_with(
@@ -796,9 +838,7 @@ mod tests {
     #[test]
     fn resize_keeps_progress_and_palette_change_keeps_the_reveal() {
         let mut scene = Scene::new(13, 1280, 720, classic(), 0.0, CellScaling::Spec);
-        for _ in 0..600 {
-            scene.advance(0.25, 1.0); // 150 s
-        }
+        scene.advance_to(150.0 / 240.0);
         let progress = scene.reveal.progress();
         let resized = Scene::new(13, 1920, 1080, classic(), progress, CellScaling::Spec);
         assert_eq!(resized.reveal.progress(), progress);
