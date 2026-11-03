@@ -62,7 +62,7 @@ These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are 
 - An Atari palette.
 - Roadside trees in palettes other than Ink on Parchment.
 - Android as a later target.
-- Background music. The Rebuild Prompt specifies no sound, so this is a deliberate addition. Candidate tracks are in `Sounds/Music/`. Playback needs an audio dependency and a decision on controls (mute, volume, track choice).
+- Background music. The Rebuild Prompt specifies no sound, so this is a deliberate addition. Users supply their own tracks in `Sounds/Music/`, which is gitignored; the app ships no music. Playback needs an audio dependency and a decision on controls (mute, volume, track choice).
 
 ## Current increment status
 

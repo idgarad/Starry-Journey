@@ -1,5 +1,7 @@
 /target/
 
-# Background music stays local: large binaries, and some tracks are
-# commercial recordings that must not be redistributed. See docs/product.md.
-/Sounds/Music/*.mp3
+# User-supplied background music. Users provide their own tracks, which are
+# large binaries and often under copyright, so nothing here is committed
+# except the README that explains the folder. See docs/product.md.
+/Sounds/Music/*
+!/Sounds/Music/README.md

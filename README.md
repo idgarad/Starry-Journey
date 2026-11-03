@@ -49,7 +49,7 @@ cargo test
 5. Merge: `git switch main`, then `git merge --no-ff feature/<short-name>`. `--no-ff` always creates a merge commit, so each feature remains visible as a unit in `git log --graph`.
 6. Delete the merged branch: `git branch -d feature/<short-name>`.
 
-Never commit `target/` or the MP3s in `Sounds/Music/`; `.gitignore` excludes both.
+Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes both.
 
 ## Layout
 
@@ -63,4 +63,4 @@ Never commit `target/` or the MP3s in `Sounds/Music/`; `.gitignore` excludes bot
 | [docs/product.md](docs/product.md) | Product scope, Rust-specific deviations, and deferred extensions. |
 | [docs/work.md](docs/work.md) | Current and completed work increments with verification results. |
 | `.ai/` | Visual references and the agent handoff note. |
-| `Sounds/Music/` | Background music for a planned later extension. It is not used by the app yet. |
+| [Sounds/Music/](Sounds/Music/README.md) | User-supplied background music for a planned later feature. Gitignored except its README; not used by the app yet. |
