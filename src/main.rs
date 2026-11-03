@@ -1,21 +1,23 @@
 //! Starry Journey application: window, input, and GPU presentation.
 //!
-//! The scene (city model plus CPU rasterizer) lives in the library. This
-//! binary generates a Normal-mode city for the window's grid, uploads the
-//! rasterized logical buffer as a texture, and draws each logical cell as a
-//! `cell x cell` block of device pixels with nearest-neighbor lookup.
+//! The scene (city model, CPU rasterizer, and construction reveal) lives in
+//! the library. This binary generates a Normal-mode city for the window's
+//! grid, reveals it one logical cell at a time over 240 seconds at 1x,
+//! uploads the shown image as a texture whenever it changes, and draws each
+//! logical cell as a `cell x cell` block of device pixels.
 
 use std::{
     error::Error,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
 use starry_journey::model::grid::Grid;
-use starry_journey::model::palette::{palette_by_key, palettes, DEFAULT_PALETTE_KEY};
-use starry_journey::raster::{generate_stars, CityRaster, Star};
+use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
+use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
+use starry_journey::reveal::{light_revealed, untimed_step, ConstructionView, Reveal};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -29,6 +31,11 @@ use winit::{
 const INITIAL_SIZE: (u32, u32) = (1280, 720);
 /// Smallest window size in physical pixels.
 const MIN_SIZE: (u32, u32) = (320, 180);
+/// Speed range and step for the `+` and `-` keys (Rebuild Prompt: 0.25..4).
+const SPEED_RANGE: (f64, f64) = (0.25, 4.0);
+const SPEED_STEP: f64 = 0.25;
+/// Window title prefix.
+const TITLE: &str = "Starry Journey";
 
 #[derive(Default)]
 struct App {
@@ -144,12 +151,27 @@ impl ApplicationHandler for App {
                                 renderer.restart(random_seed());
                             }
                         }
+                        KeyCode::Equal | KeyCode::NumpadAdd => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.change_speed(SPEED_STEP);
+                            }
+                        }
+                        KeyCode::Minus | KeyCode::NumpadSubtract => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.change_speed(-SPEED_STEP);
+                            }
+                        }
                         _ => {}
                     }
                 }
             }
             WindowEvent::RedrawRequested => {
                 if let (Some(window), Some(renderer)) = (&self.window, &mut self.renderer) {
+                    renderer.advance();
+                    let title = renderer.title();
+                    if window.title() != title {
+                        window.set_title(&title);
+                    }
                     match renderer.render() {
                         Ok(()) => {}
                         Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -190,30 +212,75 @@ fn random_seed() -> u32 {
     (now.as_secs() as u32).wrapping_mul(0x9e37_79b9) ^ now.subsec_nanos()
 }
 
-/// The generated scene for one grid: buildings and stars.
+/// The generated scene for one grid: the city, its stars, the ownership
+/// raster, the construction reveal, and the image currently shown.
 struct Scene {
     seed: u32,
     grid: Grid,
     buildings: Vec<Building>,
     stars: Vec<Star>,
+    ownership: CityRaster,
+    reveal: Reveal,
+    view: ConstructionView,
 }
 
 impl Scene {
-    /// Generates a fully built Normal-mode city. Windows are lit to their
-    /// targets until the reveal feature animates construction.
-    fn new(seed: u32, width: u32, height: u32) -> Self {
+    /// Generates the city for a `width x height` surface and reveals it up
+    /// to `progress` (0 for a new city; the old progress after a resize).
+    fn new(seed: u32, width: u32, height: u32, palette: &Palette, progress: f64) -> Self {
         let grid = Grid::new(width, height, false);
         let mut buildings = generate_normal_city(seed, &grid);
-        for building in &mut buildings {
-            building.windows.light_to_target();
-        }
         let stars = generate_stars(seed, &grid);
+        let ownership = CityRaster::render(&grid, &buildings, &stars, palette);
+        let mut reveal = Reveal::new(&ownership, seed);
+        let cells = reveal.advance_to(progress).to_vec();
+        light_revealed(&mut buildings, &ownership, &cells);
+        let view = Self::view_for(&grid, &buildings, &stars, palette, &reveal);
         Self {
             seed,
             grid,
             buildings,
             stars,
+            ownership,
+            reveal,
+            view,
         }
+    }
+
+    /// The shown image: the finished city where revealed, sky elsewhere.
+    fn view_for(
+        grid: &Grid,
+        buildings: &[Building],
+        stars: &[Star],
+        palette: &Palette,
+        reveal: &Reveal,
+    ) -> ConstructionView {
+        let built =
+            CityRaster::render_with(grid, buildings, stars, palette, WindowLighting::Target);
+        let sky = CityRaster::render(grid, &[], stars, palette);
+        ConstructionView::new(built.rgba, sky.rgba, reveal)
+    }
+
+    /// Re-colors the scene for another palette without regenerating it.
+    fn set_palette(&mut self, palette: &Palette) {
+        self.view = Self::view_for(
+            &self.grid,
+            &self.buildings,
+            &self.stars,
+            palette,
+            &self.reveal,
+        );
+    }
+
+    /// Advances untimed construction by one frame of `dt` seconds.
+    fn advance(&mut self, dt: f64, speed: f64) {
+        if self.reveal.is_complete() {
+            return;
+        }
+        let progress = untimed_step(self.reveal.progress(), dt, speed);
+        let cells = self.reveal.advance_to(progress).to_vec();
+        light_revealed(&mut self.buildings, &self.ownership, &cells);
+        self.view.reveal_cells(&cells);
     }
 }
 
@@ -229,6 +296,8 @@ struct Renderer {
     bind_group: wgpu::BindGroup,
     scene: Scene,
     palette_index: usize,
+    speed: f64,
+    last_frame: Option<Instant>,
 }
 
 impl Renderer {
@@ -340,13 +409,19 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        let scene = Scene::new(seed, surface_config.width, surface_config.height);
-        let city_texture = create_city_texture(&device, &scene.grid);
-        let bind_group = create_bind_group(&device, &bind_group_layout, &city_texture, &params);
         let palette_index = palettes()
             .iter()
             .position(|palette| palette.key == DEFAULT_PALETTE_KEY)
             .unwrap_or(0);
+        let scene = Scene::new(
+            seed,
+            surface_config.width,
+            surface_config.height,
+            palette_at(palette_index),
+            0.0,
+        );
+        let city_texture = create_city_texture(&device, &scene.grid);
+        let bind_group = create_bind_group(&device, &bind_group_layout, &city_texture, &params);
         let mut renderer = Self {
             surface,
             device,
@@ -359,6 +434,8 @@ impl Renderer {
             bind_group,
             scene,
             palette_index,
+            speed: 1.0,
+            last_frame: None,
         };
         renderer.upload();
         Ok(renderer)
@@ -375,38 +452,76 @@ impl Renderer {
         self.surface.configure(&self.device, &self.surface_config);
         let new_grid = Grid::new(size.width, size.height, false);
         if new_grid != self.scene.grid {
-            self.scene = Scene::new(self.scene.seed, size.width, size.height);
+            // Same seed, same construction progress (Rebuild Prompt: resize
+            // preserves progress).
+            let progress = self.scene.reveal.progress();
+            self.scene = Scene::new(
+                self.scene.seed,
+                size.width,
+                size.height,
+                palette_at(self.palette_index),
+                progress,
+            );
             self.upload();
         }
     }
 
-    /// Generates a new city with a new seed.
+    /// Generates a new city with a new seed and restarts construction.
     fn restart(&mut self, seed: u32) {
-        self.scene = Scene::new(seed, self.surface_config.width, self.surface_config.height);
+        self.scene = Scene::new(
+            seed,
+            self.surface_config.width,
+            self.surface_config.height,
+            palette_at(self.palette_index),
+            0.0,
+        );
         self.upload();
     }
 
-    /// Switches to the next palette without regenerating geometry.
+    /// Switches to the next palette without regenerating geometry or
+    /// changing construction progress.
     fn next_palette(&mut self) {
         self.palette_index = (self.palette_index + 1) % palettes().len();
+        self.scene.set_palette(palette_at(self.palette_index));
         self.upload();
     }
 
-    /// Rasterizes the scene and uploads it, recreating the texture only when
-    /// the grid dimensions change.
+    /// Changes construction speed by `delta`, within 0.25x to 4x.
+    fn change_speed(&mut self, delta: f64) {
+        self.speed = (self.speed + delta).clamp(SPEED_RANGE.0, SPEED_RANGE.1);
+    }
+
+    /// Advances construction by the real time since the previous frame and
+    /// uploads the image if any cell changed.
+    fn advance(&mut self) {
+        let now = Instant::now();
+        let dt = self
+            .last_frame
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
+        self.last_frame = Some(now);
+        self.scene.advance(dt, self.speed);
+        if self.scene.view.take_dirty() {
+            self.upload();
+        }
+    }
+
+    /// Window title with construction progress and speed.
+    fn title(&self) -> String {
+        if self.scene.reveal.is_complete() {
+            format!("{TITLE} - complete - {}x", self.speed)
+        } else {
+            let percent = (self.scene.reveal.progress() * 100.0).floor();
+            format!("{TITLE} - building {percent}% - {}x", self.speed)
+        }
+    }
+
+    /// Uploads the shown image, recreating the texture only when the grid
+    /// dimensions change.
     fn upload(&mut self) {
-        let palette = palettes()
-            .get(self.palette_index)
-            .or_else(|| palette_by_key(DEFAULT_PALETTE_KEY))
-            .expect("the default palette exists");
-        let raster = CityRaster::render(
-            &self.scene.grid,
-            &self.scene.buildings,
-            &self.scene.stars,
-            palette,
-        );
+        let width = self.scene.grid.cols.max(1) as u32;
+        let height = self.scene.grid.rows.max(1) as u32;
         let size = self.city_texture.size();
-        if size.width as usize != raster.width || size.height as usize != raster.height {
+        if size.width != width || size.height != height {
             self.city_texture = create_city_texture(&self.device, &self.scene.grid);
             self.bind_group = create_bind_group(
                 &self.device,
@@ -422,11 +537,11 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &raster.rgba,
+            &self.scene.view.rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(raster.width as u32 * 4),
-                rows_per_image: Some(raster.height as u32),
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
             },
             self.city_texture.size(),
         );
@@ -472,6 +587,14 @@ impl Renderer {
         frame.present();
         Ok(())
     }
+}
+
+/// The palette at `index`, falling back to the default palette.
+fn palette_at(index: usize) -> &'static Palette {
+    palettes()
+        .get(index)
+        .or_else(|| palette_by_key(DEFAULT_PALETTE_KEY))
+        .expect("the default palette exists")
 }
 
 /// Creates the logical-resolution city texture (sRGB, one texel per cell).
@@ -538,19 +661,75 @@ mod tests {
         .expect("shader should validate");
     }
 
+    fn classic() -> &'static Palette {
+        palette_by_key("classic").unwrap()
+    }
+
     #[test]
-    fn scene_covers_the_window_grid_and_is_fully_built() {
-        let scene = Scene::new(11, 1280, 720);
+    fn new_scene_covers_the_window_grid_and_starts_as_empty_sky() {
+        let scene = Scene::new(11, 1280, 720, classic(), 0.0);
         assert_eq!(
             (scene.grid.cols, scene.grid.rows, scene.grid.cell),
             (427, 240, 3)
         );
         assert!(!scene.buildings.is_empty());
-        assert!(scene
-            .buildings
-            .iter()
-            .all(|b| b.windows.lit == b.windows.target));
         assert!(!scene.stars.is_empty());
+        assert_eq!(scene.reveal.shown(), 0);
+        let sky = CityRaster::render(&scene.grid, &[], &scene.stars, classic());
+        assert_eq!(scene.view.rgba, sky.rgba, "nothing built yet");
+        assert!(scene.buildings.iter().all(|b| b.windows.lit_count() == 0));
+    }
+
+    #[test]
+    fn scene_builds_up_over_240_seconds_and_ends_fully_built() {
+        let mut scene = Scene::new(12, 1280, 720, classic(), 0.0);
+        for _ in 0..(120 * 60) {
+            scene.advance(1.0 / 60.0, 1.0);
+        }
+        let half = scene.reveal.shown() as f64 / scene.reveal.total() as f64;
+        assert!((half - 0.5).abs() < 0.001, "half built after 120 s: {half}");
+        for _ in 0..(121 * 60) {
+            scene.advance(1.0 / 60.0, 1.0);
+        }
+        assert!(scene.reveal.is_complete());
+        let built = CityRaster::render_with(
+            &scene.grid,
+            &scene.buildings,
+            &scene.stars,
+            classic(),
+            WindowLighting::Target,
+        );
+        assert_eq!(scene.view.rgba, built.rgba);
+    }
+
+    #[test]
+    fn resize_keeps_progress_and_palette_change_keeps_the_reveal() {
+        let mut scene = Scene::new(13, 1280, 720, classic(), 0.0);
+        for _ in 0..600 {
+            scene.advance(0.25, 1.0); // 150 s
+        }
+        let progress = scene.reveal.progress();
+        let resized = Scene::new(13, 1920, 1080, classic(), progress);
+        assert_eq!(resized.reveal.progress(), progress);
+        let expected = (progress * resized.reveal.total() as f64).floor() as usize;
+        assert_eq!(resized.reveal.shown(), expected);
+
+        let shown = scene.reveal.shown();
+        scene.set_palette(palette_by_key("artdeco").unwrap());
+        assert_eq!(scene.reveal.shown(), shown);
+        let sky = CityRaster::render(
+            &scene.grid,
+            &[],
+            &scene.stars,
+            palette_by_key("artdeco").unwrap(),
+        );
+        let unrevealed = (0..scene.ownership.owner.len())
+            .find(|&cell| !scene.reveal.is_revealed(cell))
+            .unwrap();
+        assert_eq!(
+            scene.view.rgba[unrevealed * 4..unrevealed * 4 + 4],
+            sky.rgba[unrevealed * 4..unrevealed * 4 + 4]
+        );
     }
 
     #[test]
