@@ -9,3 +9,4 @@
 
 pub mod model;
 pub mod raster;
+pub mod reveal;
