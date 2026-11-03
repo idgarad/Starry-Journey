@@ -15,3 +15,4 @@ pub mod raster;
 pub mod reveal;
 pub mod station;
 pub mod street;
+pub mod traffic;
