@@ -7,10 +7,30 @@
 | `feature/building-records` | Building, tier, and window records; kind weights and width fallback; layer specs and height formula | Merged |
 | `feature/tier-shapes` | Tier builders for all 19 kinds; text shape preview | Merged |
 | `feature/expanded-buildings` | 9 extension kinds; wide footprints (see product.md) | Merged |
-| `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Planned |
+| `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Merged |
 | `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Planned |
 | `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Planned |
 | `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Planned |
+
+### feature/masts-and-tints
+
+- **Delivered:**
+  - [src/model/building.rs](../src/model/building.rs): `Mast` record (column, base, top, beacon period and phase), the optional `Building::mast` field, and mast validation. A mast must sit on the roof, stay inside the footprint, and stay under `max_h`.
+  - [src/model/mast.rs](../src/model/mast.rs): `mast_rule` and `plan_mast`.
+    - Needles and TV towers always get a mast.
+    - Other kinds get one 30% of the time when tall.
+    - Factories and all low-rise extension kinds never get one; the user approved this on 2026-11-03.
+    - Masts are 4 to 16 cells, clipped to headroom, and centered on the highest tier. Beacon periods are 1.2 to 2.5 s, with a seeded phase.
+  - [src/model/tint.rs](../src/model/tint.rs): `choose_body_index` with the spec's three-step relaxation. It first excludes touching buildings in the same, adjacent, and farther layers, then only the same and adjacent layers, then excludes nothing. Shared edges count as touching.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 55 tests.
+    - The measured mast share for tall buildings is 27% to 33%.
+    - Planned masts validate for every kind across 40 seeds.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: no new warnings.
+- **Assumptions:**
+  - AS-R003: the spec's "explicit tower kinds" are Needle and Tvtower. Spire already ends in its own spire.
+  - AS-R004: "tall" means the roof reaches 50% of `max_h`.
 
 ### feature/expanded-buildings
 
