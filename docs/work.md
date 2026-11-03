@@ -11,7 +11,7 @@
 | `feature/construction-timer` | `--timer`/`--deadline` duration clock; time left in the title | Merged |
 | `feature/default-window-1080p` | Opens at 1920 × 1080 (testing size) | Merged |
 | `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
-| `feature/moon` | 39-cell moon crossing in 10 minutes; phase fixed per lap, 8-phase cycle; `--moon-phase` | Awaiting owner review |
+| `feature/moon` | 39-cell moon crossing in 10 minutes; phase fixed per lap, 8-phase cycle; `--moon-phase`; battle station with fighters, trench run, and `--station-fate` | Merged |
 | `feature/night-traffic` | Cars and trucks after completion, headlights on with a beam | Planned |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
 
@@ -55,7 +55,7 @@
   - With `--pixel-size spec` (about 216 rows) the big moon can dip 1–2 rows behind a maximum-height tower at the top of its arc. This is accepted, because the moon lives on the sky layer.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
-  - GUI: awaiting the owner's review.
+  - GUI: reviewed and approved by the owner ("looks good").
 - **Test fixes during development:** a 25% start could hide the opening crescent behind the tallest possible tower, so the start moved to 30%. One test compared phases exactly across passes and now allows for floating-point rounding. Another test placed the moon where buildings covered it completely, and now searches for a partly covered height.
 
 ### feature/normal-street
