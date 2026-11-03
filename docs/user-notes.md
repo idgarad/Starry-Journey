@@ -48,6 +48,7 @@ Write the message as what the commit *does*: `feat: add building generator`, not
 - [ ] **Green Terminal glyphs:** source GNU Unifont 16.0.04 bitmaps (SIL OFL 1.1 licence) before the display-effects step.
 - [ ] **Background music:** pick an audio crate and decide on controls (mute, volume, track choice). Deferred until the rebuild baseline is done.
 - [ ] **AGENTS.md process:** decide whether to adopt the rest of it for this project (`Docs/` capitalization, backlog, decision log) or keep the lighter `docs/work.md` approach.
+- [ ] **Battle-station easter egg:** it's a homage to the Death Star (Lucasfilm's design). Decide whether it stays on by default if the repo or builds go public.
 - [ ] **GitHub visibility:** if the repository is public, remember that everything committed is public. `Sounds/Music/` is already ignored.
 
 ## Tips
@@ -130,6 +131,8 @@ Edit the file to keep the right result and delete the marker lines, then run `gi
 
 - The title bar shows build progress, speed, and `columns x rows @ pixel size`. Pixels are 3 screen pixels by default, so maximizing adds city. `--pixel-size spec` makes pixels scale with window height instead.
 - `cargo run -- --deadline 10s` builds the whole city in 10 seconds (testing); `--deadline 10` means 10 minutes (meetings). The title shows the time left.
+- `cargo run -- --moon-phase new --station-fate destroy` shows the station under attack: about 5 seconds in a red ship runs the trench and climbs away, and the station blows up a few seconds later (`survive` keeps it; default is a 30% chance).
+- `cargo run -- --moon-phase full` opens on a full moon; `--moon-phase new` shows the battle station right away. Names: new, waxing-crescent, first-quarter, waxing-gibbous, full, waning-gibbous, last-quarter, waning-crescent (or 0-7).
 - `cargo run -- --pixel-size 4` tries another pixel size (default 3); `cargo run -- --pixel-size spec` uses the spec's about 240 rows. The `--` tells cargo that the options are for the app, not for cargo.
 
 - `cargo run` builds and launches the app.

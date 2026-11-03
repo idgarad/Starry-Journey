@@ -11,7 +11,7 @@ It will have 12 live-switchable retro palettes with palette-specific display eff
 
 ## Status
 
-Early rebuild. The app now draws a real generated city in Normal mode, building it up one virtual pixel at a time over 4 minutes above a street lined with trees (steady lights for now). The pure city model is done: the deterministic random generator, the window-derived grid, all 12 palettes, and full city generation. City generation covers 28 building kinds (the spec's 19 plus 9 additions), masts, tints, windows, landmarks, and both Normal and Endless layouts, and is checked by the spec's first acceptance test. Window flicker, blinking beacons, and twinkling stars are next.
+Early rebuild. The app now draws a real generated city in Normal mode, building it up one virtual pixel at a time over 4 minutes above a street lined with trees, under a moon that crosses the sky every 10 minutes (steady lights for now). The pure city model is done: the deterministic random generator, the window-derived grid, all 12 palettes, and full city generation. City generation covers 28 building kinds (the spec's 19 plus 9 additions), masts, tints, windows, landmarks, and both Normal and Endless layouts, and is checked by the spec's first acceptance test. Window flicker, blinking beacons, and twinkling stars are next.
 
 Each launch uses a new random city.
 
@@ -54,6 +54,8 @@ cargo run --bin city -- 160 60 1    # columns, rows, seed
 | `--pixel-size N` | Each virtual pixel is N screen pixels (1–16, times display scaling). Default 3. Bigger windows show more city and more sky. |
 | `--pixel-size spec` | Scale pixels with screen height instead, so every screen shows about 240 virtual rows (the Rebuild Prompt formula). |
 | `--timer D`, `--deadline D` | Finish building the city in exactly D, whatever the speed. A bare number is minutes; `90s`, `25m`, `1h30m` also work. |
+| `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
+| `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 12 s after opening on that lap), or `survive`. |
 | `-h`, `--help` | Show usage. |
 
 Pass options after `--` when using cargo: `cargo run -- --pixel-size 3`.
