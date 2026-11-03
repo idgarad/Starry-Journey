@@ -128,4 +128,4 @@ Edit the file to keep the right result and delete the marker lines, then run `gi
 
 - `cargo run` builds and launches the app.
 - `F` toggles fullscreen, `Tab` selects the next monitor, and `Esc` quits.
-- `cargo run --bin shapes -- 15 40 1` previews the building shapes as text (width, height, seed). Try different seeds to see variations.
+- `cargo run --bin shapes -- 15 40 1` previews the building shapes as text (width, height, seed). `o` marks a window that will be lit and `_` one that stays dark. Try different seeds to see variations.

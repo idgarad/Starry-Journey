@@ -10,3 +10,4 @@ pub mod palette;
 pub mod rng;
 pub mod shapes;
 pub mod tint;
+pub mod windows;
