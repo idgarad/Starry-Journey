@@ -5,8 +5,39 @@
 | Branch | Contents | Status |
 | --- | --- | --- |
 | `feature/normal-rasterizer` | CPU rasterizer; GPU presentation of the real city; `P` and `R` keys | Merged |
-| `feature/normal-reveal` | 240-second cell-by-cell construction, then window flicker | Planned |
-| `feature/normal-ambience` | Beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+| `feature/normal-reveal` | 240-second cell-by-cell construction; speed keys; progress in the title | Merged |
+| `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/normal-reveal
+
+- **Delivered:**
+  - [src/reveal.rs](../src/reveal.rs):
+    - `Reveal`: a seeded Fisher–Yates order over every owned cell (body, window, and mast). It shows `floor(f × total)` cells at progress `f` and all of them at `f ≥ 1`, and progress never decreases.
+    - `untimed_step` advances progress by `dt × speed / 240`, with `dt` clamped to 0–0.25 s.
+    - `light_revealed` turns on target-lit windows as their cells appear.
+    - `ConstructionView` updates the shown image incrementally from a built-city image and a sky-only image, so each frame costs only the newly revealed cells.
+  - [src/raster.rs](../src/raster.rs): `render_with(..., WindowLighting::Target)` paints the finished look without touching the `lit` flags.
+  - [src/main.rs](../src/main.rs):
+    - New cities start as empty sky and build up over 240 s at 1×.
+    - `+`/`-` change speed from 0.25× to 4× in 0.25× steps.
+    - The window title shows `building N% - Sx` or `complete`.
+    - Resizing rebuilds with the same seed and keeps progress. `P` keeps the reveal; `R` restarts construction.
+    - The texture is uploaded only when cells change.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 101 tests.
+    - Every owned cell is revealed exactly once, and no sky cell is.
+    - The order is seeded and shuffled.
+    - Exact floor counts are shown at each progress.
+    - Construction is complete at 240 s (1×) and 60 s (4×).
+    - Lit windows match revealed targets.
+    - The incremental view equals a rebuilt view.
+    - The scene is half built at 120 s and equals the built image at the end.
+    - Resize keeps progress.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - Windows GUI run: at 4× for 15 s the title read "building 25% - 4x", and the screenshot showed the city partly materialized cell by cell.
+- **Assumptions:** AS-R007: the spec does not name the stream for the reveal order. It uses `seed XOR 0x5bd1e995`, separate from the city stream.
+- **Not yet:** duration and deadline timers (`--timer`, `--ends-at`) arrive with launch configuration. Window flicker after completion arrives in `feature/normal-ambience`.
 
 ### feature/normal-rasterizer
 
@@ -29,7 +60,7 @@
   - `cargo clippy --all-targets`: clean, with no warnings.
   - `cargo build`: PASS.
   - Windows GUI run: the app launched at 1280 × 720 (427 × 240 cells, cell 3), and screenshots were reviewed in Classic and ArtDeco (after pressing `P`). The window closed cleanly.
-- **For now:** windows show fully built until `feature/normal-reveal`, and lights are steady.
+- **For now:** lights are steady. The reveal is in `feature/normal-reveal`.
 - **Assumptions:**
   - AS-R005: an accent building's body moves 35% toward the palette accent color. The spec gives the accent and its chance but not how it is applied.
   - AS-R006: generated landmark colors use HSL saturation 80%.
