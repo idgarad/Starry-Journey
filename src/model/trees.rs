@@ -6,9 +6,10 @@
 //!
 //! Starry Journey extension (owner decision 2026-11-03): trees appear in
 //! every palette and in Normal mode, not only in Endless mode with Ink on
-//! Parchment. On dark (night) palettes their leaves fade toward the sky
-//! color so they read as silhouettes; on light palettes they fade toward the
-//! ink (star) color as the spec describes.
+//! Parchment. Each night palette defines its own tree colors
+//! ([`crate::model::palette::TreePalette`]), mostly reusing colors the
+//! palette already has. Ink on Parchment keeps the spec's rule: body colors
+//! faded toward the ink color.
 
 use super::palette::{Palette, Rgb};
 use super::rng::{tree_slot_seed, Mulberry32};
@@ -37,8 +38,6 @@ pub const FOREGROUND_SPACING: i32 = 29;
 pub const LEAF_BLEND: (f64, f64) = (0.06, 0.18);
 /// Extra move toward the silhouette color for shaded leaves.
 pub const SHADE_BLEND: f64 = 0.22;
-/// On dark palettes, how far leaves move toward the sky (assumption AS-R008).
-pub const NIGHT_LEAF_BLEND: (f64, f64) = (0.45, 0.6);
 
 /// One tree placed on a verge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,31 +123,40 @@ pub fn is_light_palette(palette: &Palette) -> bool {
 
 /// Leaf, shaded-leaf, and trunk colors for a tree in `palette`.
 ///
-/// Deciduous trees take body color `tint % 6`; conifers use body 2 or 5 by
-/// tint parity. Leaves move toward the silhouette color: the ink (star)
-/// color on light palettes, the sky color on dark ones. Trunks use the
-/// antenna color, also faded on dark palettes.
+/// With palette tree colors: conifers use the darkest leaf tone and
+/// broadleaf trees pick a tone by `tint % 3`; everything moves toward the
+/// sky by the spec's depth blend (6% background, 18% foreground).
+///
+/// Without them (Ink on Parchment, the spec rule): deciduous trees take body
+/// color `tint % 6`, conifers body 2 or 5 by tint parity, leaves move toward
+/// the ink (star) color, shade a further 22%, and trunks use the antenna
+/// color.
 pub fn tree_colors(tree: &Tree, palette: &Palette) -> (Rgb, Rgb, Rgb) {
+    let blend = if tree.foreground {
+        LEAF_BLEND.1
+    } else {
+        LEAF_BLEND.0
+    };
+    if let Some(colors) = palette.trees {
+        let leaf = if tree.is_conifer() {
+            colors.leaves[0]
+        } else {
+            colors.leaves[usize::from(tree.tint % 3)]
+        };
+        return (
+            mix(leaf, palette.bg, blend),
+            mix(colors.shade, palette.bg, blend),
+            mix(colors.trunk, palette.bg, blend),
+        );
+    }
     let body = if tree.is_conifer() {
         palette.bodies[if tree.tint.is_multiple_of(2) { 2 } else { 5 }]
     } else {
         palette.bodies[usize::from(tree.tint % 6)]
     };
-    let light = is_light_palette(palette);
-    let (silhouette, blends) = if light {
-        (palette.star, LEAF_BLEND)
-    } else {
-        (palette.bg, NIGHT_LEAF_BLEND)
-    };
-    let blend = if tree.foreground { blends.1 } else { blends.0 };
-    let leaf = mix(body, silhouette, blend);
-    let shade = mix(leaf, silhouette, SHADE_BLEND);
-    let trunk = if light {
-        palette.antenna
-    } else {
-        mix(palette.antenna, palette.bg, blend)
-    };
-    (leaf, shade, trunk)
+    let leaf = mix(body, palette.star, blend);
+    let shade = mix(leaf, palette.star, SHADE_BLEND);
+    (leaf, shade, palette.antenna)
 }
 
 fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
@@ -237,8 +245,28 @@ mod tests {
             tint: 3,
             foreground: true,
         };
-        let (leaf, _, trunk) = tree_colors(&conifer, classic);
-        assert_eq!(leaf, mix(classic.bodies[5], classic.bg, 0.6));
-        assert_eq!(trunk, mix(classic.antenna, classic.bg, 0.6));
+        let colors = classic.trees.unwrap();
+        let (leaf, shade, trunk) = tree_colors(&conifer, classic);
+        assert_eq!(
+            leaf,
+            mix(colors.leaves[0], classic.bg, 0.18),
+            "conifers use the darkest tone"
+        );
+        assert_eq!(shade, mix(colors.shade, classic.bg, 0.18));
+        assert_eq!(trunk, mix(colors.trunk, classic.bg, 0.18));
+
+        let broadleaf = Tree {
+            slot: 0,
+            x: 0,
+            shape: 1,
+            tint: 5,
+            foreground: false,
+        };
+        let (leaf, _, _) = tree_colors(&broadleaf, classic);
+        assert_eq!(
+            leaf,
+            mix(colors.leaves[2], classic.bg, 0.06),
+            "tint 5 % 3 = 2"
+        );
     }
 }
