@@ -11,7 +11,7 @@ It will have 12 live-switchable retro palettes with palette-specific display eff
 
 ## Status
 
-Early rebuild. The app now draws a real generated city in Normal mode, building it up one virtual pixel at a time over 4 minutes above a street lined with trees (steady lights for now). The pure city model is done: the deterministic random generator, the window-derived grid, all 12 palettes, and full city generation. City generation covers 28 building kinds (the spec's 19 plus 9 additions), masts, tints, windows, landmarks, and both Normal and Endless layouts, and is checked by the spec's first acceptance test. Window flicker, blinking beacons, and twinkling stars are next.
+Early rebuild. The app now draws a real generated city in Normal mode, building it up one virtual pixel at a time over 4 minutes above a street lined with trees, under a moon that crosses the sky every 5 minutes (steady lights for now). The pure city model is done: the deterministic random generator, the window-derived grid, all 12 palettes, and full city generation. City generation covers 28 building kinds (the spec's 19 plus 9 additions), masts, tints, windows, landmarks, and both Normal and Endless layouts, and is checked by the spec's first acceptance test. Window flicker, blinking beacons, and twinkling stars are next.
 
 Each launch uses a new random city.
 
