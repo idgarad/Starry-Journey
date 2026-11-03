@@ -761,6 +761,7 @@ mod tests {
             accent_roll: 0.0,
             windows: WindowSet::default(),
             mast: None,
+            decoration: None,
         }
     }
 

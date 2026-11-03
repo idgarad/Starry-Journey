@@ -3,6 +3,7 @@
 //! Nothing here depends on UI or graphics state (Rebuild Prompt, "Architecture").
 
 pub mod building;
+pub mod decorations;
 pub mod grid;
 pub mod layers;
 pub mod mast;

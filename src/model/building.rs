@@ -354,6 +354,49 @@ pub struct Mast {
     pub beacon_phase: f64,
 }
 
+/// Which outline a landmark decoration lights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DecorationKind {
+    /// Top row and upper sides of the highest tier.
+    Crown,
+    /// One horizontal row across the main tier.
+    Band,
+    /// Center column of the highest tier.
+    Spire,
+    /// The top cell of every column of the silhouette.
+    Roofline,
+}
+
+/// How decoration lights animate in standard (Normal) mode. Endless mode
+/// shows them steady.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LightMode {
+    /// All lights shift hue together.
+    Cycle,
+    /// Hue travels along the outline.
+    Chase,
+}
+
+/// Landmark lights outlining part of a building.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decoration {
+    /// Outline kind.
+    pub kind: DecorationKind,
+    /// Animation mode.
+    pub mode: LightMode,
+    /// Initial hue in degrees, `0..360`.
+    pub hue: f64,
+    /// Flattened `(x, h)` pairs; every point lies on the building.
+    pub points: Vec<i32>,
+}
+
+impl Decoration {
+    /// Iterates the `(x, h)` points.
+    pub fn iter_points(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.points.chunks_exact(2).map(|pair| (pair[0], pair[1]))
+    }
+}
+
 /// One generated building.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Building {
@@ -377,6 +420,8 @@ pub struct Building {
     pub windows: WindowSet,
     /// Optional rooftop mast.
     pub mast: Option<Mast>,
+    /// Optional landmark decoration.
+    pub decoration: Option<Decoration>,
 }
 
 /// A broken building invariant, reported by [`Building::validate`].
@@ -400,6 +445,8 @@ pub enum BuildingError {
     WindowOutsideTiers(usize),
     /// The mast is outside the footprint, floats, or exceeds the height limit.
     BadMast,
+    /// A decoration point is off the building, or the point list is odd.
+    BadDecoration,
     /// The window arrays have different lengths.
     InconsistentWindows,
 }
@@ -458,6 +505,12 @@ impl Building {
                 return Err(BuildingError::BadMast);
             }
         }
+        if let Some(decoration) = &self.decoration {
+            let paired = decoration.points.len() % 2 == 0;
+            if !paired || !decoration.iter_points().all(|(x, h)| self.covers(x, h)) {
+                return Err(BuildingError::BadDecoration);
+            }
+        }
         if !self.windows.is_consistent() {
             return Err(BuildingError::InconsistentWindows);
         }
@@ -487,6 +540,7 @@ mod tests {
             accent_roll: 0.5,
             windows: WindowSet::default(),
             mast: None,
+            decoration: None,
         }
     }
 

@@ -159,6 +159,7 @@ mod tests {
                     accent_roll: 0.0,
                     windows: WindowSet::default(),
                     mast,
+                    decoration: None,
                 };
                 assert_eq!(building.validate(max_h), Ok(()), "{kind:?} seed {seed}");
             }
