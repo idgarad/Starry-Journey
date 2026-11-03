@@ -1,6 +1,6 @@
 # Active work
 
-## REBUILD-002: Building generation (split into feature branches)
+## REBUILD-002: Building generation (complete)
 
 | Branch | Contents | Status |
 | --- | --- | --- |
@@ -10,7 +10,35 @@
 | `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Merged |
 | `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Merged |
 | `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Merged |
-| `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Planned |
+| `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Merged |
+
+### feature/city-generator
+
+- **Delivered:**
+  - [src/model/city.rs](../src/model/city.rs):
+    - `CityGenerator` gives each selected layer a cursor starting at `startX - randInt(0, 10)` and always extends the leftmost cursor first. For each building it picks, in order: kind, then width, height, tiers, tint, tone, accent roll, mast, windows, decoration, and gap.
+    - Tint neighbors are pruned once they can no longer touch a new building.
+    - `extend_to` continues the same city in steps; `prune_before` bounds memory for Endless mode.
+    - `generate_normal_city` uses one stream for all four layers, starts with windows dark, then runs `ensure_landmarks` (1–3 landmarks if none) and `apply_cast_fade`. The cast fade adds 0.3 to windows with nearer geometry up to 3 columns to the left, level or above.
+    - `endless_layer_generator` gives each layer its own seed (`seed XOR (0x85ebca6b + L)`), starts at x = -28, and creates windows lit to their targets.
+  - [tests/city_model.rs](../tests/city_model.rs): acceptance check 1, ported and run against whole cities at 720p, 1080p, and 4K with 6 seeds each. It checks:
+    - the same seed reproduces the city;
+    - every building validates;
+    - widths stay within limits (25 general, 50 low-rise);
+    - layers never overlap and cover the screen;
+    - low-rise kinds stay in the near layers;
+    - fewer than 1% of touching same or adjacent-layer pairs share a color;
+    - each city has at least 10 kinds, at least one landmark, and masts, with a varied lit ratio and shades;
+    - Endless layers extend continuously and use independent streams.
+  - [src/bin/city.rs](../src/bin/city.rs): text preview of a whole city, `cargo run --bin city -- [columns] [rows] [seed]`.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 80 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: no new warnings.
+  - City preview reviewed: seed 7 at 150 × 56 has 38 buildings, 3 landmarks, and 5 masts.
+- **Interpretations:**
+  - Ties between equal cursors go to the farther layer.
+  - The cast fade applies to the quantized shade (level/15 + 0.3, capped at 0.9, then re-quantized), so it can differ from the original by at most one level.
 
 ### feature/landmark-decorations
 
@@ -165,9 +193,8 @@
 
 ## Next candidates
 
-1. The remaining REBUILD-002 branches listed above.
-2. Launch configuration: command-line parsing for `--speed`, `--palette`, `--message`, `--timer`, `--ends-at`, and `--endless`. `--ends-at` needs a local-timezone crate.
-3. The Normal-mode rasterizer replacing the SKY-001 canvas.
+1. Launch configuration: command-line parsing for `--speed`, `--palette`, `--message`, `--timer`, `--ends-at`, and `--endless`. `--ends-at` needs a local-timezone crate.
+2. The Normal-mode rasterizer replacing the SKY-001 canvas: palette `bg` sky, building and window colors, stars, and the reveal.
 
 ## Superseded
 

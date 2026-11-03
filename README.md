@@ -11,7 +11,7 @@ It will have 12 live-switchable retro palettes with palette-specific display eff
 
 ## Status
 
-Early rebuild. The pure model foundation is done: the deterministic random generator, the window-derived logical grid, and all 12 palettes, verified against the spec. Building generation and rendering are next.
+Early rebuild. The pure city model is done: the deterministic random generator, the window-derived grid, all 12 palettes, and full city generation. City generation covers 28 building kinds (the spec's 19 plus 9 additions), masts, tints, windows, landmarks, and both Normal and Endless layouts, and is checked by the spec's first acceptance test. Rendering is next.
 
 The running window still shows an earlier placeholder: a fixed 320 × 180 gradient sky. The Normal-mode rasterizer will replace it.
 
@@ -32,6 +32,12 @@ To preview the building shapes as text (until the renderer draws them):
 
 ```powershell
 cargo run --bin shapes -- 15 40 1   # width, height, seed
+```
+
+To preview a whole generated city as text:
+
+```powershell
+cargo run --bin city -- 160 60 1    # columns, rows, seed
 ```
 
 ## Test
@@ -62,8 +68,8 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | Path | Contents |
 | --- | --- |
 | [src/main.rs](src/main.rs) | Window, GPU surface, fullscreen/monitor handling, and the current placeholder renderer. |
-| [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind). |
-| [src/bin/shapes.rs](src/bin/shapes.rs) | Text preview of building shapes. |
+| [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind), `mast`, `tint`, `windows`, `decorations`, and `city` (the generator that assembles them). |
+| [src/bin/shapes.rs](src/bin/shapes.rs), [src/bin/city.rs](src/bin/city.rs) | Text previews of building shapes and of a whole generated city. |
 | [src/*.wgsl](src/) | Placeholder sky and presentation shaders, to be replaced. |
 | [tests/](tests/) | Integration tests. |
 | [docs/Rebuild Prompt.md](docs/Rebuild%20Prompt.md) | Primary behavioral specification, carried over from the Python/browser version. |
