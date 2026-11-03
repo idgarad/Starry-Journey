@@ -12,8 +12,40 @@
 | `feature/default-window-1080p` | Opens at 1920 × 1080 (testing size) | Merged |
 | `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
 | `feature/moon` | 39-cell moon crossing in 10 minutes; phase fixed per lap, 8-phase cycle; `--moon-phase`; battle station with fighters, trench run, and `--station-fate` | Merged |
-| `feature/night-traffic` | Cars and trucks after completion, headlights on with a beam | Planned |
+| `feature/night-traffic` | Cars and trucks after completion, headlights on with a beam | Awaiting owner review |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/night-traffic
+
+- **Decisions (owner, 2026-11-03):**
+  - Cars drive by in Normal mode once the city is finished. The spec has no traffic in Normal mode.
+  - "If this is at night, the car's headlights should be on": the owner felt the Python version missed this.
+- **Delivered:**
+  - [src/traffic.rs](../src/traffic.rs): `Traffic`, following the spec's road rules:
+    - two opposing lanes (upper drives left, lower drives right) starting at ground + 1 and ground + 4;
+    - cars 4–5 cells and trucks 7–9 cells, with 20% trucks;
+    - speeds of 9–18 cells/s times the speed setting, with motion steps clamped to 1/30 s;
+    - 2–6 vehicles, `clamp(round(cols / 100), 2, 6)`, which is 6 at the default 640 columns.
+    - Vehicles start off-screen and drive in staggered. Followers keep a 2-cell gap, so there is no overlap, and vehicles are replaced after leaving.
+    - Each vehicle is 2 rows tall: a car has a cabin inset at both ends, and a truck a trailer roof with a lower cab front.
+    - The headlight and taillight cells use the palette's colors. A beam fans out ahead over 4 cells (55%, 38%, 22%, 10% toward the headlight color), low row first, then both rows.
+  - [src/street.rs](../src/street.rs): `apply_paint` is now public.
+  - [src/main.rs](../src/main.rs): traffic starts when construction completes (immediately for a finished city after a resize), is cleared by `R`, steps every frame with the speed setting, and is drawn between the street's back layer (road and background trees) and front layer (foreground trees). `Scene` now remembers its palette.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 161 tests. They check:
+    - vehicle count by width;
+    - starting off-screen in both lanes and arriving;
+    - opposite directions and spec speeds;
+    - no overlap over 2 minutes at 4×, with the count kept;
+    - sizes and truck share within 17–23%;
+    - clamped frames and speed scaling;
+    - headlight front, taillight rear, and the beam ahead and spreading, for both directions and for trucks;
+    - determinism;
+    - in the app, no cars during construction and lit headlights in the frame afterwards.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: awaiting the owner's review.
+- **Assumptions:** AS-R009: one vehicle per 100 columns, 2 to 6. The spec says only "2..6 vehicles based on viewport width".
 
 ### feature/moon
 

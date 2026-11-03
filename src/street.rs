@@ -57,12 +57,12 @@ impl StreetLayer {
 
     /// Paints the layer drawn behind traffic into an RGBA buffer.
     pub fn apply_back(&self, rgba: &mut [u8]) {
-        apply(&self.back, rgba);
+        apply_paint(&self.back, rgba);
     }
 
     /// Paints the layer drawn in front of traffic into an RGBA buffer.
     pub fn apply_front(&self, rgba: &mut [u8]) {
-        apply(&self.front, rgba);
+        apply_paint(&self.front, rgba);
     }
 }
 
@@ -102,7 +102,8 @@ fn push(paint: &mut CellPaint, grid: &Grid, x: i32, row: i32, color: Rgb) {
     }
 }
 
-fn apply(paint: &CellPaint, rgba: &mut [u8]) {
+/// Paints cell colors into an RGBA buffer, skipping cells outside it.
+pub fn apply_paint(paint: &CellPaint, rgba: &mut [u8]) {
     for &(cell, color) in paint {
         if let Some(pixel) = rgba.get_mut(cell * 4..cell * 4 + 3) {
             pixel.copy_from_slice(&color.0);
