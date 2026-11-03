@@ -10,6 +10,7 @@
 use crate::clock::{parse_duration, ConstructionClock};
 use crate::model::grid::CellScaling;
 use crate::model::rng::js_round;
+use crate::moon::{parse_moon_phase, START_PHASE_STEP};
 
 /// Allowed fixed `--pixel-size` values, in logical (unscaled) pixels.
 pub const PIXEL_SIZE_RANGE: (u32, u32) = (1, 16);
@@ -32,6 +33,10 @@ Options:
                      1 second to 24 hours. Example: --timer 10 for a meeting
                      that starts in 10 minutes, --timer 10s for a quick test.
   --deadline D       Same as --timer.
+  --moon-phase P     Phase the moon opens on: new, waxing-crescent,
+                     first-quarter, waxing-gibbous, full, waning-gibbous,
+                     last-quarter, waning-crescent (or 0-7). It then advances
+                     one phase per 10-minute lap. Default: waxing-crescent.
   -h, --help         Show this help.
 
 Keys: P palette, R new city, +/- speed, F fullscreen, Tab next display, Esc quit.";
@@ -52,14 +57,27 @@ impl Default for PixelSize {
 }
 
 /// Parsed launch options.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LaunchOptions {
     /// Virtual pixel size.
     pub pixel_size: PixelSize,
     /// How construction progress advances.
     pub clock: ConstructionClock,
+    /// Moon phase step on the first lap (0 new ... 7 waning crescent).
+    pub moon_start_step: u64,
     /// True if help was requested.
     pub help: bool,
+}
+
+impl Default for LaunchOptions {
+    fn default() -> Self {
+        Self {
+            pixel_size: PixelSize::default(),
+            clock: ConstructionClock::default(),
+            moon_start_step: START_PHASE_STEP,
+            help: false,
+        }
+    }
 }
 
 impl LaunchOptions {
@@ -94,6 +112,7 @@ where
     let mut options = LaunchOptions::default();
     let mut pixel_size_given = false;
     let mut timer_given = false;
+    let mut moon_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -123,6 +142,17 @@ where
                 let seconds =
                     parse_duration(&value).map_err(|message| format!("{name}: {message}"))?;
                 options.clock = ConstructionClock::Duration { seconds };
+            }
+            "--moon-phase" => {
+                if moon_given {
+                    return Err("--moon-phase was given more than once".to_string());
+                }
+                moon_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--moon-phase needs a phase, for example --moon-phase full")?;
+                options.moon_start_step = parse_moon_phase(&value)
+                    .map_err(|message| format!("--moon-phase: {message}"))?;
             }
             _ => return Err(format!("unknown option '{arg}'")),
         }
@@ -246,6 +276,19 @@ mod tests {
         assert!(parse(&["--deadline", "soon"])
             .unwrap_err()
             .starts_with("--deadline:"));
+    }
+
+    #[test]
+    fn moon_phase_option_sets_the_opening_phase() {
+        assert_eq!(parse(&[]).unwrap().moon_start_step, START_PHASE_STEP);
+        assert_eq!(parse(&["--moon-phase", "new"]).unwrap().moon_start_step, 0);
+        assert_eq!(parse(&["--moon-phase=full"]).unwrap().moon_start_step, 4);
+        assert_eq!(parse(&["--moon-phase", "6"]).unwrap().moon_start_step, 6);
+        assert!(parse(&["--moon-phase"]).is_err());
+        assert!(parse(&["--moon-phase", "blue"])
+            .unwrap_err()
+            .starts_with("--moon-phase:"));
+        assert!(parse(&["--moon-phase", "new", "--moon-phase", "full"]).is_err());
     }
 
     #[test]

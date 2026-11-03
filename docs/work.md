@@ -11,7 +11,7 @@
 | `feature/construction-timer` | `--timer`/`--deadline` duration clock; time left in the title | Merged |
 | `feature/default-window-1080p` | Opens at 1920 × 1080 (testing size) | Merged |
 | `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
-| `feature/moon` | 39-cell moon crossing in 5 minutes; phase fixed per lap, 8-phase cycle | Awaiting owner review |
+| `feature/moon` | 39-cell moon crossing in 10 minutes; phase fixed per lap, 8-phase cycle; `--moon-phase` | Awaiting owner review |
 | `feature/night-traffic` | Cars and trucks after completion, headlights on with a beam | Planned |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
 
@@ -23,6 +23,8 @@
   - Also revised: the phase stays fixed for a whole lap and advances one step per lap, instead of changing during the pass.
   - The new-moon lap shows a battle station (owner idea): a grey sphere with an equatorial trench, panel bands, darker edges, and a concave dish (rim, interior, and bright focus) in the upper left.
   - The shadowed side was "a tad bright", so earthshine was reduced from 8% to 4%.
+  - "Too fast": the moon now moves at half speed, so a lap takes 10 minutes and the full cycle 80 minutes.
+  - A `--moon-phase` option picks the opening phase, by name (`new` … `waning-crescent`) or step 0–7. Phases still advance each lap. `--moon-phase new` shows the station at launch.
   - The moon lives on the sky layer, and passing behind buildings is a feature. The sun in Endless mode will be handled the same way later.
 - **Headroom at 1080p** (640 × 360 cells at 3 px): the top 162 rows (45%) are always clear of every possible building.
 - **Delivered:**
@@ -33,7 +35,7 @@
     - `moon_cells` colors the lit side in the palette's star color, the seas 30% toward the sky, and the unlit side 8% earthshine.
   - [src/main.rs](../src/main.rs): the moon follows real time from app start and starts 30% into a pass, so a crescent is visible at launch. It is painted on cells that currently show sky, before the street, and recomputed only when its cell position or quantized phase changes. Palette change, resize, and restart redraw it.
 - **Verification (2026-11-03):**
-  - `cargo test`: PASS, 138 tests, including that the station appears on the new-moon lap with the same silhouette as the moon, the dish in the upper left, the trench across the equator, and colors visible against the sky. They also check:
+  - `cargo test`: PASS, 142 tests, including the 10-minute lap, `--moon-phase` parsing (names, numbers, errors, repeats), the opening phase followed by per-lap advance, and that the station appears on the new-moon lap with the same silhouette as the moon, the dish in the upper left, the trench across the equator, and colors visible against the sky. They also check:
     - the 39-cell disk;
     - waxing on the right and waning on the left, with mirrored crescents;
     - the phase fixed within a lap, stepping each lap, and the cycle repeating every 8 laps;

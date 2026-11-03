@@ -366,6 +366,8 @@ struct Renderer {
     app_start: Instant,
     /// The moon as last drawn; `None` forces a redraw.
     moon_state: Option<MoonState>,
+    /// Moon phase step on the first lap (`--moon-phase`).
+    moon_start_step: u64,
     options: LaunchOptions,
     scale_factor: f64,
 }
@@ -516,6 +518,7 @@ impl Renderer {
             construction_start: Instant::now(),
             app_start: Instant::now(),
             moon_state: None,
+            moon_start_step: options.moon_start_step,
             options,
             scale_factor,
         };
@@ -626,7 +629,7 @@ impl Renderer {
     /// Returns true when the frame needs composing again.
     fn update_moon(&mut self, now: Instant) -> bool {
         let seconds = now.duration_since(self.app_start).as_secs_f64();
-        let moon = moon_at(&self.scene.grid, seconds);
+        let moon = moon_at(&self.scene.grid, seconds, self.moon_start_step);
         // Phase changes are only visible in small steps; 1/400 of a pass
         // (0.75 s) is finer than any single cell's change.
         let quantized = |m: &MoonState| (m.x, m.row, (m.phase * 400.0) as i32);

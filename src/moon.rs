@@ -2,13 +2,13 @@
 //!
 //! - A 39-cell disk (diameter in virtual pixels), on the sky layer: drawn
 //!   behind the city and street, so towers and trees pass in front of it.
-//! - It crosses the sky in 5 minutes on a shallow arc: it rises from behind
+//! - It crosses the sky in 10 minutes on a shallow arc: it rises from behind
 //!   the skyline on the left, peaks in the open sky band, and sets behind the
 //!   buildings on the right. Then the next lap begins.
 //! - The phase is fixed for a whole lap and advances one step per lap
 //!   through the 8-phase lunar cycle (new, waxing crescent, first quarter,
 //!   waxing gibbous, full, waning gibbous, last quarter, waning crescent),
-//!   so a full cycle takes 40 minutes. Waxing moons are lit on the right,
+//!   so a full cycle takes 80 minutes. Waxing moons are lit on the right,
 //!   waning moons on the left, as seen from the northern hemisphere.
 //! - Colors come from the palette: the lit side in the star color with a few
 //!   darker "seas", the unlit side faintly visible just above the sky color.
@@ -30,13 +30,50 @@ use crate::raster::mix;
 pub const MOON_DIAMETER: i32 = 39;
 /// Cells from the center pixel to the edge.
 pub const MOON_RADIUS: i32 = MOON_DIAMETER / 2;
-/// Seconds for one lap across the sky.
-pub const PASS_SECONDS: f64 = 300.0;
+/// Seconds for one lap across the sky (halved in speed by the owner,
+/// 2026-11-03: 10 minutes).
+pub const PASS_SECONDS: f64 = 600.0;
 /// Phases in one lunar cycle; one step per lap.
 pub const PHASE_STEPS: u64 = 8;
-/// Phase step shown on the first lap: a waxing crescent, so the moon is
-/// visible when the app opens.
+/// Default phase step shown on the first lap: a waxing crescent, so the
+/// moon is visible when the app opens. `--moon-phase` overrides it.
 pub const START_PHASE_STEP: u64 = 1;
+/// Phase names for `--moon-phase`, in step order.
+pub const PHASE_NAMES: [&str; 8] = [
+    "new",
+    "waxing-crescent",
+    "first-quarter",
+    "waxing-gibbous",
+    "full",
+    "waning-gibbous",
+    "last-quarter",
+    "waning-crescent",
+];
+
+/// Parses a `--moon-phase` value: a phase name (see [`PHASE_NAMES`],
+/// case-insensitive, `_` or `-` between words) or a step number 0 to 7.
+///
+/// # Errors
+///
+/// Returns a message listing the accepted values.
+pub fn parse_moon_phase(text: &str) -> Result<u64, String> {
+    let value = text.trim().to_ascii_lowercase().replace('_', "-");
+    if let Ok(step) = value.parse::<u64>() {
+        if step < PHASE_STEPS {
+            return Ok(step);
+        }
+    }
+    PHASE_NAMES
+        .iter()
+        .position(|name| *name == value)
+        .map(|step| step as u64)
+        .ok_or_else(|| {
+            format!(
+                "unknown moon phase '{text}'; use 0-7 or one of: {}",
+                PHASE_NAMES.join(", ")
+            )
+        })
+}
 /// Where in its first lap the moon starts, so it is already in view when
 /// the app opens.
 pub const START_FRACTION: f64 = 0.3;
@@ -163,11 +200,12 @@ pub fn station_pixel(dx: i32, dy: i32) -> StationPixel {
     }
 }
 
-/// The moon at `seconds` since the app started. O(1).
-pub fn moon_at(grid: &Grid, seconds: f64) -> MoonState {
+/// The moon at `seconds` since the app started, whose first lap shows phase
+/// step `start_step` (0 new ... 7 waning crescent). O(1).
+pub fn moon_at(grid: &Grid, seconds: f64, start_step: u64) -> MoonState {
     let laps = seconds.max(0.0) / PASS_SECONDS + START_FRACTION;
     let t = laps.fract();
-    let step = (START_PHASE_STEP + laps.floor() as u64) % PHASE_STEPS;
+    let step = (start_step + laps.floor() as u64) % PHASE_STEPS;
     let start_x = -MOON_RADIUS;
     let end_x = grid.cols - 1 + MOON_RADIUS;
     let x = js_round(f64::from(start_x) + f64::from(end_x - start_x) * t) as i32;
@@ -335,17 +373,24 @@ mod tests {
     fn phase_is_fixed_for_a_lap_and_advances_one_step_per_lap() {
         let grid = grid();
         let lap_start = (1.0 - START_FRACTION) * PASS_SECONDS; // second lap begins
-        let early = moon_at(&grid, lap_start + 1.0);
-        let late = moon_at(&grid, lap_start + PASS_SECONDS - 1.0);
+        let early = moon_at(&grid, lap_start + 1.0, START_PHASE_STEP);
+        let late = moon_at(&grid, lap_start + PASS_SECONDS - 1.0, START_PHASE_STEP);
         assert_eq!(early.phase, late.phase, "fixed during the lap");
         assert_eq!(
-            moon_at(&grid, 0.0).phase,
+            moon_at(&grid, 0.0, START_PHASE_STEP).phase,
             1.0 / 8.0,
             "opens as a waxing crescent"
         );
         assert_eq!(early.phase, 2.0 / 8.0, "next lap: first quarter");
         let phases: Vec<f64> = (0..9)
-            .map(|lap| moon_at(&grid, lap_start + 10.0 + f64::from(lap) * PASS_SECONDS).phase)
+            .map(|lap| {
+                moon_at(
+                    &grid,
+                    lap_start + 10.0 + f64::from(lap) * PASS_SECONDS,
+                    START_PHASE_STEP,
+                )
+                .phase
+            })
             .collect();
         assert_eq!(phases[0], 0.25);
         assert_eq!(phases[5], 0.875, "waning crescent");
@@ -357,34 +402,34 @@ mod tests {
     fn a_lap_rises_left_peaks_in_clear_sky_and_sets_right_in_five_minutes() {
         let grid = grid();
         let lap_start = (1.0 - START_FRACTION) * PASS_SECONDS;
-        let rise = moon_at(&grid, lap_start);
+        let rise = moon_at(&grid, lap_start, START_PHASE_STEP);
         assert_eq!(rise.x, -MOON_RADIUS, "rises at the left edge");
         assert!(
             rise.row - MOON_RADIUS >= grid.ground_row,
             "hidden behind the street"
         );
-        let top = moon_at(&grid, lap_start + PASS_SECONDS / 2.0);
+        let top = moon_at(&grid, lap_start + PASS_SECONDS / 2.0, START_PHASE_STEP);
         assert!(top.row - MOON_RADIUS >= 0, "inside the screen");
         assert!(
             top.row + MOON_RADIUS < grid.ground_row - grid.max_h,
             "above every tower"
         );
-        let set = moon_at(&grid, lap_start + PASS_SECONDS - 0.3);
+        let set = moon_at(&grid, lap_start + PASS_SECONDS - 0.3, START_PHASE_STEP);
         assert!(set.x >= grid.cols - 1, "sets at the right edge");
     }
 
     #[test]
     fn the_app_opens_with_the_moon_in_view() {
         let grid = grid();
-        let opening = moon_at(&grid, 0.0);
+        let opening = moon_at(&grid, 0.0, START_PHASE_STEP);
         assert!((0..grid.cols).contains(&opening.x));
         assert!(
             opening.row < grid.ground_row - grid.max_h,
             "center clear of the skyline"
         );
         assert_eq!(
-            moon_at(&grid, -5.0),
-            moon_at(&grid, 0.0),
+            moon_at(&grid, -5.0, START_PHASE_STEP),
+            moon_at(&grid, 0.0, START_PHASE_STEP),
             "negative time clamps"
         );
     }
@@ -395,7 +440,11 @@ mod tests {
         // moon may dip behind a maximum-height tower at the top of its arc.
         // That is fine: the moon lives on the sky layer.
         let grid = Grid::new(1920, 1080, true);
-        let top = moon_at(&grid, (1.5 - START_FRACTION) * PASS_SECONDS);
+        let top = moon_at(
+            &grid,
+            (1.5 - START_FRACTION) * PASS_SECONDS,
+            START_PHASE_STEP,
+        );
         assert!(top.row - MOON_RADIUS >= 0, "inside the screen");
         assert!(top.row + MOON_RADIUS <= grid.ground_row - grid.max_h + 2);
     }
@@ -406,9 +455,9 @@ mod tests {
         let lap_start = (1.0 - START_FRACTION) * PASS_SECONDS;
         // Laps after the opening one show steps 2, 3, ..., so step 0 (new)
         // arrives on the 7th lap after it.
-        let new_lap = moon_at(&grid, lap_start + 6.0 * PASS_SECONDS + 10.0);
+        let new_lap = moon_at(&grid, lap_start + 6.5 * PASS_SECONDS, START_PHASE_STEP);
         assert!(is_station(&new_lap));
-        assert!(!is_station(&moon_at(&grid, 0.0)));
+        assert!(!is_station(&moon_at(&grid, 0.0, START_PHASE_STEP)));
 
         // Same silhouette as the moon.
         for (dx, dy) in [(0, 0), (19, 0), (0, -19), (19, 19), (20, 0)] {
@@ -438,6 +487,55 @@ mod tests {
         assert!(
             !colors.contains(&classic.bg),
             "the station is visible against the sky"
+        );
+    }
+
+    #[test]
+    fn start_step_picks_the_opening_phase_and_laps_still_advance() {
+        let grid = grid();
+        assert!(
+            is_station(&moon_at(&grid, 0.0, 0)),
+            "--moon-phase new: station at launch"
+        );
+        assert_eq!(moon_at(&grid, 0.0, 4).phase, FULL);
+        let next_lap = (1.0 - START_FRACTION) * PASS_SECONDS + 1.0;
+        assert_eq!(
+            moon_at(&grid, next_lap, 4).phase,
+            5.0 / 8.0,
+            "full, then waning gibbous"
+        );
+        assert_eq!(
+            moon_at(&grid, next_lap, 7).phase,
+            NEW,
+            "waning crescent, then new"
+        );
+    }
+
+    #[test]
+    fn moon_phase_values_parse_by_name_or_number() {
+        assert_eq!(parse_moon_phase("new"), Ok(0));
+        assert_eq!(parse_moon_phase("Full"), Ok(4));
+        assert_eq!(parse_moon_phase("waxing_gibbous"), Ok(3));
+        assert_eq!(parse_moon_phase(" last-quarter "), Ok(6));
+        assert_eq!(parse_moon_phase("7"), Ok(7));
+        assert!(parse_moon_phase("8").is_err());
+        assert!(parse_moon_phase("blue")
+            .unwrap_err()
+            .contains("waning-crescent"));
+    }
+
+    #[test]
+    fn a_lap_takes_ten_minutes() {
+        assert_eq!(PASS_SECONDS, 600.0);
+        let grid = grid();
+        let lap_start = (1.0 - START_FRACTION) * PASS_SECONDS;
+        let rise = moon_at(&grid, lap_start, START_PHASE_STEP);
+        let five_minutes_in = moon_at(&grid, lap_start + 300.0, START_PHASE_STEP);
+        assert_eq!(rise.x, -MOON_RADIUS);
+        let middle = (grid.cols - 1) / 2;
+        assert!(
+            (five_minutes_in.x - middle).abs() <= 1,
+            "halfway after 5 minutes"
         );
     }
 
