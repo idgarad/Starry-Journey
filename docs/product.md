@@ -76,7 +76,7 @@ These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are 
 
 ## Current increment status
 
-SKY-001 built a fixed 320 × 180 canvas with a hard-coded blue gradient sky. Both conflict with the Rebuild Prompt, which requires a window-derived grid and a palette `bg` sky. The window, wgpu surface, and fullscreen/monitor handling remain useful. The canvas and sky shader are superseded and will be replaced in the Normal-mode rasterizer step.
+SKY-001 built a fixed 320 × 180 canvas with a hard-coded blue gradient sky. Both conflict with the Rebuild Prompt, which requires a window-derived grid and a palette `bg` sky. The window, wgpu surface, and fullscreen/monitor handling were kept. The canvas and gradient were replaced by the Normal-mode rasterizer, which draws the real city in the window.
 
 REBUILD-001 delivered the first part of step 1: the random generator and stream seeds, the window-derived grid math, and the 12 palettes. See [work.md](work.md).
 

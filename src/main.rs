@@ -1,5 +1,21 @@
-use std::{error::Error, sync::Arc};
+//! Starry Journey application: window, input, and GPU presentation.
+//!
+//! The scene (city model plus CPU rasterizer) lives in the library. This
+//! binary generates a Normal-mode city for the window's grid, uploads the
+//! rasterized logical buffer as a texture, and draws each logical cell as a
+//! `cell x cell` block of device pixels with nearest-neighbor lookup.
 
+use std::{
+    error::Error,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use starry_journey::model::building::Building;
+use starry_journey::model::city::generate_normal_city;
+use starry_journey::model::grid::Grid;
+use starry_journey::model::palette::{palette_by_key, palettes, DEFAULT_PALETTE_KEY};
+use starry_journey::raster::{generate_stars, CityRaster, Star};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -9,25 +25,17 @@ use winit::{
     window::{Fullscreen, Window, WindowId},
 };
 
-const VIRTUAL_WIDTH: u32 = 320;
-const VIRTUAL_HEIGHT: u32 = 180;
+/// Initial window size in physical pixels.
+const INITIAL_SIZE: (u32, u32) = (1280, 720);
+/// Smallest window size in physical pixels.
+const MIN_SIZE: (u32, u32) = (320, 180);
 
+#[derive(Default)]
 struct App {
     window: Option<Arc<Window>>,
     renderer: Option<Renderer>,
     fullscreen: bool,
     monitor_index: usize,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            window: None,
-            renderer: None,
-            fullscreen: false,
-            monitor_index: 0,
-        }
-    }
 }
 
 impl App {
@@ -72,9 +80,9 @@ impl ApplicationHandler for App {
         }
 
         let attributes = Window::default_attributes()
-            .with_title("Starry Journey — Sky 320 × 180")
-            .with_inner_size(PhysicalSize::new(1280, 720))
-            .with_min_inner_size(PhysicalSize::new(320, 180));
+            .with_title("Starry Journey")
+            .with_inner_size(PhysicalSize::new(INITIAL_SIZE.0, INITIAL_SIZE.1))
+            .with_min_inner_size(PhysicalSize::new(MIN_SIZE.0, MIN_SIZE.1));
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
@@ -84,13 +92,13 @@ impl ApplicationHandler for App {
             }
         };
 
-        match pollster::block_on(Renderer::new(Arc::clone(&window))) {
+        match pollster::block_on(Renderer::new(Arc::clone(&window), random_seed())) {
             Ok(renderer) => {
                 self.window = Some(window);
                 self.renderer = Some(renderer);
             }
             Err(error) => {
-                eprintln!("Could not initialize the sky renderer: {error}");
+                eprintln!("Could not initialize the renderer: {error}");
                 event_loop.exit();
             }
         }
@@ -126,6 +134,16 @@ impl ApplicationHandler for App {
                         KeyCode::Escape => event_loop.exit(),
                         KeyCode::KeyF => self.toggle_fullscreen(),
                         KeyCode::Tab => self.cycle_monitor(),
+                        KeyCode::KeyP => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.next_palette();
+                            }
+                        }
+                        KeyCode::KeyR => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.restart(random_seed());
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -145,7 +163,7 @@ impl ApplicationHandler for App {
                             event_loop.exit();
                         }
                         Err(error) => {
-                            eprintln!("Could not render the sky: {error}");
+                            eprintln!("Could not render the scene: {error}");
                             event_loop.exit();
                         }
                     }
@@ -163,19 +181,58 @@ impl ApplicationHandler for App {
     }
 }
 
+/// A seed for a new city, from the wall clock. Cities only need to differ
+/// between launches and restarts, not be unpredictable.
+fn random_seed() -> u32 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    (now.as_secs() as u32).wrapping_mul(0x9e37_79b9) ^ now.subsec_nanos()
+}
+
+/// The generated scene for one grid: buildings and stars.
+struct Scene {
+    seed: u32,
+    grid: Grid,
+    buildings: Vec<Building>,
+    stars: Vec<Star>,
+}
+
+impl Scene {
+    /// Generates a fully built Normal-mode city. Windows are lit to their
+    /// targets until the reveal feature animates construction.
+    fn new(seed: u32, width: u32, height: u32) -> Self {
+        let grid = Grid::new(width, height, false);
+        let mut buildings = generate_normal_city(seed, &grid);
+        for building in &mut buildings {
+            building.windows.light_to_target();
+        }
+        let stars = generate_stars(seed, &grid);
+        Self {
+            seed,
+            grid,
+            buildings,
+            stars,
+        }
+    }
+}
+
 struct Renderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
-    sky_texture: wgpu::Texture,
-    sky_pipeline: wgpu::RenderPipeline,
-    present_pipeline: wgpu::RenderPipeline,
-    present_bind_group: wgpu::BindGroup,
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    params: wgpu::Buffer,
+    city_texture: wgpu::Texture,
+    bind_group: wgpu::BindGroup,
+    scene: Scene,
+    palette_index: usize,
 }
 
 impl Renderer {
-    async fn new(window: Arc<Window>) -> Result<Self, Box<dyn Error>> {
+    async fn new(window: Arc<Window>, seed: u32) -> Result<Self, Box<dyn Error>> {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window))?;
         let adapter = instance
@@ -199,6 +256,7 @@ impl Renderer {
             .await?;
 
         let capabilities = surface.get_capabilities(&adapter);
+        // An sRGB surface re-encodes the decoded sRGB texture exactly.
         let surface_format = capabilities
             .formats
             .iter()
@@ -216,117 +274,51 @@ impl Renderer {
         };
         surface.configure(&device, &surface_config);
 
-        let sky_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("320 × 180 virtual sky"),
-            size: wgpu::Extent3d {
-                width: VIRTUAL_WIDTH,
-                height: VIRTUAL_HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let sky_view = sky_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sky_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Sky layer shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
-        });
-        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Virtual sky pipeline"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &sky_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &sky_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-            cache: None,
-        });
-
-        let present_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Virtual pixel presentation shader"),
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("City presentation shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
         });
-        let present_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Nearest-neighbor virtual pixel sampler"),
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            ..Default::default()
-        });
-        let present_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("Virtual sky texture bindings"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
-        let present_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Virtual sky texture"),
-            layout: &present_bind_group_layout,
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("City texture and cell size"),
             entries: &[
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&sky_view),
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
                 },
-                wgpu::BindGroupEntry {
+                wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&present_sampler),
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
             ],
         });
-        let present_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Virtual pixel presentation pipeline layout"),
-                bind_group_layouts: &[&present_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-        let present_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Nearest-neighbor presentation pipeline"),
-            layout: Some(&present_pipeline_layout),
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("City presentation pipeline layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("City presentation pipeline"),
+            layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &present_shader,
+                module: &shader,
                 entry_point: Some("vs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 buffers: &[],
             },
             fragment: Some(wgpu::FragmentState {
-                module: &present_shader,
+                module: &shader,
                 entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
@@ -341,19 +333,39 @@ impl Renderer {
             multiview: None,
             cache: None,
         });
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Cell size"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
-        Ok(Self {
+        let scene = Scene::new(seed, surface_config.width, surface_config.height);
+        let city_texture = create_city_texture(&device, &scene.grid);
+        let bind_group = create_bind_group(&device, &bind_group_layout, &city_texture, &params);
+        let palette_index = palettes()
+            .iter()
+            .position(|palette| palette.key == DEFAULT_PALETTE_KEY)
+            .unwrap_or(0);
+        let mut renderer = Self {
             surface,
             device,
             queue,
             surface_config,
-            sky_texture,
-            sky_pipeline,
-            present_pipeline,
-            present_bind_group,
-        })
+            pipeline,
+            bind_group_layout,
+            params,
+            city_texture,
+            bind_group,
+            scene,
+            palette_index,
+        };
+        renderer.upload();
+        Ok(renderer)
     }
 
+    /// Reconfigures the surface and rebuilds the city with the same seed for
+    /// the new grid (Rebuild Prompt: resize rebuilds using the same seed).
     fn resize(&mut self, size: PhysicalSize<u32>) {
         if size.width == 0 || size.height == 0 {
             return;
@@ -361,6 +373,70 @@ impl Renderer {
         self.surface_config.width = size.width;
         self.surface_config.height = size.height;
         self.surface.configure(&self.device, &self.surface_config);
+        let new_grid = Grid::new(size.width, size.height, false);
+        if new_grid != self.scene.grid {
+            self.scene = Scene::new(self.scene.seed, size.width, size.height);
+            self.upload();
+        }
+    }
+
+    /// Generates a new city with a new seed.
+    fn restart(&mut self, seed: u32) {
+        self.scene = Scene::new(seed, self.surface_config.width, self.surface_config.height);
+        self.upload();
+    }
+
+    /// Switches to the next palette without regenerating geometry.
+    fn next_palette(&mut self) {
+        self.palette_index = (self.palette_index + 1) % palettes().len();
+        self.upload();
+    }
+
+    /// Rasterizes the scene and uploads it, recreating the texture only when
+    /// the grid dimensions change.
+    fn upload(&mut self) {
+        let palette = palettes()
+            .get(self.palette_index)
+            .or_else(|| palette_by_key(DEFAULT_PALETTE_KEY))
+            .expect("the default palette exists");
+        let raster = CityRaster::render(
+            &self.scene.grid,
+            &self.scene.buildings,
+            &self.scene.stars,
+            palette,
+        );
+        let size = self.city_texture.size();
+        if size.width as usize != raster.width || size.height as usize != raster.height {
+            self.city_texture = create_city_texture(&self.device, &self.scene.grid);
+            self.bind_group = create_bind_group(
+                &self.device,
+                &self.bind_group_layout,
+                &self.city_texture,
+                &self.params,
+            );
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.city_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &raster.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(raster.width as u32 * 4),
+                rows_per_image: Some(raster.height as u32),
+            },
+            self.city_texture.size(),
+        );
+        let cell = self.scene.grid.cell as f32;
+        let params: [f32; 4] = [cell, 0.0, 0.0, 0.0];
+        let bytes: Vec<u8> = params
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        self.queue.write_buffer(&self.params, 0, &bytes);
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -368,37 +444,14 @@ impl Renderer {
         let frame_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let sky_view = self
-            .sky_texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Sky layer command encoder"),
+                label: Some("City frame encoder"),
             });
-
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render virtual sky pixels"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &sky_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&self.sky_pipeline);
-            pass.draw(0..3, 0..1);
-        }
-
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Present virtual sky pixels"),
+                label: Some("Present city"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &frame_view,
                     resolve_target: None,
@@ -411,22 +464,55 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-            let scale = (self.surface_config.width as f32 / VIRTUAL_WIDTH as f32)
-                .min(self.surface_config.height as f32 / VIRTUAL_HEIGHT as f32);
-            let width = VIRTUAL_WIDTH as f32 * scale;
-            let height = VIRTUAL_HEIGHT as f32 * scale;
-            let x = (self.surface_config.width as f32 - width) * 0.5;
-            let y = (self.surface_config.height as f32 - height) * 0.5;
-            pass.set_viewport(x, y, width, height, 0.0, 1.0);
-            pass.set_pipeline(&self.present_pipeline);
-            pass.set_bind_group(0, &self.present_bind_group, &[]);
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
     }
+}
+
+/// Creates the logical-resolution city texture (sRGB, one texel per cell).
+fn create_city_texture(device: &wgpu::Device, grid: &Grid) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Logical city buffer"),
+        size: wgpu::Extent3d {
+            width: grid.cols.max(1) as u32,
+            height: grid.rows.max(1) as u32,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    texture: &wgpu::Texture,
+    params: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("City texture and cell size"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: params.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -441,22 +527,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn virtual_canvas_is_320_by_180() {
-        assert_eq!((VIRTUAL_WIDTH, VIRTUAL_HEIGHT), (320, 180));
-        assert_eq!(VIRTUAL_WIDTH * 4, 1280);
-        assert_eq!(VIRTUAL_HEIGHT * 4, 720);
+    fn presentation_shader_passes_wgsl_validation() {
+        let module = naga::front::wgsl::parse_str(include_str!("present.wgsl"))
+            .expect("shader should parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("shader should validate");
     }
 
     #[test]
-    fn sky_and_presentation_shaders_pass_wgsl_validation() {
-        for source in [include_str!("sky.wgsl"), include_str!("present.wgsl")] {
-            let module = naga::front::wgsl::parse_str(source).expect("shader should parse");
-            naga::valid::Validator::new(
-                naga::valid::ValidationFlags::all(),
-                naga::valid::Capabilities::all(),
-            )
-            .validate(&module)
-            .expect("shader should validate");
-        }
+    fn scene_covers_the_window_grid_and_is_fully_built() {
+        let scene = Scene::new(11, 1280, 720);
+        assert_eq!(
+            (scene.grid.cols, scene.grid.rows, scene.grid.cell),
+            (427, 240, 3)
+        );
+        assert!(!scene.buildings.is_empty());
+        assert!(scene
+            .buildings
+            .iter()
+            .all(|b| b.windows.lit == b.windows.target));
+        assert!(!scene.stars.is_empty());
+    }
+
+    #[test]
+    fn random_seeds_differ_over_time() {
+        let a = random_seed();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_ne!(a, random_seed());
     }
 }

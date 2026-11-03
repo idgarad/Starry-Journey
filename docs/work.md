@@ -1,5 +1,43 @@
 # Active work
 
+## REBUILD-003: Normal-mode rendering
+
+| Branch | Contents | Status |
+| --- | --- | --- |
+| `feature/normal-rasterizer` | CPU rasterizer; GPU presentation of the real city; `P` and `R` keys | Merged |
+| `feature/normal-reveal` | 240-second cell-by-cell construction, then window flicker | Planned |
+| `feature/normal-ambience` | Beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/normal-rasterizer
+
+- **Delivered:**
+  - [src/raster.rs](../src/raster.rs): `CityRaster::render` builds a logical-grid RGBA buffer plus `owner`, `window_index`, and `depth` arrays. Ownership is resolved before any painting, so nearer layers hide farther ones and hidden windows never paint through. It draws:
+    - the palette `bg` sky;
+    - seeded stars from the ambient stream, `round(cols × groundRow × 0.0035)` of them with fade 0–0.6;
+    - bodies faded toward `bg` by 1.5 × the layer fade;
+    - lit windows in their tone color, faded toward the body by their shade (unlit windows are body-colored);
+    - masts in the antenna color with a beacon tip;
+    - landmark lights in the palette decor color, or HSL from hue and decor lightness.
+  - [src/main.rs](../src/main.rs) and [src/present.wgsl](../src/present.wgsl): the window now shows the generated city.
+    - The buffer is uploaded as an sRGB texture (one texel per cell), and the shader draws each cell as an exact `cell × cell` pixel block from the top-left.
+    - Resizing rebuilds the city with the same seed. `P` cycles palettes without regenerating; `R` restarts with a new seed.
+    - The SKY-001 gradient (`sky.wgsl`) and its 320 × 180 constants were removed. Its test `virtual_canvas_is_320_by_180` was removed with it, because it tested the superseded canvas. New tests cover the scene grid instead.
+  - `App` now derives `Default`, which clears the long-standing clippy warning.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 90 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean, with no warnings.
+  - `cargo build`: PASS.
+  - Windows GUI run: the app launched at 1280 × 720 (427 × 240 cells, cell 3), and screenshots were reviewed in Classic and ArtDeco (after pressing `P`). The window closed cleanly.
+- **For now:** windows show fully built until `feature/normal-reveal`, and lights are steady.
+- **Assumptions:**
+  - AS-R005: an accent building's body moves 35% toward the palette accent color. The spec gives the accent and its chance but not how it is applied.
+  - AS-R006: generated landmark colors use HSL saturation 80%.
+  - Interpretation: a window's shade fades its lit color toward the building body, not the sky.
+- **Tuning notes against the reference screenshot:**
+  - Bodies are darker than in the reference, possibly because the ArtDeco material isn't built yet or because of the photo's exposure.
+  - Lower-floor windows look dimmer than in the reference.
+
 ## REBUILD-002: Building generation (complete)
 
 | Branch | Contents | Status |
