@@ -19,6 +19,7 @@ use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
 use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, untimed_step, ConstructionView, Reveal};
+use starry_journey::street::StreetLayer;
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -232,7 +233,7 @@ fn random_seed() -> u32 {
 }
 
 /// The generated scene for one grid: the city, its stars, the ownership
-/// raster, the construction reveal, and the image currently shown.
+/// raster, the construction reveal, the street, and the composed frame.
 struct Scene {
     seed: u32,
     grid: Grid,
@@ -241,6 +242,9 @@ struct Scene {
     ownership: CityRaster,
     reveal: Reveal,
     view: ConstructionView,
+    street: StreetLayer,
+    /// The image to present: the city view with the street drawn over it.
+    frame: Vec<u8>,
 }
 
 impl Scene {
@@ -254,7 +258,9 @@ impl Scene {
         progress: f64,
         scaling: CellScaling,
     ) -> Self {
-        let grid = Grid::with_scaling(width, height, false, scaling);
+        // Starry Journey extension: Normal mode has the road too, so the
+        // grid reserves the seven road rows below the city.
+        let grid = Grid::with_scaling(width, height, true, scaling);
         let mut buildings = generate_normal_city(seed, &grid);
         let stars = generate_stars(seed, &grid);
         let ownership = CityRaster::render(&grid, &buildings, &stars, palette);
@@ -262,7 +268,8 @@ impl Scene {
         let cells = reveal.advance_to(progress).to_vec();
         light_revealed(&mut buildings, &ownership, &cells);
         let view = Self::view_for(&grid, &buildings, &stars, palette, &reveal);
-        Self {
+        let street = StreetLayer::new(&grid, seed, palette);
+        let mut scene = Self {
             seed,
             grid,
             buildings,
@@ -270,7 +277,20 @@ impl Scene {
             ownership,
             reveal,
             view,
-        }
+            street,
+            frame: Vec::new(),
+        };
+        scene.compose();
+        scene
+    }
+
+    /// Rebuilds the presented frame: city view, then the street's back
+    /// layer (road and background trees), then its front layer.
+    /// O(grid cells + street cells).
+    fn compose(&mut self) {
+        self.frame.clone_from(&self.view.rgba);
+        self.street.apply_back(&mut self.frame);
+        self.street.apply_front(&mut self.frame);
     }
 
     /// The shown image: the finished city where revealed, sky elsewhere.
@@ -296,6 +316,8 @@ impl Scene {
             palette,
             &self.reveal,
         );
+        self.street = StreetLayer::new(&self.grid, self.seed, palette);
+        self.compose();
     }
 
     /// Advances untimed construction by one frame of `dt` seconds.
@@ -555,6 +577,7 @@ impl Renderer {
         self.last_frame = Some(now);
         self.scene.advance(dt, self.speed);
         if self.scene.view.take_dirty() {
+            self.scene.compose();
             self.upload();
         }
     }
@@ -596,7 +619,7 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &self.scene.view.rgba,
+            &self.scene.frame,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(width * 4),
@@ -736,8 +759,34 @@ mod tests {
             .map(|b| b.roof_height())
             .max()
             .unwrap();
-        assert!(tallest <= large.grid.max_h && large.grid.max_h == 196);
+        // 240-row reference minus the 7 road rows: floor(233 * 0.82).
+        assert!(tallest <= large.grid.max_h && large.grid.max_h == 191);
         assert!(large.reveal.is_complete());
+    }
+
+    #[test]
+    fn normal_scene_has_a_road_and_trees_from_the_start() {
+        let scene = Scene::new(15, 1280, 720, classic(), 0.0, CellScaling::Fixed(3));
+        let grid = scene.grid;
+        assert_eq!(grid.ground_row, grid.rows - 7, "road rows are reserved");
+        let pixel = |x: i32, row: i32| {
+            let i = (row * grid.cols + x) as usize * 4;
+            [scene.frame[i], scene.frame[i + 1], scene.frame[i + 2]]
+        };
+        assert_eq!(pixel(1, grid.ground_row), classic().lane.0, "top curb");
+        assert_eq!(pixel(1, grid.rows - 1), classic().lane.0, "bottom curb");
+        let road_cells = (0..grid.cols)
+            .filter(|&x| pixel(x, grid.ground_row + 2) == classic().road.0)
+            .count();
+        assert!(road_cells > grid.cols as usize / 2);
+        assert_ne!(
+            scene.frame, scene.view.rgba,
+            "street is drawn over the empty sky"
+        );
+        assert!(scene
+            .buildings
+            .iter()
+            .all(|b| b.roof_height() <= grid.max_h));
     }
 
     #[test]

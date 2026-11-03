@@ -130,7 +130,7 @@ pub fn is_light_palette(palette: &Palette) -> bool {
 /// antenna color, also faded on dark palettes.
 pub fn tree_colors(tree: &Tree, palette: &Palette) -> (Rgb, Rgb, Rgb) {
     let body = if tree.is_conifer() {
-        palette.bodies[if tree.tint % 2 == 0 { 2 } else { 5 }]
+        palette.bodies[if tree.tint.is_multiple_of(2) { 2 } else { 5 }]
     } else {
         palette.bodies[usize::from(tree.tint % 6)]
     };
