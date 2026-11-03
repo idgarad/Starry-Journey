@@ -29,8 +29,9 @@ use winit::{
     window::{Fullscreen, Window, WindowId},
 };
 
-/// Initial window size in physical pixels.
-const INITIAL_SIZE: (u32, u32) = (1280, 720);
+/// Initial window size in physical pixels: 1080p, the assumed screen size
+/// for testing (owner decision, 2026-11-03).
+const INITIAL_SIZE: (u32, u32) = (1920, 1080);
 /// Smallest window size in physical pixels.
 const MIN_SIZE: (u32, u32) = (320, 180);
 /// Speed range and step for the `+` and `-` keys (Rebuild Prompt: 0.25..4).
