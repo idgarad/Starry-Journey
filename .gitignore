@@ -5,3 +5,8 @@
 # except the README that explains the folder. See docs/product.md.
 /Sounds/Music/*
 !/Sounds/Music/README.md
+
+# Agent working references: kept locally for tuning, never committed.
+# Only the handoff note is tracked.
+/.ai/*
+!/.ai/handoff.md

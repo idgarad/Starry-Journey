@@ -87,6 +87,9 @@ Planned order, from the Rebuild Prompt:
 
 ## Visual references
 
-- `.ai/starry-night-cityscape-reference.png`
-- `.ai/starry-night-sunset-cityscape-reference.png` (the sunset sky belongs to the future day/night extension)
-- `.ai/starry-night-detailed-cityscape-reference.jpg` (an exact screenshot of the Python version using the ArtDeco palette)
+Reference images live in `.ai/` on the owner's machine only. They are gitignored and not part of the repository, so they are used for tuning but never distributed.
+
+- **Fidelity target:** `.ai/starry-night-detailed-cityscape-reference.jpg`, a photo of the Python version running Endless mode with the ArtDeco palette. Its grid is the spec's (about 240 rows), so the Rust grid formula reproduces its pixel density; no rescaling is needed.
+- `.ai/starry-night-cityscape-reference.png`.
+- `.ai/starry-night-sunset-cityscape-reference.png`. The sunset sky belongs to the future day/night extension.
+- Further mood references added on 2026-11-03 (`ref9.jpg`, `refimage7.bmp`, `reimage8.bmp`, and an `.avif`): simple blocks, sparse windows, antennas, a moon, clouds, and haze. Some are watermarked stock images; they must not be committed.
