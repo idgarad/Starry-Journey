@@ -9,7 +9,13 @@
 | `feature/pixel-size-option` | `--pixel-size N` fixed virtual pixel size (option C) | Merged |
 | `feature/default-pixel-size` | Fixed 3-pixel virtual pixels by default; `--pixel-size spec` for the spec formula | Merged |
 | `feature/construction-timer` | `--timer`/`--deadline` duration clock; time left in the title | Merged |
+| `feature/default-window-1080p` | Opens at 1920 × 1080 (testing size) | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/default-window-1080p
+
+- **Decision (owner, 2026-11-03):** the app opens at 1920 × 1080, the assumed screen size for testing. At the default 3-pixel cells that is a 640 × 360 grid.
+- **Verification:** `cargo build` PASS; `cargo test` PASS (118 on main).
 
 ### feature/construction-timer
 
