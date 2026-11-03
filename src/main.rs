@@ -312,13 +312,25 @@ impl Scene {
                 self.frame[cell * 4..cell * 4 + 3].copy_from_slice(&color.0);
             }
         }
-        self.street.apply_back(&mut self.frame);
-        if let Some(traffic) = &self.traffic {
-            let mut paint = CellPaint::new();
-            traffic.paint(&self.grid, self.palette, &mut paint);
-            apply_paint(&paint, &mut self.frame);
+        match &self.traffic {
+            None => {
+                self.street.apply_back(&mut self.frame);
+                self.street.apply_front(&mut self.frame);
+            }
+            Some(traffic) => {
+                // Headlights light up the roadside trees ahead of each car.
+                let grid = self.grid;
+                let light = self.palette.headlight;
+                let glow = |x, row| traffic.glow(&grid, x, row);
+                self.street
+                    .apply_back_lit(&mut self.frame, grid.cols, light, glow);
+                let mut paint = CellPaint::new();
+                traffic.paint(&grid, self.palette, &mut paint);
+                apply_paint(&paint, &mut self.frame);
+                self.street
+                    .apply_front_lit(&mut self.frame, grid.cols, light, glow);
+            }
         }
-        self.street.apply_front(&mut self.frame);
     }
 
     /// Starts traffic once the city is complete (cars then drive in from
@@ -998,6 +1010,26 @@ mod tests {
             finished.traffic.is_some(),
             "a resized finished city keeps its traffic"
         );
+
+        // Park a car 6 cells before a background tree trunk (the cone widens with
+        // distance, so it reaches the road edge there) and check the trunk glows.
+        let mut lit_scene = Scene::new(19, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3));
+        let grid = lit_scene.grid;
+        let &(cell, plain) = lit_scene
+            .street
+            .back_trees
+            .iter()
+            .find(|&&(cell, _)| (cell as i32 / grid.cols) == grid.ground_row - 1)
+            .expect("a background tree trunk on the road edge");
+        let trunk_x = cell as i32 % grid.cols;
+        let traffic = lit_scene.traffic.as_mut().unwrap();
+        traffic.vehicles.truncate(1);
+        traffic.vehicles[0].lane = starry_journey::traffic::Lane::Upper;
+        traffic.vehicles[0].x = f64::from(trunk_x + 6); // cone is wide enough here
+        traffic.vehicles[0].length = 4;
+        lit_scene.compose();
+        let shown = &lit_scene.frame[cell * 4..cell * 4 + 3];
+        assert_ne!(shown, &plain.0[..], "the trunk ahead of the car is lit");
     }
 
     #[test]

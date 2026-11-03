@@ -40,6 +40,10 @@ pub const MAX_MOTION_DT: f64 = 1.0 / 30.0;
 pub const BEAM: [f64; 4] = [0.55, 0.38, 0.22, 0.1];
 /// Beam cells from this distance on also light the vehicle's upper row.
 pub const BEAM_SPREAD_FROM: usize = 2;
+/// How far ahead headlights light up roadside trees, in cells.
+pub const GLOW_REACH: i32 = 8;
+/// Tree tint toward the headlight color just ahead of the bumper.
+pub const GLOW_STRENGTH: f64 = 0.45;
 
 /// Direction of travel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +221,34 @@ impl Traffic {
                 }
             }
         }
+    }
+
+    /// How strongly headlights light the cell `(x, row)`, from 0 to
+    /// [`GLOW_STRENGTH`]: the brightest of all vehicles' cones.
+    ///
+    /// Each cone starts at the headlight and reaches [`GLOW_REACH`] cells
+    /// forward, widening by one row on each side every two cells. Strength
+    /// falls off with distance ahead and with distance from the beam's row.
+    /// Nothing behind a vehicle is lit. O(vehicles).
+    pub fn glow(&self, grid: &Grid, x: i32, row: i32) -> f64 {
+        self.vehicles
+            .iter()
+            .map(|vehicle| {
+                let beam_row = grid.ground_row + vehicle.lane.top_offset() + 1;
+                let ahead = (x - vehicle.front()) * vehicle.lane.direction() as i32;
+                if !(1..=GLOW_REACH).contains(&ahead) {
+                    return 0.0;
+                }
+                let spread = 1 + ahead / 2;
+                let off_axis = (row - beam_row).abs();
+                if off_axis > spread {
+                    return 0.0;
+                }
+                let along = 1.0 - f64::from(ahead - 1) / f64::from(GLOW_REACH);
+                let across = 1.0 - f64::from(off_axis) / f64::from(spread + 1);
+                GLOW_STRENGTH * along * across
+            })
+            .fold(0.0, f64::max)
     }
 
     /// Paints headlight beams, then vehicles, onto `paint` (cells inside the
@@ -458,6 +490,55 @@ mod tests {
             at(300, upper_bottom - 1).is_none(),
             "cab front is one row lower"
         );
+    }
+
+    #[test]
+    fn headlights_glow_on_cells_ahead_but_not_behind_or_far_off() {
+        let grid = grid();
+        let mut traffic = Traffic::new(1, grid.cols);
+        traffic.vehicles = vec![Vehicle {
+            lane: Lane::Lower,
+            x: 100.0,
+            length: 5,
+            truck: false,
+            speed: 10.0,
+            color: 0,
+        }];
+        let beam_row = grid.ground_row + 5;
+        let front = 104;
+        let near = traffic.glow(&grid, front + 1, beam_row);
+        let far = traffic.glow(&grid, front + GLOW_REACH, beam_row);
+        assert!(
+            near > far && far > 0.0,
+            "fades with distance: {near} > {far}"
+        );
+        assert!(
+            (near - GLOW_STRENGTH).abs() < 1e-9,
+            "full strength at the bumper"
+        );
+        assert_eq!(
+            traffic.glow(&grid, front + GLOW_REACH + 1, beam_row),
+            0.0,
+            "out of reach"
+        );
+        assert_eq!(
+            traffic.glow(&grid, front, beam_row),
+            0.0,
+            "not the car itself"
+        );
+        assert_eq!(traffic.glow(&grid, 99, beam_row), 0.0, "nothing behind");
+        // The cone widens: off-axis rows light up further ahead.
+        assert_eq!(traffic.glow(&grid, front + 1, beam_row - 3), 0.0);
+        assert!(traffic.glow(&grid, front + 6, beam_row - 3) > 0.0);
+        assert!(
+            traffic.glow(&grid, front + 6, beam_row - 3) < traffic.glow(&grid, front + 6, beam_row),
+            "weaker off the beam's row"
+        );
+        // Left-driving vehicles light to their left.
+        traffic.vehicles[0].lane = Lane::Upper;
+        let upper_row = grid.ground_row + 2;
+        assert!(traffic.glow(&grid, 99, upper_row) > 0.0);
+        assert_eq!(traffic.glow(&grid, 106, upper_row), 0.0);
     }
 
     #[test]

@@ -24,8 +24,10 @@ pub type CellPaint = Vec<(usize, Rgb)>;
 /// The street's static layers for one grid and palette.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreetLayer {
-    /// Road plus background-verge trees, drawn before traffic.
+    /// Road, curbs, and lane dashes, drawn before traffic.
     pub back: CellPaint,
+    /// Background-verge trees, drawn after the road and before traffic.
+    pub back_trees: CellPaint,
     /// Foreground-verge trees, drawn after traffic.
     pub front: CellPaint,
 }
@@ -44,25 +46,56 @@ impl StreetLayer {
             }
         }
         // Background trees stand on the road's top edge.
+        let mut back_trees = CellPaint::new();
         for tree in trees_in(seed, 0, grid.cols, false) {
-            paint_tree(&mut back, grid, &tree, road_top, palette);
+            paint_tree(&mut back_trees, grid, &tree, road_top, palette);
         }
         // Foreground trees stand on the bottom row of the screen.
         let mut front = CellPaint::new();
         for tree in trees_in(seed, 0, grid.cols, true) {
             paint_tree(&mut front, grid, &tree, grid.rows, palette);
         }
-        Self { back, front }
+        Self {
+            back,
+            back_trees,
+            front,
+        }
     }
 
-    /// Paints the layer drawn behind traffic into an RGBA buffer.
+    /// Paints the layers drawn behind traffic (road, then background
+    /// trees) into an RGBA buffer.
     pub fn apply_back(&self, rgba: &mut [u8]) {
         apply_paint(&self.back, rgba);
+        apply_paint(&self.back_trees, rgba);
     }
 
     /// Paints the layer drawn in front of traffic into an RGBA buffer.
     pub fn apply_front(&self, rgba: &mut [u8]) {
         apply_paint(&self.front, rgba);
+    }
+
+    /// Like [`StreetLayer::apply_back`], but tints background trees toward
+    /// `light` by `glow(x, row)` (0 = unlit, 1 = fully the light color).
+    pub fn apply_back_lit(
+        &self,
+        rgba: &mut [u8],
+        cols: i32,
+        light: Rgb,
+        glow: impl Fn(i32, i32) -> f64,
+    ) {
+        apply_paint(&self.back, rgba);
+        apply_lit(&self.back_trees, rgba, cols, light, &glow);
+    }
+
+    /// Like [`StreetLayer::apply_front`], with trees tinted by `glow`.
+    pub fn apply_front_lit(
+        &self,
+        rgba: &mut [u8],
+        cols: i32,
+        light: Rgb,
+        glow: impl Fn(i32, i32) -> f64,
+    ) {
+        apply_lit(&self.front, rgba, cols, light, &glow);
     }
 }
 
@@ -99,6 +132,28 @@ fn paint_tree(paint: &mut CellPaint, grid: &Grid, tree: &Tree, ground: i32, pale
 fn push(paint: &mut CellPaint, grid: &Grid, x: i32, row: i32, color: Rgb) {
     if (0..grid.cols).contains(&x) && (0..grid.rows).contains(&row) {
         paint.push((row as usize * grid.cols as usize + x as usize, color));
+    }
+}
+
+/// Paints cell colors tinted toward `light` by `glow(x, row)`.
+fn apply_lit(
+    paint: &CellPaint,
+    rgba: &mut [u8],
+    cols: i32,
+    light: Rgb,
+    glow: &impl Fn(i32, i32) -> f64,
+) {
+    let cols = cols.max(1) as usize;
+    for &(cell, color) in paint {
+        let strength = glow((cell % cols) as i32, (cell / cols) as i32);
+        let color = if strength > 0.0 {
+            crate::raster::mix(color, light, strength)
+        } else {
+            color
+        };
+        if let Some(pixel) = rgba.get_mut(cell * 4..cell * 4 + 3) {
+            pixel.copy_from_slice(&color.0);
+        }
     }
 }
 
@@ -151,6 +206,7 @@ mod tests {
         assert!(street
             .back
             .iter()
+            .chain(&street.back_trees)
             .chain(&street.front)
             .all(|&(cell, _)| cell < cells));
         let mut rgba = vec![0u8; cells * 4];
@@ -178,7 +234,7 @@ mod tests {
         let front_trees = trees_in(8, 0, grid.cols, true);
         assert!(!back_trees.is_empty() && !front_trees.is_empty());
         let trunk = tree_colors(&back_trees[0], classic).2;
-        let back_rows = rows(&street.back, &[trunk]);
+        let back_rows = rows(&street.back_trees, &[trunk]);
         assert_eq!(
             back_rows.iter().max(),
             Some(&(grid.ground_row - 1)),
