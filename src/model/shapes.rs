@@ -760,6 +760,7 @@ mod tests {
             tone: 0,
             accent_roll: 0.0,
             windows: WindowSet::default(),
+            mast: None,
         }
     }
 

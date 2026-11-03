@@ -339,6 +339,21 @@ impl WindowSet {
     }
 }
 
+/// A rooftop mast: a one-column antenna with a blinking beacon at its tip.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mast {
+    /// World column, centered over the highest tier.
+    pub x: i32,
+    /// Bottom height (inclusive): the top of the highest tier.
+    pub h0: i32,
+    /// Top height (exclusive); at most `max_h`.
+    pub h1: i32,
+    /// Beacon blink period in seconds, 1.2 to 2.5.
+    pub beacon_period: f64,
+    /// Beacon phase offset in seconds, `0..beacon_period`.
+    pub beacon_phase: f64,
+}
+
 /// One generated building.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Building {
@@ -360,6 +375,8 @@ pub struct Building {
     pub accent_roll: f64,
     /// Window cells.
     pub windows: WindowSet,
+    /// Optional rooftop mast.
+    pub mast: Option<Mast>,
 }
 
 /// A broken building invariant, reported by [`Building::validate`].
@@ -381,6 +398,8 @@ pub enum BuildingError {
     TierUnsupported(usize),
     /// Window `index` is not inside any tier.
     WindowOutsideTiers(usize),
+    /// The mast is outside the footprint, floats, or exceeds the height limit.
+    BadMast,
     /// The window arrays have different lengths.
     InconsistentWindows,
 }
@@ -432,6 +451,13 @@ impl Building {
                 return Err(BuildingError::TierUnsupported(index));
             }
         }
+        if let Some(mast) = self.mast {
+            let on_roof = mast.h0 == self.roof_height() && self.covers(mast.x, mast.h0 - 1);
+            let in_footprint = (self.x0..self.x1).contains(&mast.x);
+            if !on_roof || !in_footprint || mast.h1 <= mast.h0 || mast.h1 > max_h {
+                return Err(BuildingError::BadMast);
+            }
+        }
         if !self.windows.is_consistent() {
             return Err(BuildingError::InconsistentWindows);
         }
@@ -460,6 +486,7 @@ mod tests {
             tone: 0,
             accent_roll: 0.5,
             windows: WindowSet::default(),
+            mast: None,
         }
     }
 
@@ -632,6 +659,26 @@ mod tests {
         let mut bad_layer = building(vec![base]);
         bad_layer.layer = 4;
         assert_eq!(bad_layer.validate(50), Err(BuildingError::BadLayer(4)));
+
+        let mast = Mast {
+            x: 15,
+            h0: 30,
+            h1: 40,
+            beacon_period: 2.0,
+            beacon_phase: 0.5,
+        };
+        let mut masted = building(vec![base]);
+        masted.mast = Some(mast);
+        assert_eq!(masted.validate(40), Ok(()));
+        assert_eq!(masted.validate(39), Err(BuildingError::BadMast));
+        masted.mast = Some(Mast { h0: 29, ..mast });
+        assert_eq!(
+            masted.validate(50),
+            Err(BuildingError::BadMast),
+            "not on roof"
+        );
+        masted.mast = Some(Mast { x: 25, ..mast });
+        assert_eq!(masted.validate(50), Err(BuildingError::BadMast), "outside");
 
         let mut empty = building(vec![base]);
         empty.x1 = empty.x0;
