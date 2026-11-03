@@ -56,7 +56,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | Path | Contents |
 | --- | --- |
 | [src/main.rs](src/main.rs) | Window, GPU surface, fullscreen/monitor handling, and the current placeholder renderer. |
-| [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones). |
+| [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters). |
 | [src/*.wgsl](src/) | Placeholder sky and presentation shaders, to be replaced. |
 | [tests/](tests/) | Integration tests. |
 | [docs/Rebuild Prompt.md](docs/Rebuild%20Prompt.md) | Primary behavioral specification, carried over from the Python/browser version. |
