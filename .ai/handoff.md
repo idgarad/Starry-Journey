@@ -1,8 +1,20 @@
 # Handoff
 
-- Primary spec: [docs/Rebuild Prompt.md](../docs/Rebuild%20Prompt.md), with Rust-specific deviations and deferred extensions recorded in [docs/product.md](../docs/product.md). The photo skyline is dropped. Background music (`Sounds/Music/`) is a deferred extension.
-- Last completed: `feature/night-traffic` committed on its branch, UNMERGED pending owner visual review (traffic after completion, headlights with road beams). 161 tests pass. Next: `feature/normal-ambience`.
-- Rendering: CPU raster (`src/raster.rs`) uploaded as a texture; `present.wgsl` scales each cell to an exact cell×cell block.
-- Next candidates are listed in work.md. `feature/normal-ambience` (flicker after completion, beacons, landmark cycling, twinkles, shooting stars) is next.
-- Open decisions: native UI approach for controls (`egui` or keyboard only); adopting the rest of the `AGENTS.md` process (`Docs/` layout, backlog).
-- Git: feature-branch workflow. Work on `feature/<name>` branches and merge to `main` with `git merge --no-ff`. See the README "Git workflow" section. `Sounds/Music/` is gitignored except its README; users supply their own music.
+- Primary spec: [docs/Rebuild Prompt.md](../docs/Rebuild%20Prompt.md). Rust-specific deviations and owner decisions are in [docs/product.md](../docs/product.md); work history and verification are in [docs/work.md](../docs/work.md).
+- State (2026-11-03): Normal mode is feature-complete for now. Merged features:
+  - the city reveal;
+  - 3 px pixels by default (`--pixel-size`);
+  - `--timer`/`--deadline`;
+  - street and trees in all palettes;
+  - a 39-cell moon with 10-minute laps, per-lap phases, and `--moon-phase`;
+  - the battle-station easter egg with fighters, a red trench run, and `--station-fate`;
+  - traffic with headlights, road beams, and lane-paired tree lighting.
+
+  162 tests pass; clippy is clean.
+- **Next session:** start Endless mode (owner request). `feature/normal-ambience` (flicker, beacons, landmark cycling, twinkles, shooting stars) is still planned.
+- Open decisions:
+  - the native UI approach for controls (`egui` or keyboard only);
+  - adopting the rest of the `AGENTS.md` process;
+  - whether the battle-station homage stays on by default if the repo goes public.
+- Git: feature branches (`feature/<name>`, `fix/<name>`) merged with `--no-ff`. Stage explicit paths, never `git add -A`. The owner pushes; the agent never does.
+- Builds: the agent uses `CARGO_TARGET_DIR=target/agent` so it never collides with the owner's running `cargo run`. Don't run GUI captures that send keys or steal focus while the owner is at the machine.

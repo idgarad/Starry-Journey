@@ -12,7 +12,7 @@
 | `feature/default-window-1080p` | Opens at 1920 × 1080 (testing size) | Merged |
 | `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
 | `feature/moon` | 39-cell moon crossing in 10 minutes; phase fixed per lap, 8-phase cycle; `--moon-phase`; battle station with fighters, trench run, and `--station-fate` | Merged |
-| `feature/night-traffic` | Cars and trucks after completion, headlights on with a beam | Awaiting owner review |
+| `feature/night-traffic` | Cars and trucks after completion; headlights with road beams and tree lighting (top lane lights top trees, bottom lane bottom trees) | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
 
 ### feature/night-traffic
@@ -51,7 +51,7 @@
     - in the app, no cars during construction and lit headlights in the frame afterwards.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
-  - GUI: awaiting the owner's review.
+  - GUI: reviewed and approved by the owner ("so much better").
 - **Assumptions:** AS-R009: one vehicle per 100 columns, 2 to 6. The spec says only "2..6 vehicles based on viewport width".
 
 ### feature/moon
@@ -435,6 +435,15 @@
 - **Status:** Implemented and verified.
 
 ## Next candidates
+
+**Next session (owner, 2026-11-03): start Endless mode.** The Rebuild Prompt's plan:
+- four independent parallax layers;
+- a sharp device-resolution cache per layer, reconstructed at fractional scroll in linear light;
+- clouds, the road camera, and traffic;
+- buffer extension and pruning.
+
+Normal mode's remaining polish (`feature/normal-ambience`: window flicker, blinking beacons, landmark color cycling, star twinkles, shooting stars) is still planned.
+
 
 1. Launch configuration: command-line parsing for `--speed`, `--palette`, `--message`, `--timer`, `--ends-at`, and `--endless`. `--ends-at` needs a local-timezone crate.
 2. The Normal-mode rasterizer replacing the SKY-001 canvas: palette `bg` sky, building and window colors, stars, and the reveal.
