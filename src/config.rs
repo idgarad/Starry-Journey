@@ -1,11 +1,13 @@
 //! Launch options from the command line (Rebuild Prompt, "Configuration And
 //! Launcher", native equivalent).
 //!
-//! For now this covers the Starry Journey extension `--pixel-size` plus
-//! `--help`. The spec's options (`--speed`, `--palette`, `--timer`, ...)
-//! join this parser in the launch-configuration feature. Invalid input is
+//! For now this covers `--timer` (alias `--deadline`), the Starry Journey
+//! extension `--pixel-size`, and `--help`. The spec's other options
+//! (`--speed`, `--palette`, `--ends-at`, ...) join this parser in the
+//! launch-configuration feature. Invalid input is
 //! reported as an error message; the binary exits with code 2.
 
+use crate::clock::{parse_duration, ConstructionClock};
 use crate::model::grid::CellScaling;
 use crate::model::rng::js_round;
 
@@ -25,6 +27,11 @@ Options:
                      sky. Default: 3.
   --pixel-size spec  Scale virtual pixels with the screen height instead, so
                      every screen shows about 240 virtual rows.
+  --timer D          Finish building the city in exactly D, whatever the
+                     speed. A bare number is minutes; also 90s, 25m, 1h30m.
+                     1 second to 24 hours. Example: --timer 10 for a meeting
+                     that starts in 10 minutes, --timer 10s for a quick test.
+  --deadline D       Same as --timer.
   -h, --help         Show this help.
 
 Keys: P palette, R new city, +/- speed, F fullscreen, Tab next display, Esc quit.";
@@ -45,10 +52,12 @@ impl Default for PixelSize {
 }
 
 /// Parsed launch options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct LaunchOptions {
     /// Virtual pixel size.
     pub pixel_size: PixelSize,
+    /// How construction progress advances.
+    pub clock: ConstructionClock,
     /// True if help was requested.
     pub help: bool,
 }
@@ -84,6 +93,7 @@ where
 {
     let mut options = LaunchOptions::default();
     let mut pixel_size_given = false;
+    let mut timer_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -101,6 +111,18 @@ where
                     .or_else(|| args.next())
                     .ok_or("--pixel-size needs a value, for example --pixel-size 4")?;
                 options.pixel_size = parse_pixel_size(&value)?;
+            }
+            "--timer" | "--deadline" => {
+                if timer_given {
+                    return Err("--timer/--deadline was given more than once".to_string());
+                }
+                timer_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or_else(|| format!("{name} needs a duration, for example {name} 10m"))?;
+                let seconds =
+                    parse_duration(&value).map_err(|message| format!("{name}: {message}"))?;
+                options.clock = ConstructionClock::Duration { seconds };
             }
             _ => return Err(format!("unknown option '{arg}'")),
         }
@@ -193,6 +215,37 @@ mod tests {
         assert!(parse(&["--pixel-size", "0"])
             .unwrap_err()
             .contains("'spec' or a whole number"));
+    }
+
+    #[test]
+    fn timer_and_deadline_alias_set_a_duration_clock() {
+        assert_eq!(parse(&[]).unwrap().clock, ConstructionClock::Untimed);
+        let minutes = parse(&["--timer", "10"]).unwrap();
+        assert_eq!(
+            minutes.clock,
+            ConstructionClock::Duration { seconds: 600.0 }
+        );
+        let seconds = parse(&["--deadline=10s"]).unwrap();
+        assert_eq!(seconds.clock, ConstructionClock::Duration { seconds: 10.0 });
+        let both = parse(&["--deadline", "1h30m", "--pixel-size", "4"]).unwrap();
+        assert_eq!(both.clock, ConstructionClock::Duration { seconds: 5400.0 });
+        assert_eq!(both.pixel_size, PixelSize::Fixed(4));
+    }
+
+    #[test]
+    fn bad_or_repeated_timers_are_rejected() {
+        for args in [
+            &["--timer"][..],
+            &["--timer", "0"],
+            &["--deadline", "soon"],
+            &["--timer", "25h"],
+            &["--timer", "5", "--deadline", "6"],
+        ] {
+            assert!(parse(args).is_err(), "{args:?} should fail");
+        }
+        assert!(parse(&["--deadline", "soon"])
+            .unwrap_err()
+            .starts_with("--deadline:"));
     }
 
     #[test]
