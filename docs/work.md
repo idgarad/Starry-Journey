@@ -8,9 +8,34 @@
 | `feature/tier-shapes` | Tier builders for all 19 kinds; text shape preview | Merged |
 | `feature/expanded-buildings` | 9 extension kinds; wide footprints (see product.md) | Merged |
 | `feature/masts-and-tints` | Masts and beacons; body-tint neighbor contrast | Merged |
-| `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Planned |
+| `feature/window-patterns` | Band, stripe, and grid patterns; shades; tone bytes | Merged |
 | `feature/landmark-decorations` | Crown, band, spire, and roofline decorations | Planned |
 | `feature/city-generator` | Layer cursors and generation; acceptance check 1 | Planned |
+
+### feature/window-patterns
+
+- **Delivered:**
+  - [src/model/windows.rs](../src/model/windows.rs):
+    - `choose_pattern`: bands 20%, stripes 22%, grid 58%, with the spec's pitches and target ratios.
+    - `generate_windows`: places windows on every tier that isn't dark. Rules:
+      - no windows on the ground row;
+      - no windows on exposed top edges or exterior side columns of ordinary tiers 4 or more cells wide;
+      - each cell belongs to the topmost tier covering it;
+      - solid tiers get dense stripes on alternate rows, with a 92% target-on chance;
+      - 12% of windows get their own tone.
+    - `window_shade` follows the spec formula, with a 0.22 right-face fade on the rightmost 38%. `quantize_shade` gives 16 levels. `with_cast_fade` applies the standard-mode 0.3 cast fade, which the city generator will use.
+  - [src/bin/shapes.rs](../src/bin/shapes.rs): the preview now draws generated windows (`o` lit, `_` stays dark).
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 61 tests.
+    - Measured pattern shares are within ±2% of 20/22/58.
+    - The independent tone share is 10% to 13%.
+    - Placement rules hold for all 28 kinds over 12 seeds, and every building still validates.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: no new warnings.
+  - The preview was reviewed at width 14, height 26.
+- **Interpretations:**
+  - Solid tiers keep their top row lit, so bright crowns read at the roofline. Ordinary tiers reserve it.
+  - Patterns are anchored to the footprint's left edge and the ground row, so floors line up across tiers. This makes the right-hand wall column one cell wider on some widths.
 
 ### feature/masts-and-tints
 
