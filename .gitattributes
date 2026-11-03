@@ -1,0 +1,7 @@
+# Normalize text files to LF in the repository; Git converts on checkout as configured.
+* text=auto
+
+# Binary assets: never diff or convert line endings.
+*.png binary
+*.jpg binary
+*.mp3 binary

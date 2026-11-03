@@ -1,0 +1,5 @@
+/target/
+
+# Background music stays local: large binaries, and some tracks are
+# commercial recordings that must not be redistributed. See docs/product.md.
+/Sounds/Music/*.mp3
