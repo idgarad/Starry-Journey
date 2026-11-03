@@ -28,6 +28,12 @@ cargo run
 
 `F` toggles fullscreen on the selected display, `Tab` selects the next display, and `Esc` quits.
 
+To preview the building shapes as text (until the renderer draws them):
+
+```powershell
+cargo run --bin shapes -- 15 40 1   # width, height, seed
+```
+
 ## Test
 
 ```powershell
@@ -56,7 +62,8 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | Path | Contents |
 | --- | --- |
 | [src/main.rs](src/main.rs) | Window, GPU surface, fullscreen/monitor handling, and the current placeholder renderer. |
-| [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters). |
+| [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind). |
+| [src/bin/shapes.rs](src/bin/shapes.rs) | Text preview of building shapes. |
 | [src/*.wgsl](src/) | Placeholder sky and presentation shaders, to be replaced. |
 | [tests/](tests/) | Integration tests. |
 | [docs/Rebuild Prompt.md](docs/Rebuild%20Prompt.md) | Primary behavioral specification, carried over from the Python/browser version. |
