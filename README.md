@@ -11,9 +11,9 @@ It will have 12 live-switchable retro palettes with palette-specific display eff
 
 ## Status
 
-Early rebuild. The pure city model is done: the deterministic random generator, the window-derived grid, all 12 palettes, and full city generation. City generation covers 28 building kinds (the spec's 19 plus 9 additions), masts, tints, windows, landmarks, and both Normal and Endless layouts, and is checked by the spec's first acceptance test. Rendering is next.
+Early rebuild. The app now draws a real generated city in Normal mode (fully built, steady lights). The pure city model is done: the deterministic random generator, the window-derived grid, all 12 palettes, and full city generation. City generation covers 28 building kinds (the spec's 19 plus 9 additions), masts, tints, windows, landmarks, and both Normal and Endless layouts, and is checked by the spec's first acceptance test. The construction reveal, flicker, and blinking lights are next.
 
-The running window still shows an earlier placeholder: a fixed 320 × 180 gradient sky. The Normal-mode rasterizer will replace it.
+Each launch uses a new random city.
 
 ## Requirements
 
@@ -26,7 +26,13 @@ The running window still shows an earlier placeholder: a fixed 320 × 180 gradie
 cargo run
 ```
 
-`F` toggles fullscreen on the selected display, `Tab` selects the next display, and `Esc` quits.
+| Key | Action |
+| --- | --- |
+| `P` | Next palette |
+| `R` | New city |
+| `F` | Toggle fullscreen on the selected display |
+| `Tab` | Select the next display |
+| `Esc` | Quit |
 
 To preview the building shapes as text (until the renderer draws them):
 
@@ -48,7 +54,7 @@ cargo clippy --all-targets
 cargo test
 ```
 
-`cargo test` runs the model unit tests, the shader validation tests, and [tests/palette_spec.rs](tests/palette_spec.rs). That last test checks every palette value against the JSON in the spec.
+`cargo test` runs the model and rasterizer unit tests, the shader validation test, and [tests/palette_spec.rs](tests/palette_spec.rs). That last test checks every palette value against the JSON in the spec.
 
 ## Git workflow (feature branches)
 
@@ -67,10 +73,10 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 
 | Path | Contents |
 | --- | --- |
-| [src/main.rs](src/main.rs) | Window, GPU surface, fullscreen/monitor handling, and the current placeholder renderer. |
+| [src/main.rs](src/main.rs), [src/present.wgsl](src/present.wgsl) | Window, input, fullscreen/monitor handling, and GPU presentation of the city buffer. |
+| [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |
 | [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind), `mast`, `tint`, `windows`, `decorations`, and `city` (the generator that assembles them). |
 | [src/bin/shapes.rs](src/bin/shapes.rs), [src/bin/city.rs](src/bin/city.rs) | Text previews of building shapes and of a whole generated city. |
-| [src/*.wgsl](src/) | Placeholder sky and presentation shaders, to be replaced. |
 | [tests/](tests/) | Integration tests. |
 | [docs/Rebuild Prompt.md](docs/Rebuild%20Prompt.md) | Primary behavioral specification, carried over from the Python/browser version. |
 | [docs/product.md](docs/product.md) | Product scope, Rust-specific deviations, and deferred extensions. |
