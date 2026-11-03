@@ -10,6 +10,7 @@
 pub mod clock;
 pub mod config;
 pub mod model;
+pub mod moon;
 pub mod raster;
 pub mod reveal;
 pub mod street;
