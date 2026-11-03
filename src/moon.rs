@@ -25,6 +25,7 @@ use crate::model::grid::Grid;
 use crate::model::palette::{Palette, Rgb};
 use crate::model::rng::js_round;
 use crate::raster::mix;
+use crate::station::{station_effects, StationFate};
 
 /// Moon diameter in virtual pixels.
 pub const MOON_DIAMETER: i32 = 39;
@@ -121,7 +122,7 @@ pub const DISH_RADIUS: f64 = 6.5;
 pub const PANEL_SPACING: i32 = 6;
 
 /// The moon's position and phase at one moment.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct MoonState {
     /// Center column.
     pub x: i32,
@@ -130,6 +131,10 @@ pub struct MoonState {
     /// Phase in the lunar cycle: 0 new, 0.25 first quarter, 0.5 full,
     /// 0.75 last quarter.
     pub phase: f64,
+    /// Lap number since the app started (the opening lap is 0).
+    pub lap: u64,
+    /// Seconds into the current lap.
+    pub lap_seconds: f64,
 }
 
 /// What one cell of the moon disk shows.
@@ -222,6 +227,8 @@ pub fn moon_at(grid: &Grid, seconds: f64, start_step: u64) -> MoonState {
         x,
         row,
         phase: step as f64 / PHASE_STEPS as f64,
+        lap: laps.floor() as u64,
+        lap_seconds: t * PASS_SECONDS,
     }
 }
 
@@ -287,6 +294,44 @@ pub fn moon_cells(grid: &Grid, moon: &MoonState, palette: &Palette) -> Vec<(usiz
             if (0..grid.cols).contains(&x) && (0..grid.rows).contains(&row) {
                 cells.push((row as usize * grid.cols as usize + x as usize, color));
             }
+        }
+    }
+    cells
+}
+
+/// Everything on the sky for the moon this frame: the moon disk, or on the
+/// station lap the station (unless destroyed) with the battle around it.
+/// O(diameter² + battle cells).
+pub fn sky_cells(
+    grid: &Grid,
+    moon: &MoonState,
+    palette: &Palette,
+    fate: StationFate,
+) -> Vec<(usize, Rgb)> {
+    if !is_station(moon) {
+        return moon_cells(grid, moon, palette);
+    }
+    let effects = station_effects(
+        moon.lap,
+        moon.lap_seconds,
+        MOON_RADIUS,
+        fate,
+        PASS_SECONDS,
+        palette,
+    );
+    let mut cells = Vec::new();
+    if effects.station_visible {
+        cells = moon_cells(grid, moon, palette);
+        if effects.flash {
+            for cell in &mut cells {
+                cell.1 = palette.star;
+            }
+        }
+    }
+    for (dx, dy, color) in effects.cells {
+        let (x, row) = (moon.x + dx, moon.row + dy);
+        if (0..grid.cols).contains(&x) && (0..grid.rows).contains(&row) {
+            cells.push((row as usize * grid.cols as usize + x as usize, color));
         }
     }
     cells
@@ -540,6 +585,25 @@ mod tests {
     }
 
     #[test]
+    fn the_station_lap_carries_its_battle_and_other_laps_do_not() {
+        let grid = grid();
+        let classic = palette_by_key("classic").unwrap();
+        let station = moon_at(&grid, 30.0, 0);
+        assert_eq!((station.lap, is_station(&station)), (0, true));
+        let survive = sky_cells(&grid, &station, classic, StationFate::Survive);
+        assert!(survive.len() > moon_cells(&grid, &station, classic).len() / 2);
+        let destroyed_late = moon_at(&grid, 60.0, 0); // forced destruction at 12 s
+        let gone = sky_cells(&grid, &destroyed_late, classic, StationFate::Destroy);
+        assert!(gone.is_empty(), "nothing left 48 s after the explosion");
+        let full = moon_at(&grid, 30.0, 4);
+        assert_eq!(
+            sky_cells(&grid, &full, classic, StationFate::Destroy),
+            moon_cells(&grid, &full, classic),
+            "ordinary moons have no battle"
+        );
+    }
+
+    #[test]
     fn cells_use_palette_colors_and_clip_to_the_grid() {
         let grid = grid();
         let classic = palette_by_key("classic").unwrap();
@@ -547,6 +611,7 @@ mod tests {
             x: 100,
             row: 60,
             phase: FULL,
+            ..Default::default()
         };
         let cells = moon_cells(&grid, &full, classic);
         assert_eq!(
@@ -561,6 +626,7 @@ mod tests {
             x: 0,
             row: 0,
             phase: FULL,
+            ..Default::default()
         };
         let clipped = moon_cells(&grid, &edge, classic);
         assert!(

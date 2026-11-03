@@ -131,6 +131,7 @@ Edit the file to keep the right result and delete the marker lines, then run `gi
 
 - The title bar shows build progress, speed, and `columns x rows @ pixel size`. Pixels are 3 screen pixels by default, so maximizing adds city. `--pixel-size spec` makes pixels scale with window height instead.
 - `cargo run -- --deadline 10s` builds the whole city in 10 seconds (testing); `--deadline 10` means 10 minutes (meetings). The title shows the time left.
+- `cargo run -- --moon-phase new --station-fate destroy` shows the station under attack and blowing up about 12 seconds in (`survive` keeps it; default is a 30% chance).
 - `cargo run -- --moon-phase full` opens on a full moon; `--moon-phase new` shows the battle station right away. Names: new, waxing-crescent, first-quarter, waxing-gibbous, full, waning-gibbous, last-quarter, waning-crescent (or 0-7).
 - `cargo run -- --pixel-size 4` tries another pixel size (default 3); `cargo run -- --pixel-size spec` uses the spec's about 240 rows. The `--` tells cargo that the options are for the app, not for cargo.
 

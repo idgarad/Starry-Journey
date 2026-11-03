@@ -19,9 +19,10 @@ use starry_journey::model::city::generate_normal_city;
 use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::Rgb;
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
-use starry_journey::moon::{moon_at, moon_cells, MoonState};
+use starry_journey::moon::{is_station, moon_at, sky_cells, MoonState};
 use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
+use starry_journey::station::StationFate;
 use starry_journey::street::StreetLayer;
 use winit::{
     application::ApplicationHandler,
@@ -368,6 +369,8 @@ struct Renderer {
     moon_state: Option<MoonState>,
     /// Moon phase step on the first lap (`--moon-phase`).
     moon_start_step: u64,
+    /// What happens to the station (`--station-fate`).
+    station_fate: StationFate,
     options: LaunchOptions,
     scale_factor: f64,
 }
@@ -519,6 +522,7 @@ impl Renderer {
             app_start: Instant::now(),
             moon_state: None,
             moon_start_step: options.moon_start_step,
+            station_fate: options.station_fate,
             options,
             scale_factor,
         };
@@ -633,11 +637,19 @@ impl Renderer {
         // Phase changes are only visible in small steps; 1/400 of a pass
         // (0.75 s) is finer than any single cell's change.
         let quantized = |m: &MoonState| (m.x, m.row, (m.phase * 400.0) as i32);
-        if self.moon_state.as_ref().map(quantized) == Some(quantized(&moon)) {
+        // The station's battle animates every frame; a plain moon only
+        // changes when it moves a cell.
+        let animated = is_station(&moon);
+        if !animated && self.moon_state.as_ref().map(quantized) == Some(quantized(&moon)) {
             return false;
         }
         self.moon_state = Some(moon);
-        self.scene.moon = moon_cells(&self.scene.grid, &moon, palette_at(self.palette_index));
+        self.scene.moon = sky_cells(
+            &self.scene.grid,
+            &moon,
+            palette_at(self.palette_index),
+            self.station_fate,
+        );
         true
     }
 
@@ -810,6 +822,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use starry_journey::moon::moon_cells;
 
     #[test]
     fn fixed_pixel_size_scene_shows_more_city_on_bigger_screens() {
@@ -884,7 +897,12 @@ mod tests {
         let row = (0..grid.ground_row)
             .rev()
             .find(|&row| {
-                let probe = MoonState { x, row, phase: 0.5 };
+                let probe = MoonState {
+                    x,
+                    row,
+                    phase: 0.5,
+                    ..Default::default()
+                };
                 let cells = moon_cells(&grid, &probe, classic());
                 let owned = cells
                     .iter()
@@ -893,7 +911,12 @@ mod tests {
                 owned > 0 && owned < cells.len() / 2
             })
             .expect("the skyline crosses the moon's column");
-        let moon = MoonState { x, row, phase: 0.5 };
+        let moon = MoonState {
+            x,
+            row,
+            phase: 0.5,
+            ..Default::default()
+        };
         scene.moon = moon_cells(&grid, &moon, classic());
         scene.compose();
         let mut on_sky = 0;

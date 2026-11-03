@@ -24,6 +24,11 @@
   - The new-moon lap shows a battle station (owner idea): a grey sphere with an equatorial trench, panel bands, darker edges, and a concave dish (rim, interior, and bright focus) in the upper left.
   - The shadowed side was "a tad bright", so earthshine was reduced from 8% to 4%.
   - "Too fast": the moon now moves at half speed, so a lap takes 10 minutes and the full cycle 80 minutes.
+  - The station is under attack (owner idea):
+    - About 8 one-pixel fighters orbit it on tilted orbits, hidden when behind the station.
+    - Each fighter lives 3–10 s, then explodes in a 0.6 s burst (flash, sparks, embers), and a new fighter takes its slot.
+    - Each station lap has a 30% chance that the station is destroyed at a random point 35–65% of the way through the lap: a 0.25 s full-disk flash, then a fireball, an expanding shockwave, and 30 debris particles fading over 4 s. After that the sky is empty for the rest of the lap.
+    - `--station-fate chance|destroy|survive` controls this (`destroy` blows up about 12 s after opening on the station lap). The battle is seeded per lap.
   - A `--moon-phase` option picks the opening phase, by name (`new` … `waning-crescent`) or step 0–7. Phases still advance each lap. `--moon-phase new` shows the station at launch.
   - The moon lives on the sky layer, and passing behind buildings is a feature. The sun in Endless mode will be handled the same way later.
 - **Headroom at 1080p** (640 × 360 cells at 3 px): the top 162 rows (45%) are always clear of every possible building.
@@ -35,7 +40,7 @@
     - `moon_cells` colors the lit side in the palette's star color, the seas 30% toward the sky, and the unlit side 8% earthshine.
   - [src/main.rs](../src/main.rs): the moon follows real time from app start and starts 30% into a pass, so a crescent is visible at launch. It is painted on cells that currently show sky, before the street, and recomputed only when its cell position or quantized phase changes. Palette change, resize, and restart redraw it.
 - **Verification (2026-11-03):**
-  - `cargo test`: PASS, 142 tests, including the 10-minute lap, `--moon-phase` parsing (names, numbers, errors, repeats), the opening phase followed by per-lap advance, and that the station appears on the new-moon lap with the same silhouette as the moon, the dish in the upper left, the trench across the equator, and colors visible against the sky. They also check:
+  - `cargo test`: PASS, 150 tests, including the battle: fighters stay near the station and explode, the battle is deterministic per lap, bursts go through their stages, the measured destruction share is 27–33% within its window, the destruction sequence ends in an empty sky, a surviving station stays under attack, and `--station-fate` parses correctly. Also the 10-minute lap, `--moon-phase` parsing (names, numbers, errors, repeats), the opening phase followed by per-lap advance, and that the station appears on the new-moon lap with the same silhouette as the moon, the dish in the upper left, the trench across the equator, and colors visible against the sky. They also check:
     - the 39-cell disk;
     - waxing on the right and waning on the left, with mirrored crescents;
     - the phase fixed within a lap, stepping each lap, and the cycle repeating every 8 laps;

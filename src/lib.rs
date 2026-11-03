@@ -13,4 +13,5 @@ pub mod model;
 pub mod moon;
 pub mod raster;
 pub mod reveal;
+pub mod station;
 pub mod street;
