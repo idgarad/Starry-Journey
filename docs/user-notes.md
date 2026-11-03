@@ -126,8 +126,8 @@ Edit the file to keep the right result and delete the marker lines, then run `gi
 
 ### Running the app
 
-- The title bar shows build progress, speed, and `columns x rows @ pixel size`. In default mode, maximizing makes pixels bigger (spec formula); with `--pixel-size` it adds city instead.
-- `cargo run -- --pixel-size 3` uses fixed-size virtual pixels (try 2 to 5); plain `cargo run` uses the spec's about 240 rows. The `--` tells cargo that the options are for the app, not for cargo.
+- The title bar shows build progress, speed, and `columns x rows @ pixel size`. Pixels are 3 screen pixels by default, so maximizing adds city. `--pixel-size spec` makes pixels scale with window height instead.
+- `cargo run -- --pixel-size 4` tries another pixel size (default 3); `cargo run -- --pixel-size spec` uses the spec's about 240 rows. The `--` tells cargo that the options are for the app, not for cargo.
 
 - `cargo run` builds and launches the app.
 - `P` next palette, `R` new city, `+`/`-` speed (0.25× to 4×; 4× builds the city in 1 minute), `F` fullscreen, `Tab` next monitor, `Esc` quit. The title bar shows build progress.
