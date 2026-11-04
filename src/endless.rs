@@ -88,6 +88,39 @@ pub fn reconstruct_row(cells: &[[u8; 4]], cell: u32, offset: f64, width: usize) 
         .collect()
 }
 
+/// The 2D form of [`reconstruct_row`], as the shader samples the moon: the
+/// linear, premultiplied color of screen pixel `(px, py)` when the screen's
+/// top-left is `offset` device pixels into a `width`-cell-wide image of
+/// `cells` (row-major). Bilinear over the four overlapped source pixels.
+/// O(1).
+pub fn sharp_sample(
+    cells: &[[u8; 4]],
+    width: usize,
+    cell: u32,
+    offset: (f64, f64),
+    pixel: (i64, i64),
+) -> [f64; 4] {
+    let cell = f64::from(cell.max(1));
+    let height = cells.len() / width.max(1);
+    let texel = |x: f64, y: f64| -> [f64; 4] {
+        let (cx, cy) = ((x / cell).floor(), (y / cell).floor());
+        if cx < 0.0 || cy < 0.0 || cx as usize >= width || cy as usize >= height {
+            return [0.0; 4];
+        }
+        let [r, g, b, a] = cells[cy as usize * width + cx as usize];
+        let alpha = f64::from(a) / 255.0;
+        let linear = |v: u8| decode_srgb(f64::from(v) / 255.0) * alpha;
+        [linear(r), linear(g), linear(b), alpha]
+    };
+    let (u, v) = (pixel.0 as f64 + offset.0, pixel.1 as f64 + offset.1);
+    let (x0, y0) = (u.floor(), v.floor());
+    let (tx, ty) = (u - x0, v - y0);
+    let lerp = |a: [f64; 4], b: [f64; 4], t: f64| [0, 1, 2, 3].map(|i| a[i] * (1.0 - t) + b[i] * t);
+    let top = lerp(texel(x0, y0), texel(x0 + 1.0, y0), tx);
+    let bottom = lerp(texel(x0, y0 + 1.0), texel(x0 + 1.0, y0 + 1.0), tx);
+    lerp(top, bottom, ty)
+}
+
 /// A layer buffer's width for a grid: `2 * cols + 64`.
 pub fn buffer_width(cols: i32) -> i32 {
     2 * cols.max(1) + 64
@@ -564,6 +597,41 @@ mod tests {
             dip < reference * 0.95,
             "encoded-space blending dims a moving edge (flicker): {dip} vs {reference}"
         );
+    }
+
+    #[test]
+    fn a_sprite_gliding_diagonally_keeps_its_brightness_and_matches_the_row_form() {
+        // A small moon-like sprite: a grey disk on transparency, 5 x 5 cells.
+        let mut cells = vec![[0, 0, 0, 0]; 25];
+        for (x, y) in [(2, 1), (1, 2), (2, 2), (3, 2), (2, 3)] {
+            cells[y * 5 + x] = [180, 180, 170, 255];
+        }
+        let cell = 3;
+        let total = |ox: f64, oy: f64| -> f64 {
+            let mut sum = 0.0;
+            for py in -4..20 {
+                for px in -4..20 {
+                    let p = sharp_sample(&cells, 5, cell, (ox, oy), (px, py));
+                    sum += p[0] + p[1] + p[2] + p[3];
+                }
+            }
+            sum
+        };
+        let reference = total(0.0, 0.0);
+        for step in 1..12 {
+            let t = f64::from(step) * 0.3;
+            let moved = total(-t, -0.4 * t);
+            assert!((moved - reference).abs() < 1e-9, "step {step}: {moved}");
+        }
+        // With no vertical offset, each row matches reconstruct_row.
+        let row: Vec<[u8; 4]> = cells[10..15].to_vec();
+        let expected = reconstruct_row(&row, cell, 1.25, 15);
+        for (px, want) in expected.iter().enumerate() {
+            let got = sharp_sample(&cells, 5, cell, (1.25, 0.0), (px as i64, 6));
+            for i in 0..4 {
+                assert!((got[i] - want[i]).abs() < 1e-12);
+            }
+        }
     }
 
     #[test]

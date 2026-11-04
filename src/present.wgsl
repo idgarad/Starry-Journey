@@ -1,32 +1,38 @@
-// Presents the scene. Every texture holds one texel per logical cell; each
-// cell is drawn as an exact cell x cell block of device pixels from the
-// top-left. Cells past a texture's edge are clipped.
+// Presents the scene. Every texture holds one texel per logical cell (the
+// message box excepted); each cell covers a cell x cell block of device
+// pixels from the top-left.
 //
-// Draw order (Rebuild Prompt, "Final draw order"):
-// 1. background: the whole Normal / construction frame, or in Endless
-//    scrolling the sky, stars, and moon;
-// 2. the four Endless city layers, far to near, at fractional positions;
-// 3. the overlay (Endless street, trees, and traffic);
-// 4. the message box.
+// Draw order (Rebuild Prompt, "Final draw order"), in linear light:
+// 1. background: the sky and stars;
+// 2. the moon (or battle station), at its exact fractional position;
+// 3. the city: in Normal mode and during construction, the still city
+//    (transparent where nothing is built yet); while Endless scrolls, the
+//    four layers, far to near, at fractional positions;
+// 4. the overlay: street, trees, and traffic;
+// 5. the message box.
+// Buildings hide the moon because they are drawn after it.
 //
-// Endless layers are reconstructed as the spec describes: treat each layer
-// as a sharp device-resolution image (every cell cell pixels wide), and
-// give device pixel p the two source pixels it overlaps at fractional
-// offset, decoded to linear light (the sRGB texture format decodes),
-// premultiplied by alpha, and weighted by overlap. Blending in linear light
-// keeps brightness constant while an edge moves by part of a pixel, so
-// nothing flickers. The sharp image is never stored: its pixel x maps to
-// cell floor(x / cell), so the small per-cell texture is sampled directly.
+// Moving images are reconstructed as the spec describes: treat the image as
+// a sharp device-resolution image (every cell cell x cell pixels) and give
+// device pixel p the source pixels it overlaps at the fractional offset,
+// decoded to linear light (the sRGB texture format decodes), premultiplied
+// by alpha, and weighted by overlap. Blending in linear light keeps
+// brightness constant while an edge moves by part of a pixel, so nothing
+// flickers. The sharp image is never stored: its pixel x maps to cell
+// floor(x / cell), so the small per-cell texture is sampled directly.
 
 struct Params {
-    // x: device pixels per cell; y: 1 when the Endless layers and overlay
-    // are drawn; z, w unused (16-byte alignment).
+    // x: device pixels per cell; y: 1 when the Endless layers are drawn;
+    // z: 1 when the still city is drawn; w unused (16-byte alignment).
     cell: vec4<f32>,
     // Message box x, y, width, height in device pixels; width 0 hides it.
     message: vec4<f32>,
     // Per layer, x: device pixels from the layer buffer's left edge to the
     // screen's left edge (fractional). y, z, w unused.
     layers: array<vec4<f32>, 4>,
+    // Moon: x, y device pixels from the sprite's top-left to the screen's
+    // top-left (fractional); z: 1 when the moon is drawn; w unused.
+    moon: vec4<f32>,
 }
 
 @group(0) @binding(0) var background: texture_2d<f32>;
@@ -37,6 +43,8 @@ struct Params {
 @group(0) @binding(5) var layer1: texture_2d<f32>;
 @group(0) @binding(6) var layer2: texture_2d<f32>;
 @group(0) @binding(7) var layer3: texture_2d<f32>;
+@group(0) @binding(8) var moon_sprite: texture_2d<f32>;
+@group(0) @binding(9) var still_city: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -70,17 +78,19 @@ fn premultiplied(tex: texture_2d<f32>, x: i32, row: i32) -> vec4<f32> {
     return vec4<f32>(texel.rgb * texel.a, texel.a);
 }
 
-// One layer's linear, premultiplied color for this device pixel.
-fn layer_sample(tex: texture_2d<f32>, offset: f32, position: vec2<f32>) -> vec4<f32> {
+// A moving image's linear, premultiplied color for this device pixel, with
+// the screen's top-left `offset` device pixels into the image.
+fn sharp_sample(tex: texture_2d<f32>, offset: vec2<f32>, position: vec2<f32>) -> vec4<f32> {
     let cell = params.cell.x;
-    let row = i32(floor(position.y / cell));
-    // The pixel's left edge in the layer's sharp device-resolution image.
-    let u = floor(position.x) + offset;
-    let left = floor(u);
-    let t = u - left;
-    let a = premultiplied(tex, i32(floor(left / cell)), row);
-    let b = premultiplied(tex, i32(floor((left + 1.0) / cell)), row);
-    return mix(a, b, t);
+    // The pixel's top-left corner in the image's sharp device-resolution form.
+    let u = floor(position) + offset;
+    let first = floor(u);
+    let t = u - first;
+    let c0 = vec2<i32>(floor(first / cell));
+    let c1 = vec2<i32>(floor((first + 1.0) / cell));
+    let top = mix(premultiplied(tex, c0.x, c0.y), premultiplied(tex, c1.x, c0.y), t.x);
+    let bottom = mix(premultiplied(tex, c0.x, c1.y), premultiplied(tex, c1.x, c1.y), t.x);
+    return mix(top, bottom, t.y);
 }
 
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
@@ -97,13 +107,20 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         color = textureLoad(background, texel, 0).rgb;
     }
 
-    if (params.cell.y > 0.5) {
-        color = over(layer_sample(layer0, params.layers[0].x, position.xy), color);
-        color = over(layer_sample(layer1, params.layers[1].x, position.xy), color);
-        color = over(layer_sample(layer2, params.layers[2].x, position.xy), color);
-        color = over(layer_sample(layer3, params.layers[3].x, position.xy), color);
-        color = over(premultiplied(overlay, texel.x, texel.y), color);
+    if (params.moon.z > 0.5) {
+        color = over(sharp_sample(moon_sprite, params.moon.xy, position.xy), color);
     }
+    if (params.cell.z > 0.5) {
+        color = over(premultiplied(still_city, texel.x, texel.y), color);
+    }
+    if (params.cell.y > 0.5) {
+        let p = position.xy;
+        color = over(sharp_sample(layer0, vec2<f32>(params.layers[0].x, 0.0), p), color);
+        color = over(sharp_sample(layer1, vec2<f32>(params.layers[1].x, 0.0), p), color);
+        color = over(sharp_sample(layer2, vec2<f32>(params.layers[2].x, 0.0), p), color);
+        color = over(sharp_sample(layer3, vec2<f32>(params.layers[3].x, 0.0), p), color);
+    }
+    color = over(premultiplied(overlay, texel.x, texel.y), color);
 
     // The message box is premultiplied sRGB, blended in sRGB like a browser.
     let local = vec2<i32>(floor(position.xy - params.message.xy));
