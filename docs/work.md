@@ -1,5 +1,62 @@
 # Active work
 
+## REBUILD-004: Endless mode
+
+| Branch | Contents | Status |
+| --- | --- | --- |
+| `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | In review |
+| `feature/endless-compositor` | Sharp device-resolution layer caches reconstructed at fractional positions in linear light (smooth scrolling) | Planned |
+| `feature/endless-street` | Road, trees, and traffic scroll with the road camera; headlights keep lighting trees | Planned |
+| `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
+
+### feature/endless-layers
+
+- **Decisions (owner, 2026-11-03):**
+  - Roadside trees in every palette in Endless mode, as in Normal (the spec has them for Ink on Parchment only). They arrive with `feature/endless-street`.
+  - The moon and the new-moon battle station appear in Endless mode too, unchanged.
+  - Switching modes: `--endless` at launch, or `E` at any time.
+  - Endless "should start like normal mode and once the city is complete then continue on": the city is built cell by cell over 240 s at 1× (or the timer), then scrolls.
+  - While an Endless city is first building, the message box shows silly startup lines ("Calibrating zebra stripes", "Unpacking packaging materials", ...).
+- **Agent defaults (non-blocking, easy to change):**
+  - A quip changes every 4 s of real time, in a seeded shuffled order of 32 lines; all are shown before any repeats. Quips stop when the city is complete.
+  - A `--message` hides the quips, so a meeting screen keeps its message. A palette flash shows over either.
+  - `--endless` may be combined with `--timer`, which times the construction phase (the spec forbids the combination, but the spec has no Endless construction).
+  - `E` rebuilds the city in the other mode with the same seed and keeps construction progress; the Endless camera starts at 0. Normal and Endless cities differ (Endless uses one generator per layer), so the buildings change when switching.
+  - `Space` pauses scrolling and traffic in Endless mode only. The moon keeps real time, and construction continues.
+- **Delivered:**
+  - [src/endless.rs](../src/endless.rs): `EndlessCity` holds four layers, each with its own generator (`seed XOR (0x85ebca6b + L)`, start x -28) and a buffer `2 × cols + 64` wide starting at origin -4, generated through `origin + bufW + 32`.
+    - The camera moves at `2 × speed` cells/s, using at most 1/30 s per frame. Layers follow at 0.2, 0.4, 0.65, and 1.
+    - When a view would leave its buffer, the buffer is rebased to `floor(viewX) - 4`, generation continues ahead, buildings behind `origin - 4` are dropped, and the buffer is redrawn.
+    - `initial_buildings` gives the buildings on screen at camera 0 for the construction phase.
+    - `compose` draws the layers far to near over the sky at whole-cell positions and marks the building cells. It skips rows above `max_h`.
+    - `with_camera` rebuilds at a camera position, so a resize keeps the scroll position.
+  - [src/raster.rs](../src/raster.rs): `RasterOptions` (window state, world origin, buffer width, Endless tint) and `render_options`; `endless_body_color` adds the spec's 10% blend toward each layer's tint target. `CityRaster` has an `origin_x`.
+  - [src/quips.rs](../src/quips.rs): the 32 lines, `quip_order` (a seeded Fisher–Yates), and `quip_at`.
+  - [src/message.rs](../src/message.rs): `Notice` has a status line, shown only when there is no message and no flash.
+  - [src/config.rs](../src/config.rs): `--endless`.
+  - [src/main.rs](../src/main.rs):
+    - An Endless `Scene` reveals the Endless buildings with their windows dark at first, using Endless body colors. On the completing frame it switches to the layers, which then scroll.
+    - The composed layers are cached and recomposed only when a layer moves a whole column. A full compose measured about 10 ms at 1080p in a debug build, and Normal frames cost one copy.
+    - `E`, `Space`, pause, and quips are wired in. The title shows `endless - building N%`, `scrolling Sx`, or `paused`.
+    - Fix: `resize` built its comparison grid without the road rows, so every resize event rebuilt the scene even when the grid was unchanged.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 204 tests. They cover:
+    - the 2-cells/s camera with parallax ratios at 1× and 4×;
+    - the 1/30 s motion clamp, with negative and NaN frames ignored;
+    - whole-column change reporting;
+    - 2 hours at 4×, with buffers always covering the view and building count bounded;
+    - a 20-minute scroll at 4× matching a city built directly at that camera (continuity across rebases);
+    - the construction image equal to the first scrolling frame, pixel for pixel, plus the mask;
+    - per-layer speeds;
+    - palette change without movement;
+    - the 10% layer tint.
+    
+    In the app: an Endless scene starts building with dark windows, doesn't move until complete, then scrolls seamlessly; a resize keeps the camera. Quip tests cover the permutation, the 4 s hold, no repeat before the list is exhausted, the length limit, and bad times. `Notice` priority is tested, and so is `--endless` parsing, including with `--timer`.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. For the owner: `cargo run -- --endless --deadline 30s`, then watch the quips and the hand-off to scrolling; try `Space`, `E`, `P`, and `+`.
+- **Not yet:** layers snap to whole cells, so far layers step visibly at low speed until `feature/endless-compositor`. The road and trees stay still while the layers move (cars still drive), until `feature/endless-street`. There are no clouds yet.
+
 ## REBUILD-003: Normal-mode rendering
 
 | Branch | Contents | Status |
@@ -461,7 +518,7 @@
 
 ## Next candidates
 
-**Next session (owner, 2026-11-03): start Endless mode.** The Rebuild Prompt's plan:
+**Endless mode is in progress (REBUILD-004 above).** The Rebuild Prompt's plan:
 - four independent parallax layers;
 - a sharp device-resolution cache per layer, reconstructed at fractional scroll in linear light;
 - clouds, the road camera, and traffic;

@@ -60,6 +60,11 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
 - **Traffic in Normal mode with headlights (owner decisions, 2026-11-03):** once the city is finished, cars and trucks drive along the road in Normal mode too. Since it is night, headlights are on and cast a short beam on the road ahead, lighting up roadside trees as cars approach; taillights glow at the rear.
 - **Message box text (owner decision, 2026-11-03):** text is drawn with the `fontdue` rasterizer and a bundled Noto Sans Regular font (SIL OFL 1.1, notice shipped in `src/fonts/`), at device resolution over the scene, as the spec intends. There is no text shaping: Latin, Greek, and Cyrillic render well; characters the font lacks (emoji, CJK) show the font's missing-glyph box. The spec's scrolling for tall content is replaced by leaving out lines that don't fit the window, since the box isn't interactive yet. For now the message is set only at launch with `--message`; editing in the app waits for the native UI decision.
 - **Palette name notice (owner decision, 2026-11-03):** pressing `P` shows the new palette's name in the message box for 2 seconds, then the launch message returns (or the box hides if there is none).
+- **Endless mode (owner decisions, 2026-11-03):**
+  - An Endless city is first built cell by cell like a Normal one, then scrolls. The spec starts Endless fully built. The construction uses the Endless layers' own buildings, so the hand-off is seamless. `--timer` may therefore be combined with `--endless`.
+  - While it builds, the message box shows silly startup lines, unless a `--message` is set.
+  - `E` switches between Normal and Endless at any time, in addition to `--endless`.
+  - Roadside trees appear in every palette, and the moon and battle station appear, as in Normal mode.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
