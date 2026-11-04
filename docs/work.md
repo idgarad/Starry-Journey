@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
 | `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
-| `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | In review |
+| `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | Merged |
 | `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
 
 ### feature/endless-street
@@ -41,7 +41,7 @@
     - Normal mode keeps the screen span with no offset.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
-  - GUI: not run by the agent. For the owner: `cargo run -- --endless --deadline 20s`.
+  - GUI: reviewed by the owner, who moved on to clouds.
 - **Smooth cars (owner request, 2026-11-03: "we should smooth the cars"):**
   - [src/traffic.rs](../src/traffic.rs) `Traffic::sprites` draws each vehicle into its own 13 × 2 sprite (the longest truck plus its beam), at its unrounded world position. Its beam and body are kept separate.
   - `beam_cells` and `body_cells` now define both the cell painter and the sprites, so they can't drift apart; a test checks that a sprite at a whole cell draws exactly what the painter draws, for both lanes and a truck.
