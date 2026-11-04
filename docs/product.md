@@ -65,6 +65,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - While it builds, the message box shows silly startup lines, unless a `--message` is set.
   - `E` switches between Normal and Endless at any time, in addition to `--endless`.
   - Roadside trees appear in every palette, and the moon and battle station appear, as in Normal mode.
+- **Clouds (owner decisions, 2026-11-03):** clouds appear in both modes, in front of the moon and behind the city. Six coverage presets (clear, puffs, scattered, broken, overcast, storm) give the variety and density that rain and storms will need; scattered is the spec's look and the default. They are lit dynamically: moonlight now; city glow, searchlights, the sun, and lightning (inside clouds, between clouds, and to the tallest building) are planned.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 

@@ -7,7 +7,81 @@
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
 | `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | Merged |
-| `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
+| `feature/clouds` | Puffs, banks, and decks; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit, four tones | In review |
+| `feature/cloud-lights` | City glow on cloud undersides; rooftop searchlights with visible beams; sun as a light source (shown with the day/night cycle) | Planned |
+| `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | Planned |
+
+### feature/clouds
+
+- **Decisions (owner, 2026-11-03):**
+  - Clouds need variety and density: occasional puffs, and heavy coverage for the rain and thunderstorms to come.
+  - Clouds appear in both modes (the spec has them in Endless only).
+  - Coverage presets are chosen with `--clouds` and cycled with `C`.
+  - The moon sits behind the clouds.
+  - Clouds are lit dynamically by the moon, the city's light, searchlights, the sun, and lightning, with "all the lights" tackled. Lightning comes in three kinds: inside a cloud, between clouds, and to the ground at the tallest building.
+  - Split into three branches: this one (shapes, presets, motion, ambient and moonlight), then `feature/cloud-lights`, then `feature/lightning`.
+- **Agent defaults (for the owner to tune):**
+  - Default cover is scattered. It follows the spec: `max(3, ceil(cols / 130))` clouds, mostly banks of 38-90 x 6-13.
+  - Four tones per cloud, between the palette's sky and star colors.
+  - Edges are 55% opaque against open sky.
+  - The wind is the spec's 0.35 cells/s. In Endless the clouds also follow a tenth of the camera, slower than the farthest city layer.
+- **Measured coverage** (share of the whole sky down to the ground, 1080p at 3 px, mean of 8 seeds):
+
+  | Preset | Coverage |
+  | --- | --- |
+  | Clear | 0% |
+  | Puffs | 0.2% |
+  | Scattered | 0.6% |
+  | Broken | 8.0% |
+  | Overcast | 23.9% |
+  | Storm | 45.5% |
+- **Delivered:**
+  - [src/clouds.rs](../src/clouds.rs):
+    - `Cover` (the six presets, with `next`, `label`, `key`, `parse`, and `cloud_count`) and `CloudKind`.
+    - Shapes are stepped domes in two-row strips:
+      - puffs: rounded, at most about half as tall as wide;
+      - banks: a main dome giving the spec height, plus smaller ones;
+      - decks: a tall body with wandering sides and a lumpy top. Deck height scales with the sky (25-40% for storms), so heavy skies stay heavy on any screen.
+    - Domes are capped at 0.55 rows per cell of half-width, so they stay rounded.
+    - `CloudField` holds the wind, Endless parallax, the `cols + 160` wrap span (with new shapes on wrap), a strip two columns wider than the screen on each side, and `coverage()`.
+    - `cell_light`: the top two rows of each column are lit and the bottom two shaded. The moon adds a glow by phase that fades with the square of the distance within 2.2 radii (dimmer inside thick cloud), and a rim on the edges facing it.
+    - `draw` snaps light to four tones. Edges are soft only against open sky.
+  - [src/config.rs](../src/config.rs): `--clouds` (exit code 2 for an unknown preset).
+  - [src/main.rs](../src/main.rs):
+    - The renderer owns the `CloudField`, rebuilt with the scene; `C` cycles the cover and names it in the message box.
+    - Clouds are redrawn only when they move a whole cell, a cloud wraps, or the moon moves a cell or changes phase. The station lap is a new moon, so it gives no light.
+  - [src/present.wgsl](../src/present.wgsl): the cloud strip is drawn after the moon and before the city, slid by its fractional offset with linear-light reconstruction.
+- **Tuning by looking (off-screen renders reviewed by the agent):**
+  - The first version had tall arched "tombstone" decks, a thin hairline under each bank, banded undersides, bullseye rings around the moon, and storms nearly invisible on black.
+  - Fixes:
+    - flatter domes;
+    - ragged deck sheets;
+    - per-column shading;
+    - a squared, shorter moon glow;
+    - no bank slab;
+    - solid edges where clouds overlap (they had drawn diagonal seams);
+    - slightly brighter storm and overcast tones.
+  - Overcast still reads as flat-topped decks rather than a full ceiling; it needs the owner's eye.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 238 tests. New tests:
+    - preset cycling, parsing, and the spec count;
+    - shapes are paired two-row strips within their size ranges, reach their top, and have flat bases;
+    - puffs stay rounder than tall, and banks have no thin ledge;
+    - edge depth;
+    - coverage rises strictly from clear to storm, with storm over 40%;
+    - clouds stay above the ground row;
+    - wind rate and parallax;
+    - an hour of 4x Endless wraps with new shapes, keeps the count, and leaves nothing behind;
+    - determinism;
+    - a full moon lights nearby clouds and a new moon doesn't; the moon-facing rim; undersides darker than tops;
+    - four palette tones with translucent edges in all 12 palettes; storms darker than fair weather;
+    - the strip offset;
+    - `--clouds` parsing.
+
+    The fixes above changed two of my own new tests: the bank-ledge test now checks for a ledge rather than any full-width base, and the deck height bound allows trimmed lumpy tops.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. For the owner: `cargo run -- --clouds broken`, then press `C` to cycle; also try `--endless`.
 
 ### feature/endless-street
 
