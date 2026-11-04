@@ -240,6 +240,24 @@
   - `cargo test`: PASS, 251 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Overlap and rounded bases (owner, 2026-11-04):** "you are missing the ability to overlap clouds. They seem... stenciled... If you allow them to overlap a bit then you get some better 3D effect", and "a lot of them have abnormally trimmed bottoms... perfectly straight lines".
+  - Cause: all heaps in a layer were merged into one density field, so overlaps fused into one flat shape; and a hard cut at each base sliced every ball straight.
+  - **Overlap:**
+    - each depth row is split into two interleaved sets of heaps (alternate slots), giving 20 sub-layers;
+    - sub-layers are drawn far to near, each lit and self-shadowed on its own, so a nearer heap's lit edge shows against the one behind it;
+    - front sets sit slightly lower, so they read as nearer;
+    - `haze(sub)` fades farther sub-layers up to 35% toward the sky color, and sheets get a fixed haze.
+  - **Rounded bases:**
+    - below the base line, balls fall off 3 times faster (`BASE_SQUASH`) instead of being cut, so big heaps are nearly flat with rounded ends and small puffs stay round;
+    - each base also undulates by a row or two along its length (seeded value noise), so overlapping balls can't line up into a ruler-straight edge.
+  - API: `LayerField::sublayers`, `sublayer_density`, and `haze`. `light_at` takes the sub-layer, and `density` is the maximum over sub-layers. The preview composites sub-layers back to front with haze; it takes about 2.5 s for all five presets in release.
+  - **New tests:**
+    - no sub-layer's heap bottom stays on one row for 30 or more columns. The first run found a 35-column line, which the undulation fixed;
+    - nearer heaps overlap farther ones in overcast skies;
+    - far sub-layers are hazier.
+  - `cargo test`: PASS, 253 tests (about 31 s in debug, mostly the generator).
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Next:** the owner reviews the preview. Then:
   - wire the generator into the app;
   - render the strips incrementally, so drifting only computes new columns;

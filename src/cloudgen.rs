@@ -53,6 +53,9 @@ pub const MAX_OPACITY: f64 = 0.92;
 pub const HEAP_SPACING: f64 = 110.0;
 /// Rows of cumulus from overhead to the horizon.
 pub const HEAP_DEPTHS: i32 = 10;
+/// How much faster a heap's balls fall off below its base line: bases are
+/// nearly flat but rounded, never cut straight (owner, 2026-11-04).
+pub const BASE_SQUASH: f64 = 3.0;
 
 /// Perspective scale at fraction `v` down the sky (0 top, 1 horizon):
 /// features are full size overhead and a third of it at the horizon.
@@ -297,22 +300,62 @@ impl LayerField {
     /// A heap is a cluster of metaballs: soft balls whose densities add, so
     /// overlapping balls merge into one smooth, lumpy (cauliflower)
     /// silhouette. Big balls sit low in the middle, smaller ones stack
-    /// around and above them, and a flat base cuts them off below. Billowy
+    /// around and above them, and their bottoms are squashed into a nearly
+    /// flat, rounded base. Billowy
     /// noise roughens only the edges; empty sky stays empty.
     /// O(slots × balls + octaves).
     fn heap_density(&self, x: f64, row: f64, _v: f64) -> f64 {
         // Rows of heaps from overhead (near, big) to the horizon (far,
         // small, flat, close together). The densest wins where rows overlap.
-        let mut best: f64 = 0.0;
-        for depth in 0..HEAP_DEPTHS {
-            let t = f64::from(depth) / f64::from(HEAP_DEPTHS - 1);
-            best = best.max(self.heap_row_density(x, row, depth, t));
-        }
-        best
+        (0..self.sublayers())
+            .map(|sub| self.sublayer_density(x, row, sub))
+            .fold(0.0, f64::max)
     }
 
-    /// One depth row of heaps: `t` is 0 overhead to 1 at the horizon.
-    fn heap_row_density(&self, x: f64, row: f64, depth: i32, t: f64) -> f64 {
+    /// How many separately drawn sub-layers this layer has: one for a
+    /// sheet; for cumulus, two interleaved sets of heaps per depth row, so
+    /// a nearer heap can overlap the one behind it with its own lit edge.
+    /// Sub-layer 0 is nearest; draw from the last to 0.
+    pub fn sublayers(&self) -> usize {
+        match self.layer {
+            Layer::Mid => 2 * HEAP_DEPTHS as usize,
+            Layer::High | Layer::Low => 1,
+        }
+    }
+
+    /// Density of one sub-layer (see [`LayerField::sublayers`]) at world
+    /// `(x, row)`. O(slots × balls + octaves).
+    pub fn sublayer_density(&self, x: f64, row: f64, sub: usize) -> f64 {
+        if self.layer != Layer::Mid {
+            return self.density(x, row);
+        }
+        if self.weather.coverage <= 0.0 {
+            return 0.0;
+        }
+        let depth = (sub / 2) as i32;
+        // The even sub-layer of each depth is its front set of heaps.
+        let front = sub.is_multiple_of(2);
+        let t = f64::from(depth) / f64::from(HEAP_DEPTHS - 1);
+        self.heap_row_density(x, row, depth, t, i32::from(front))
+    }
+
+    /// How hazy a sub-layer is, 0 (near) to 0.35 (at the horizon): farther
+    /// clouds fade toward the sky color, so depth reads through tone too.
+    pub fn haze(&self, sub: usize) -> f64 {
+        match self.layer {
+            Layer::Mid => {
+                let depth = (sub / 2) as f64;
+                0.35 * depth / f64::from(HEAP_DEPTHS - 1)
+            }
+            Layer::High => 0.15,
+            Layer::Low => 0.25,
+        }
+    }
+
+    /// One depth row's heaps of one `parity` (alternate slots): `t` is 0
+    /// overhead to 1 at the horizon. Front heaps (parity 1) sit a little
+    /// lower, so they read as nearer.
+    fn heap_row_density(&self, x: f64, row: f64, depth: i32, t: f64, parity: i32) -> f64 {
         let coverage = self.weather.coverage;
         let scale = 1.0 - 0.78 * t;
         let spacing = HEAP_SPACING * scale;
@@ -322,6 +365,9 @@ impl LayerField {
         let slot = (x / spacing).floor() as i32;
         let mut field: f64 = 0.0;
         for k in slot - 2..=slot + 2 {
+            if k.rem_euclid(2) != parity {
+                continue;
+            }
             let r = |n: i32| hash(k, salt + n, self.seed);
             // Each heap grows over 0.3 of coverage past its own threshold.
             let grow = smoothstep(r(1), r(1) + 0.3, coverage * 1.15);
@@ -336,10 +382,17 @@ impl LayerField {
                 continue;
             }
             // Jittered bases, so the rows blend into one recession.
-            let base_row = self.sky_rows * (base_v + 0.1 * scale * (r(5) - 0.5)).min(0.995);
-            // A hard cut, so the base is pixel-flat rather than a dithered,
-            // ragged line.
-            if row > base_row {
+            let lower = 0.03 * scale * f64::from(parity);
+            let flat_base =
+                self.sky_rows * (base_v + lower + 0.1 * scale * (r(5) - 0.5)).min(0.995);
+            // A gentle undulation of a row or two along the base, so even
+            // big heaps never sit on a ruler-straight line.
+            let wobble = value_noise(x / (9.0 * scale), f64::from(k), self.seed ^ 0x7e57) - 0.5;
+            let base_row = flat_base + wobble * 4.0 * scale.max(0.5);
+            // Bases are squashed, not cut: below the base line each ball
+            // falls off BASE_SQUASH times faster, so big heaps are nearly
+            // flat underneath with rounded ends and small puffs stay round.
+            if row > base_row + height * 0.5 {
                 continue;
             }
             let balls = 5 + (r(6) * 6.99) as i32;
@@ -353,7 +406,12 @@ impl LayerField {
                 // Central balls stack higher; all rest near the base.
                 let lift = radius * (0.35 + 0.9 * h(3) * (1.0 - u.abs()));
                 let by = base_row - lift;
-                let d2 = ((x - bx).powi(2) + (row - by).powi(2)) / (radius * radius);
+                let dy = if row > base_row {
+                    (base_row - by) + (row - base_row) * BASE_SQUASH
+                } else {
+                    row - by
+                };
+                let d2 = ((x - bx).powi(2) + dy * dy) / (radius * radius);
                 if d2 < 1.0 {
                     field += (1.0 - d2) * (1.0 - d2);
                 }
@@ -366,7 +424,7 @@ impl LayerField {
         let detail = fractal(
             x / (sx * scale),
             row / (sy * scale),
-            self.seed ^ salt as u32,
+            self.seed ^ (salt + parity) as u32,
             4,
             true,
         );
@@ -406,7 +464,9 @@ const EXTINCTION: f64 = 0.5;
 /// How far, in moon radii, its edge light reaches.
 const EDGE_REACH: f64 = 4.0;
 
-/// How lit the cloud cell at world `(x, row)` is, `0..1`.
+/// How lit the cloud cell at world `(x, row)` of sub-layer `sub` is,
+/// `0..1`. Each sub-layer shadows only itself, so a nearer heap keeps its
+/// lit edge where it overlaps one behind it.
 ///
 /// Ambient light for the layer, a little more on thin cells; then the
 /// light, dimmed by the density between the cell and the light along a
@@ -415,8 +475,15 @@ const EDGE_REACH: f64 = 4.0;
 /// edge light, weighted by how thin it is, so opaque cloud never glows.
 /// `screen_x` is the cell's screen column (the light is in screen space).
 /// O(steps × octaves).
-pub fn light_at(field: &LayerField, x: f64, row: f64, screen_x: f64, light: Option<Light>) -> f64 {
-    let d = field.density(x, row);
+pub fn light_at(
+    field: &LayerField,
+    sub: usize,
+    x: f64,
+    row: f64,
+    screen_x: f64,
+    light: Option<Light>,
+) -> f64 {
+    let d = field.sublayer_density(x, row, sub);
     let mut level = field.layer.ambient() + 0.12 * (1.0 - d);
     if let Some(light) = light {
         let (dx, dy) = (light.x - screen_x, light.y - row);
@@ -425,7 +492,7 @@ pub fn light_at(field: &LayerField, x: f64, row: f64, screen_x: f64, light: Opti
         let mut passed = 0.0;
         for step in 1..=MARCH_STEPS {
             let t = MARCH_STEP * f64::from(step);
-            passed += field.density(x + ux * t, row + uy * t);
+            passed += field.sublayer_density(x + ux * t, row + uy * t, sub);
         }
         level += 0.55 * light.strength * (-EXTINCTION * passed).exp();
         let near = (1.0 - length / (EDGE_REACH * light.radius)).max(0.0);
@@ -622,6 +689,56 @@ mod tests {
     }
 
     #[test]
+    fn heap_bottoms_are_rounded_not_cut_straight() {
+        // The owner saw "perfectly straight lines" under puffy clouds. In
+        // every sub-layer, no heap's bottom stays on one row for long.
+        let field = sky_fields(Cover::Broken, ROWS, 2)[1];
+        let mut longest_overall = 0;
+        for sub in 0..field.sublayers() {
+            let bottoms: Vec<Option<i32>> = (0..500)
+                .map(|x| {
+                    (0..ROWS).rev().find(|&row| {
+                        field.sublayer_density(f64::from(x) + 0.5, f64::from(row) + 0.5, sub) > 0.0
+                    })
+                })
+                .collect();
+            let mut run = 0;
+            for pair in bottoms.windows(2) {
+                match pair {
+                    [Some(a), Some(b)] if a == b => run += 1,
+                    _ => run = 0,
+                }
+                longest_overall = longest_overall.max(run);
+            }
+        }
+        assert!(
+            longest_overall < 30,
+            "a straight run of {longest_overall} columns"
+        );
+    }
+
+    #[test]
+    fn nearer_heaps_overlap_farther_ones() {
+        let field = sky_fields(Cover::Overcast, ROWS, 3)[1];
+        let mut overlapping = 0;
+        for row in (0..ROWS).step_by(3) {
+            for x in (0..400).step_by(3) {
+                let (x, y) = (f64::from(x) + 0.5, f64::from(row) + 0.5);
+                let covered = (0..field.sublayers())
+                    .filter(|&sub| field.sublayer_density(x, y, sub) > 0.5)
+                    .count();
+                overlapping += usize::from(covered >= 2);
+            }
+        }
+        assert!(overlapping > 50, "{overlapping}");
+        assert_eq!(field.sublayers(), 2 * HEAP_DEPTHS as usize);
+        assert!(
+            field.haze(field.sublayers() - 1) > field.haze(0),
+            "far is hazier"
+        );
+    }
+
+    #[test]
     fn thick_cloud_hides_the_moon_and_thin_cloud_lets_it_through() {
         let storm = sky_fields(Cover::Storm, ROWS, 1)[1];
         let thin = LayerField::new(
@@ -659,20 +776,24 @@ mod tests {
             radius: 19.5,
             strength: 1.0,
         });
-        // Find a run of cloud along the row and compare its two ends.
-        let cloudy: Vec<f64> = (0..600)
-            .map(|x| f64::from(x) + 0.5)
-            .filter(|&x| field.density(x, row) > 0.6)
-            .collect();
-        assert!(cloudy.len() > 20);
-        let run_start = cloudy
-            .windows(2)
-            .position(|w| w[1] - w[0] > 1.5)
-            .map_or(cloudy.len() - 1, |i| i);
-        let (left, right) = (cloudy[0], cloudy[run_start]);
-        assert!(right - left > 6.0, "a wide enough run");
-        let lit = light_at(&field, left, row, left, light);
-        let shaded = light_at(&field, right, row, right, light);
+        // Find a sub-layer with a wide run of cloud along the row and
+        // compare the run's two ends.
+        let (sub, left, right) = (0..field.sublayers())
+            .find_map(|sub| {
+                let cloudy: Vec<f64> = (0..600)
+                    .map(|x| f64::from(x) + 0.5)
+                    .filter(|&x| field.sublayer_density(x, row, sub) > 0.6)
+                    .collect();
+                let first = *cloudy.first()?;
+                let end = cloudy
+                    .windows(2)
+                    .position(|w| w[1] - w[0] > 1.5)
+                    .map_or(cloudy.len() - 1, |i| i);
+                (cloudy[end] - first > 10.0).then_some((sub, first, cloudy[end]))
+            })
+            .expect("a wide enough run");
+        let lit = light_at(&field, sub, left, row, left, light);
+        let shaded = light_at(&field, sub, right, row, right, light);
         assert!(lit > shaded, "{lit} vs {shaded}");
     }
 
@@ -691,11 +812,12 @@ mod tests {
         assert!(opaque_weight < 0.1);
         let dense = (0..400)
             .map(|x| f64::from(x) + 0.5)
-            .find(|&x| field.density(x, 100.5) > 0.95)
+            .find(|&x| field.sublayer_density(x, 100.5, 0) > 0.95)
             .expect("a dense cell");
-        let with = light_at(&field, dense, 100.5, dense, Some(moon));
+        let with = light_at(&field, 0, dense, 100.5, dense, Some(moon));
         let far = light_at(
             &field,
+            0,
             dense,
             100.5,
             dense,

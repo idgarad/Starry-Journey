@@ -92,23 +92,31 @@ fn render_sky(
 
     // Clouds, back (high) to front (low).
     let fields = sky_fields(cover, rows as i32, seed);
+    let sky_color = linear(palette.bg.0);
     for (field, layer) in fields.iter().zip(LAYERS) {
         let ramp = tone_ramp(layer, cover, palette).map(|c| linear(c.0));
-        for row in 0..rows {
-            for col in 0..cols {
-                let (x, y) = (col as f64 + 0.5, row as f64 + 0.5);
-                let density = field.density(x, y);
-                if density <= 0.0 {
-                    continue;
-                }
-                let alpha = dithered_alpha(field.opacity(density), col as i32, row as i32);
-                if alpha <= 0.0 {
-                    continue;
-                }
-                let tone = ramp[tone_index(light_at(field, x, y, x, Some(light)))];
-                let cell = &mut image[row * cols + col];
-                for k in 0..3 {
-                    cell[k] = tone[k] * alpha + cell[k] * (1.0 - alpha);
+        // Each sub-layer separately, far to near, so nearer heaps overlap
+        // farther ones with their own lit edges.
+        for sub in (0..field.sublayers()).rev() {
+            let haze = field.haze(sub);
+            for row in 0..rows {
+                for col in 0..cols {
+                    let (x, y) = (col as f64 + 0.5, row as f64 + 0.5);
+                    let density = field.sublayer_density(x, y, sub);
+                    if density <= 0.0 {
+                        continue;
+                    }
+                    let alpha = dithered_alpha(field.opacity(density), col as i32, row as i32);
+                    if alpha <= 0.0 {
+                        continue;
+                    }
+                    let lit = light_at(field, sub, x, y, x, Some(light));
+                    let tone = ramp[tone_index(lit)];
+                    let cell = &mut image[row * cols + col];
+                    for k in 0..3 {
+                        let hazy = tone[k] + (sky_color[k] - tone[k]) * haze;
+                        cell[k] = hazy * alpha + cell[k] * (1.0 - alpha);
+                    }
                 }
             }
         }
