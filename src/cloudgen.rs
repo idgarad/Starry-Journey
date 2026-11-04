@@ -30,7 +30,10 @@
 //! decision).
 //!
 //! **Layers** are like the city's: high (thin, streaky sheets), mid (heaped
-//! cumulus with flat bases), and low (dark scud). A
+//! cumulus with flat bases), and low (dark scud). Together they fill the
+//! sky to the horizon (owner, 2026-11-04) with perspective: cumulus come in
+//! rows that grow smaller, flatter, and closer together toward the horizon,
+//! and sheet noise shrinks the same way. A
 //! [`crate::clouds::Cover`] preset sets each layer's coverage and thickness.
 //!
 //! Pure (no graphics): the preview binary (`cargo run --bin clouds`) and
@@ -45,8 +48,17 @@ use crate::raster::mix;
 pub const TONES: usize = 5;
 /// The most opaque a cloud cell can be.
 pub const MAX_OPACITY: f64 = 0.92;
-/// Columns between cumulus slots: about one heap per slot at full cover.
+/// Columns between cumulus slots overhead: about one heap per slot at full
+/// cover. Slots shrink with distance toward the horizon.
 pub const HEAP_SPACING: f64 = 110.0;
+/// Rows of cumulus from overhead to the horizon.
+pub const HEAP_DEPTHS: i32 = 10;
+
+/// Perspective scale at fraction `v` down the sky (0 top, 1 horizon):
+/// features are full size overhead and a third of it at the horizon.
+pub fn perspective(v: f64) -> f64 {
+    1.0 - 0.68 * v.clamp(0.0, 1.0)
+}
 /// Opacity below which a cell is an edge, dithered rather than solid.
 pub const EDGE_ALPHA: f64 = 0.3;
 
@@ -115,7 +127,7 @@ pub fn fractal(x: f64, y: f64, seed: u32, octaves: u32, billow: bool) -> f64 {
 pub enum Layer {
     /// High, thin, streaky sheets.
     High,
-    /// Mid-level heaps: cumulus with flat bases.
+    /// Cumulus with flat bases, in rows from overhead to the horizon.
     Mid,
     /// Low, dark scud.
     Low,
@@ -129,9 +141,9 @@ impl Layer {
     /// (top, base).
     pub fn band(self) -> (f64, f64) {
         match self {
-            Layer::High => (0.0, 0.22),
-            Layer::Mid => (0.08, 0.48),
-            Layer::Low => (0.36, 0.62),
+            Layer::High => (0.0, 0.45),
+            Layer::Mid => (0.0, 1.0),
+            Layer::Low => (0.55, 1.0),
         }
     }
 
@@ -181,11 +193,14 @@ impl Layer {
                 let top = 1.0 - heap;
                 base * smoothstep(top - 0.3, top + 0.45, v)
             }
-            Layer::High | Layer::Low => {
-                // Sheets fade over most of their band, so their edges are
-                // ragged rather than ruler-straight.
-                let middle = (2.0 * v - 1.0).abs();
-                smoothstep(1.0, 0.1, middle)
+            Layer::High => {
+                // Thickest near the top, dissolving toward its lower edge so
+                // there is no ruler-straight line where it ends.
+                smoothstep(1.0, 0.25, v) * smoothstep(0.0, 0.1, v)
+            }
+            Layer::Low => {
+                // Dissolving upward from the horizon.
+                smoothstep(0.0, 0.75, v)
             }
         }
     }
@@ -257,6 +272,9 @@ impl LayerField {
         }
         let (sx, sy) = self.layer.scale();
         // Broad grouping: where the sky has cloud fields and where gaps.
+        // Perspective: features shrink toward the horizon.
+        let p = perspective(row / self.sky_rows);
+        let (sx, sy) = (sx * p, sy * p);
         let broad = fractal(x / (sx * 6.0), 0.37, self.seed ^ 0xb0b0, 3, false);
         // Heap height along the sky (mid layer), also broad.
         let heap = fractal(x / (sx * 3.0), 1.71, self.seed ^ 0x4ea9, 2, false);
@@ -283,26 +301,42 @@ impl LayerField {
     /// noise roughens only the edges; empty sky stays empty.
     /// O(slots × balls + octaves).
     fn heap_density(&self, x: f64, row: f64, _v: f64) -> f64 {
+        // Rows of heaps from overhead (near, big) to the horizon (far,
+        // small, flat, close together). The densest wins where rows overlap.
+        let mut best: f64 = 0.0;
+        for depth in 0..HEAP_DEPTHS {
+            let t = f64::from(depth) / f64::from(HEAP_DEPTHS - 1);
+            best = best.max(self.heap_row_density(x, row, depth, t));
+        }
+        best
+    }
+
+    /// One depth row of heaps: `t` is 0 overhead to 1 at the horizon.
+    fn heap_row_density(&self, x: f64, row: f64, depth: i32, t: f64) -> f64 {
         let coverage = self.weather.coverage;
-        let slot = (x / HEAP_SPACING).floor() as i32;
+        let scale = 1.0 - 0.78 * t;
+        let spacing = HEAP_SPACING * scale;
+        // Bases step down toward the horizon.
+        let base_v = 0.36 + 0.62 * t.powf(0.8);
+        let salt = depth * 1000;
+        let slot = (x / spacing).floor() as i32;
         let mut field: f64 = 0.0;
-        let mut base_cut: f64 = 0.0;
         for k in slot - 2..=slot + 2 {
-            let r = |salt: i32| hash(k, salt, self.seed);
+            let r = |n: i32| hash(k, salt + n, self.seed);
             // Each heap grows over 0.3 of coverage past its own threshold.
             let grow = smoothstep(r(1), r(1) + 0.3, coverage * 1.15);
             if grow <= 0.0 {
                 continue;
             }
-            // Heaps get bigger as the sky fills.
-            let width =
-                HEAP_SPACING * (0.6 + 1.1 * r(2)) * (0.4 + 0.6 * grow) * (0.8 + 0.5 * coverage);
-            let height = width * (0.32 + 0.16 * r(3));
-            let center = (f64::from(k) + 0.2 + 0.6 * r(4)) * HEAP_SPACING;
+            // Heaps get bigger as the sky fills; distant ones are flatter.
+            let width = spacing * (0.6 + 1.1 * r(2)) * (0.4 + 0.6 * grow) * (0.8 + 0.5 * coverage);
+            let height = width * (0.32 + 0.16 * r(3)) * (1.0 - 0.35 * t);
+            let center = (f64::from(k) + 0.2 + 0.6 * r(4)) * spacing;
             if (x - center).abs() > width {
                 continue;
             }
-            let base_row = self.band_row(0.72 + 0.26 * r(5));
+            // Jittered bases, so the rows blend into one recession.
+            let base_row = self.sky_rows * (base_v + 0.1 * scale * (r(5) - 0.5)).min(0.995);
             // A hard cut, so the base is pixel-flat rather than a dithered,
             // ragged line.
             if row > base_row {
@@ -310,7 +344,7 @@ impl LayerField {
             }
             let balls = 5 + (r(6) * 6.99) as i32;
             for ball in 0..balls {
-                let h = |salt: i32| hash(k, 100 + ball * 8 + salt, self.seed);
+                let h = |n: i32| hash(k, salt + 100 + ball * 8 + n, self.seed);
                 // Spread across the heap, bunched toward the middle.
                 let u = (h(0) + h(1)) - 1.0;
                 let size = 1.0 - 0.55 * u.abs();
@@ -324,21 +358,20 @@ impl LayerField {
                     field += (1.0 - d2) * (1.0 - d2);
                 }
             }
-            base_cut = 1.0;
         }
         if field <= 0.0 {
             return 0.0;
         }
         let (sx, sy) = self.layer.scale();
-        let detail = fractal(x / sx, row / sy, self.seed, 4, true);
+        let detail = fractal(
+            x / (sx * scale),
+            row / (sy * scale),
+            self.seed ^ salt as u32,
+            4,
+            true,
+        );
         let rough = field + 0.45 * (detail - 0.5);
-        base_cut * smoothstep(0.3, 0.75, rough)
-    }
-
-    /// The grid row at fraction `v` (0 top, 1 base) of the layer's band.
-    fn band_row(&self, v: f64) -> f64 {
-        let (top, base) = self.layer.band();
-        (top + (base - top) * v) * self.sky_rows
+        smoothstep(0.3, 0.75, rough)
     }
 
     /// Opacity of a cell with `density`: `1 - exp(-thickness × density)`,
@@ -566,37 +599,26 @@ mod tests {
         for x in 0..500 {
             assert_eq!(field.density(f64::from(x), below), 0.0);
         }
-        // Each heap (a run of cloudy columns) has a flat base: most of its
-        // columns end on the same bottom row.
+        // Heaps have flat bases. With the sky full, heaps at different
+        // depths overlap, so flatness is checked locally: most neighbouring
+        // columns end on the same bottom row (within one), with steps only
+        // where one heap gives way to another.
         let bottom = |x: i32| {
             (0..ROWS)
                 .rev()
                 .find(|&row| field.density(f64::from(x) + 0.5, f64::from(row) + 0.5) > 0.0)
         };
-        let bottoms: Vec<Option<i32>> = (0..800).map(bottom).collect();
-        let mut heaps = 0;
-        let mut start = 0;
-        while start < bottoms.len() {
-            if bottoms[start].is_none() {
-                start += 1;
-                continue;
-            }
-            let end = (start..bottoms.len())
-                .find(|&i| bottoms[i].is_none())
-                .unwrap_or(bottoms.len());
-            if end - start >= 12 {
-                let run: Vec<i32> = bottoms[start..end].iter().flatten().copied().collect();
-                let most = run
-                    .iter()
-                    .map(|b| run.iter().filter(|c| *c == b).count())
-                    .max()
-                    .unwrap();
-                assert!(most * 10 >= run.len() * 5, "flat base: {run:?}");
-                heaps += 1;
-            }
-            start = end;
-        }
-        assert!(heaps >= 2, "{heaps}");
+        let bottoms: Vec<i32> = (0..400).filter_map(bottom).collect();
+        assert!(bottoms.len() > 200);
+        let flat = bottoms
+            .windows(2)
+            .filter(|w| (w[0] - w[1]).abs() <= 1)
+            .count();
+        assert!(
+            flat * 10 >= (bottoms.len() - 1) * 8,
+            "{flat} of {}",
+            bottoms.len() - 1
+        );
     }
 
     #[test]

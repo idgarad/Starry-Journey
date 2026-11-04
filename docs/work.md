@@ -224,6 +224,22 @@
   - Test changes during development: the flat-base test moved from a single shared base row to "flat within each heap", because heaps sit at their own heights. The storm coverage check now measures the upper 60% of the sky, where clouds live, because the lower part is behind the skyline.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Fill the sky to the horizon (owner, 2026-11-04):** "for simplicity we should fill the whole sky to give us a better sense of perspective... they should fill the sky to the horizon."
+  - Layer bands now cover the sky:
+    - high: 0-45%;
+    - mid: 0-100%;
+    - low: 55-100%.
+  - **Perspective:**
+    - Cumulus come in 10 depth rows from overhead to the horizon. Down that range, the scale goes from 1 to 0.22 (slot spacing shrinking with it), bases step down from 36% to 98% of the sky with jitter, and heaps get up to 35% flatter.
+    - Each row is seeded separately, and the densest row wins where rows overlap.
+    - Sheet noise shrinks toward the horizon too (`perspective(v) = 1 - 0.68 v`).
+  - Sheet edges dissolve: the high layer thins toward its lower edge and the low layer toward its upper edge, so neither has a ruler-straight boundary.
+  - The flat-base test now checks local flatness: at least 80% of neighbouring columns end within one row of each other. The whole sky is a single overlapping run, so the old per-heap check couldn't apply.
+  - Cost: the generator tests take about 21 s in a debug build, because each cell checks 10 depth rows. The release preview is still under a second. The app will need incremental strip rendering (already planned).
+  - Still for the owner's eye: some overhead heaps are a little boxy.
+  - `cargo test`: PASS, 251 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Next:** the owner reviews the preview. Then:
   - wire the generator into the app;
   - render the strips incrementally, so drifting only computes new columns;
