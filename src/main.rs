@@ -30,7 +30,7 @@ use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::station::{radio_line, StationFate};
-use starry_journey::street::{apply_paint, mark_opaque, CellPaint, StreetLayer};
+use starry_journey::street::{apply_paint, mark_opaque, CellPaint, Span, StreetLayer};
 use starry_journey::traffic::{Traffic, Verge};
 use winit::{
     application::ApplicationHandler,
@@ -49,6 +49,9 @@ const MIN_SIZE: (u32, u32) = (320, 180);
 /// Speed range and step for the `+` and `-` keys (Rebuild Prompt: 0.25..4).
 const SPEED_RANGE: (f64, f64) = (0.25, 4.0);
 const SPEED_STEP: f64 = 0.25;
+/// Extra street columns on each side of the screen while Endless scrolls,
+/// so the GPU can slide the street by fractions of a cell.
+const STREET_MARGIN: i32 = 2;
 /// Window title prefix.
 const TITLE: &str = "Starry Journey";
 
@@ -266,6 +269,9 @@ struct Scene {
     reveal: Reveal,
     view: ConstructionView,
     street: StreetLayer,
+    /// The world strip `street` and `overlay` cover (the screen, or while
+    /// Endless scrolls a strip following the road camera).
+    street_span: Span,
     /// Normal mode and construction: the city view, transparent wherever
     /// nothing is built yet, drawn by the GPU over the sky and moon. Empty
     /// while Endless scrolls (the layers replace it).
@@ -332,6 +338,7 @@ impl Scene {
             reveal,
             view,
             street,
+            street_span: Span::screen(&grid),
             city: Vec::new(),
             traffic: None,
             palette,
@@ -361,10 +368,59 @@ impl Scene {
         if !self.reveal.is_complete() {
             return false;
         }
-        match &mut self.endless {
+        let moved = match &mut self.endless {
             Some(city) => city.advance(dt, speed, self.palette),
             None => false,
+        };
+        self.follow_road_camera();
+        moved
+    }
+
+    /// The road camera: the world column at the screen's left edge for the
+    /// road, trees, and traffic. They share the nearest layer's speed (the
+    /// root camera, Rebuild Prompt) while Endless scrolls, and stay at 0
+    /// otherwise.
+    fn road_view(&self) -> f64 {
+        match &self.endless {
+            Some(city) if self.is_scrolling() => city.view_x(3),
+            _ => 0.0,
         }
+    }
+
+    /// The world strip the street buffer covers for the current road view:
+    /// the screen in Normal mode and construction; while Endless scrolls, a
+    /// strip from two columns left of the view to two past the right edge,
+    /// so the GPU can slide it by fractions of a cell.
+    fn street_span_now(&self) -> Span {
+        if !self.is_scrolling() {
+            return Span::screen(&self.grid);
+        }
+        Span {
+            origin_x: self.road_view().floor() as i32 - STREET_MARGIN,
+            width: self.grid.cols.max(1) + 2 * STREET_MARGIN,
+            rows: self.grid.rows.max(1),
+        }
+    }
+
+    /// Points traffic at the road camera and rebuilds the road and trees
+    /// when the view crosses a whole column. O(1) unless rebuilding, then
+    /// O(street cells).
+    fn follow_road_camera(&mut self) {
+        let view = self.road_view();
+        if let Some(traffic) = &mut self.traffic {
+            traffic.set_view(view);
+        }
+        let span = self.street_span_now();
+        if span != self.street_span {
+            self.street_span = span;
+            self.street = StreetLayer::for_span(&self.grid, self.seed, self.palette, span);
+        }
+    }
+
+    /// Device pixels from the street buffer's left edge to the screen's
+    /// left edge (fractional; 0 in Normal mode).
+    fn street_offset_px(&self) -> f64 {
+        (self.road_view() - f64::from(self.street_span.origin_x)) * f64::from(self.grid.cell)
     }
 
     /// Rebuilds both cell-resolution images that change: the still city and
@@ -392,15 +448,16 @@ impl Scene {
     }
 
     /// The overlay: the street's back layer (road and background trees),
-    /// traffic, and its front layer, opaque on exactly those cells.
-    /// O(grid cells + street).
+    /// traffic, and its front layer, opaque on exactly those cells, over
+    /// the world strip `street_span`. O(span cells + street).
     fn compose_overlay(&mut self) {
         self.overlay.clear();
-        self.overlay.resize(self.sky.len(), 0);
+        self.overlay.resize(self.street_span.cells() * 4, 0);
         let traffic_paint = paint_street(
             &self.street,
             self.traffic.as_ref(),
             self.grid,
+            self.street_span,
             self.palette,
             &mut self.overlay,
         );
@@ -411,11 +468,21 @@ impl Scene {
     /// The picture without the moon and Endless layers, flattened on the
     /// CPU as the GPU stacks it: sky, then the still city, then the
     /// overlay. For tests and previews. O(grid cells).
+    /// The overlay is mapped through `street_span` at whole-cell positions
+    /// (the GPU adds the fraction).
     #[cfg(test)]
     fn flattened(&self) -> Vec<u8> {
         let mut image = self.sky.clone();
-        for top in [&self.city, &self.overlay] {
-            for (pixel, cover) in image.chunks_exact_mut(4).zip(top.chunks_exact(4)) {
+        for (pixel, cover) in image.chunks_exact_mut(4).zip(self.city.chunks_exact(4)) {
+            if cover[3] == 255 {
+                pixel.copy_from_slice(cover);
+            }
+        }
+        let left = self.road_view().floor() as i32;
+        for (cell, pixel) in image.chunks_exact_mut(4).enumerate() {
+            let (x, row) = Span::screen(&self.grid).position(cell);
+            if let Some(source) = self.street_span.index(x + left, row) {
+                let cover = &self.overlay[source * 4..source * 4 + 4];
                 if cover[3] == 255 {
                     pixel.copy_from_slice(cover);
                 }
@@ -425,11 +492,12 @@ impl Scene {
     }
 
     /// Starts traffic once the city is complete (cars then drive in from
-    /// off-screen).
+    /// off-screen), and points the street at the road camera.
     fn start_traffic_if_complete(&mut self) {
         if self.traffic.is_none() && self.reveal.is_complete() {
             self.traffic = Some(Traffic::new(self.seed, self.grid.cols));
         }
+        self.follow_road_camera();
     }
 
     /// Moves traffic by one frame. Returns true if there is traffic (the
@@ -474,7 +542,7 @@ impl Scene {
             &self.reveal,
             self.endless.is_some(),
         );
-        self.street = StreetLayer::new(&self.grid, self.seed, palette);
+        self.street = StreetLayer::for_span(&self.grid, self.seed, palette, self.street_span);
         self.sky = CityRaster::render(&self.grid, &[], &self.stars, palette).rgba;
         if let Some(city) = &mut self.endless {
             city.set_palette(palette);
@@ -1055,7 +1123,7 @@ impl Renderer {
             cell,
             layers_on,
             still_on,
-            0.0,
+            self.scene.street_offset_px() as f32,
             x,
             y,
             width,
@@ -1168,7 +1236,6 @@ impl Renderer {
         let size = self.city_texture.size();
         if size.width != width || size.height != height {
             self.city_texture = create_city_texture(&self.device, &self.scene.grid);
-            self.overlay_texture = create_city_texture(&self.device, &self.scene.grid);
             self.still_texture = create_city_texture(&self.device, &self.scene.grid);
             self.rebind();
         }
@@ -1188,11 +1255,20 @@ impl Renderer {
     }
 
     /// Uploads the street overlay.
+    /// Uploads the street overlay, resizing its texture to the street
+    /// strip (wider than the screen while Endless scrolls).
     fn upload_overlay(&mut self) {
+        let span = self.scene.street_span;
+        let (width, height) = (span.width.max(1) as u32, span.rows.max(1) as u32);
+        let size = self.overlay_texture.size();
+        if size.width != width || size.height != height {
+            self.overlay_texture = create_layer_texture(&self.device, width, height);
+            self.rebind();
+        }
         self.write_grid_texture(&self.overlay_texture, &self.scene.overlay);
     }
 
-    /// Writes a grid-sized RGBA image into a grid-sized texture.
+    /// Writes an RGBA image of exactly the texture's size into it.
     fn write_grid_texture(&self, texture: &wgpu::Texture, rgba: &[u8]) {
         let size = texture.size();
         if rgba.len() != (size.width * size.height * 4) as usize {
@@ -1248,11 +1324,13 @@ impl Renderer {
 /// Paints the street's back layer (road and background trees), traffic,
 /// and the front trees into `rgba`. With traffic, headlights light the trees
 /// ahead of each car: top trees from the top lane, bottom trees from the
-/// bottom lane. Returns the traffic's cells.
+/// bottom lane. `rgba` covers the world strip `span`. Returns the traffic's
+/// cells.
 fn paint_street(
     street: &StreetLayer,
     traffic: Option<&Traffic>,
     grid: Grid,
+    span: Span,
     palette: &Palette,
     rgba: &mut [u8],
 ) -> CellPaint {
@@ -1266,10 +1344,10 @@ fn paint_street(
             let light = palette.headlight;
             let back_glow = |x, row| traffic.glow(&grid, x, row, Verge::Back);
             let front_glow = |x, row| traffic.glow(&grid, x, row, Verge::Front);
-            street.apply_back_lit(rgba, grid.cols, light, back_glow);
-            traffic.paint(&grid, palette, &mut paint);
+            street.apply_back_lit(rgba, span, light, back_glow);
+            traffic.paint_span(&grid, span, palette, &mut paint);
             apply_paint(&paint, rgba);
-            street.apply_front_lit(rgba, grid.cols, light, front_glow);
+            street.apply_front_lit(rgba, span, light, front_glow);
         }
     }
     paint
@@ -1694,18 +1772,26 @@ mod tests {
         // The layers are drawn by the GPU, so there is no still city.
         assert!(scene.city.is_empty());
         let grid = scene.grid;
-        let alpha = |x: i32, row: i32| scene.overlay[(row * grid.cols + x) as usize * 4 + 3];
-        for x in [0, grid.cols / 2, grid.cols - 1] {
+        let span = scene.street_span;
+        assert_eq!(
+            span.origin_x, -STREET_MARGIN,
+            "a strip wider than the screen"
+        );
+        assert_eq!(span.width, grid.cols + 2 * STREET_MARGIN);
+        assert_eq!(scene.overlay.len(), span.cells() * 4);
+        let alpha = |x: i32, row: i32| scene.overlay[span.index(x, row).unwrap() * 4 + 3];
+        for x in [-STREET_MARGIN, 0, grid.cols / 2, grid.cols + 1] {
             assert_eq!(alpha(x, grid.ground_row), 255, "top curb");
             assert_eq!(alpha(x, grid.rows - 1), 255, "bottom curb");
             assert_eq!(alpha(x, 0), 0, "sky stays clear");
         }
         // Opaque overlay cells carry exactly the Normal-style street colors.
-        let mut expected = scene.sky.clone();
+        let mut expected = vec![0; span.cells() * 4];
         paint_street(
             &scene.street,
             scene.traffic.as_ref(),
             grid,
+            span,
             classic(),
             &mut expected,
         );
@@ -1718,6 +1804,65 @@ mod tests {
         let normal = Scene::new(23, 960, 540, classic(), 1.0, fixed, None);
         assert!(!normal.city.is_empty());
         assert_eq!(normal.overlay.len(), normal.sky.len());
+    }
+
+    #[test]
+    fn the_street_and_traffic_follow_the_road_camera() {
+        let fixed = CellScaling::Fixed(3);
+        let mut scene = Scene::new(24, 960, 540, classic(), 1.0, fixed, Some(0.0));
+        // 30 s at 1x: the road camera (nearest layer) moves 60 cells.
+        for _ in 0..(30 * 30) {
+            scene.step_traffic(1.0 / 30.0, 1.0);
+            scene.scroll(1.0 / 30.0, 1.0);
+        }
+        scene.compose_overlay();
+        let view = scene.road_view();
+        assert!((view - 60.0).abs() < 1e-6, "{view}");
+        assert_eq!(scene.road_view(), scene.endless.as_ref().unwrap().view_x(3));
+        let span = scene.street_span;
+        assert_eq!(span.origin_x, view.floor() as i32 - STREET_MARGIN);
+        // The fractional offset lies inside the margin, so the strip always
+        // covers the screen.
+        let offset = scene.street_offset_px();
+        let cell = f64::from(scene.grid.cell);
+        assert!(offset >= f64::from(STREET_MARGIN) * cell - 1e-9);
+        assert!(offset < f64::from(STREET_MARGIN + 1) * cell);
+        // Dashes are placed by world column, so the road scrolls with the
+        // world rather than staying put on screen.
+        let dash_row = scene.grid.ground_row + 3;
+        for x in span.origin_x..span.origin_x + span.width {
+            let cell = span.index(x, dash_row).unwrap();
+            let color = &scene.overlay[cell * 4..cell * 4 + 3];
+            let has_car = scene.traffic.as_ref().unwrap().vehicles.iter().any(|v| {
+                let left = v.x.round() as i32 - 5;
+                (left..left + v.length + 10).contains(&x)
+            });
+            let has_tree = scene
+                .street
+                .front
+                .iter()
+                .chain(&scene.street.back_trees)
+                .any(|&(tree_cell, _)| tree_cell == cell);
+            if !has_car && !has_tree {
+                let dash = starry_journey::street::road_color(3, x, classic());
+                assert_eq!(color, &dash.0[..], "x {x}");
+            }
+        }
+        // Traffic uses the same view, and vehicles stay near the screen.
+        let traffic = scene.traffic.as_ref().unwrap();
+        assert_eq!(traffic.view_x(), view);
+        let cols = f64::from(scene.grid.cols);
+        for vehicle in &traffic.vehicles {
+            assert!(
+                vehicle.x > view - cols && vehicle.x < view + 2.0 * cols,
+                "{}",
+                vehicle.x
+            );
+        }
+        // Normal mode keeps the street on the screen with no offset.
+        let normal = Scene::new(24, 960, 540, classic(), 1.0, fixed, None);
+        assert_eq!(normal.street_span, Span::screen(&normal.grid));
+        assert_eq!(normal.street_offset_px(), 0.0);
     }
 
     #[test]

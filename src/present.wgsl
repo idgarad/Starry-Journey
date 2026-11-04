@@ -8,7 +8,8 @@
 // 3. the city: in Normal mode and during construction, the still city
 //    (transparent where nothing is built yet); while Endless scrolls, the
 //    four layers, far to near, at fractional positions;
-// 4. the overlay: street, trees, and traffic;
+// 4. the overlay: street, trees, and traffic, in world columns, slid with
+//    the road camera like the nearest layer;
 // 5. the message box.
 // Buildings hide the moon because they are drawn after it.
 //
@@ -23,7 +24,9 @@
 
 struct Params {
     // x: device pixels per cell; y: 1 when the Endless layers are drawn;
-    // z: 1 when the still city is drawn; w unused (16-byte alignment).
+    // z: 1 when the still city is drawn; w: device pixels from the street
+    // overlay's left edge to the screen's left edge (fractional; 0 in
+    // Normal mode).
     cell: vec4<f32>,
     // Message box x, y, width, height in device pixels; width 0 hides it.
     message: vec4<f32>,
@@ -120,7 +123,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         color = over(sharp_sample(layer2, vec2<f32>(params.layers[2].x, 0.0), p), color);
         color = over(sharp_sample(layer3, vec2<f32>(params.layers[3].x, 0.0), p), color);
     }
-    color = over(premultiplied(overlay, texel.x, texel.y), color);
+    color = over(sharp_sample(overlay, vec2<f32>(params.cell.w, 0.0), position.xy), color);
 
     // The message box is premultiplied sRGB, blended in sRGB like a browser.
     let local = vec2<i32>(floor(position.xy - params.message.xy));
