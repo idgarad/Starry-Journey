@@ -48,7 +48,7 @@ Write the message as what the commit *does*: `feat: add building generator`, not
 - [ ] **Green Terminal glyphs:** source GNU Unifont 16.0.04 bitmaps (SIL OFL 1.1 licence) before the display-effects step.
 - [ ] **Background music:** pick an audio crate and decide on controls (mute, volume, track choice). Deferred until the rebuild baseline is done.
 - [ ] **AGENTS.md process:** decide whether to adopt the rest of it for this project (`Docs/` capitalization, backlog, decision log) or keep the lighter `docs/work.md` approach.
-- [ ] **Battle-station easter egg:** it's a homage to the Death Star (Lucasfilm's design). Decide whether it stays on by default if the repo or builds go public.
+- [ ] **Battle-station easter egg:** it's a homage to the Death Star (Lucasfilm's design), and its radio calls quote two short lines from the film. Decide whether it stays on by default if the repo or builds go public.
 - [ ] **GitHub visibility:** if the repository is public, remember that everything committed is public. `Sounds/Music/` is already ignored.
 
 ## Tips
