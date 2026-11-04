@@ -6,8 +6,43 @@
 | --- | --- | --- |
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
 | `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
-| `feature/endless-street` | Road, trees, and traffic scroll with the road camera; headlights keep lighting trees | Planned |
+| `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; headlights keep lighting trees | In review |
 | `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
+
+### feature/endless-street
+
+- **Goal:** the road, trees, and traffic move with the scrolling city. The spec: "Trees share the road camera, not vehicle speed."
+- **Design:**
+  - The road camera is the root camera, which is also the nearest layer's view (multiplier 1), so the road moves exactly with the nearest buildings.
+  - The street is drawn in world columns into a strip from 2 columns left of the view to 2 past the right edge. The strip is rebuilt whenever the view crosses a whole column (2–8 times a second; cheap).
+  - The GPU slides the strip by the remaining fraction with the same linear-light reconstruction as the layers, so the road glides.
+  - In Normal mode and during construction the strip is the screen with no offset, which gives exactly the old picture.
+  - Vehicles keep world positions and drive at their own speed relative to the road. They enter and leave relative to the moving view, so the upper lane's cars approach faster on screen and the lower lane's slower. Their cells snap to whole road cells, the same as in Normal mode.
+  - Headlight glow on trees works in world columns, so it follows along.
+- **Delivered:**
+  - [src/street.rs](../src/street.rs):
+    - `Span` (a world strip: origin, width, rows) with `index`, `position`, and `cells`.
+    - `StreetLayer::for_span`; `new` is the screen span.
+    - The `apply_*_lit` functions take a span.
+    - Fix: the street now includes trees that straddle a strip's edge (clipped). `trees_in` returns only trees wholly inside a range, so trees used to pop in at strip edges; in Normal mode, half-trees now also appear at the screen edges.
+  - [src/traffic.rs](../src/traffic.rs): `set_view` and `view_x`. Spawns and exits are relative to the view, and `paint_span` paints into a strip. Normal mode keeps view 0.
+  - [src/main.rs](../src/main.rs):
+    - `Scene::road_view`, `street_span_now`, `follow_road_camera` (called on scroll and when traffic starts), and `street_offset_px`.
+    - The overlay buffer and texture are sized to the strip.
+    - `Params.cell.w` carries the overlay offset.
+  - [src/present.wgsl](../src/present.wgsl): the overlay is drawn with `sharp_sample` at its offset.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 219 tests. New tests:
+    - strips at different origins agree on every world cell (this is what caught the tree-edge bug);
+    - span index and position round-trip;
+    - traffic keeps flowing past a view moving at 8 cells/s for 10 minutes: 6 vehicles always, none left behind, something on screen over 90% of the time;
+    - spawns are relative to the view, and a NaN view is ignored;
+    - in the app, the street strip and traffic follow the road camera after 30 s, the fractional offset stays within the margin, and the center dashes sit at world positions;
+    - Normal mode keeps the screen span with no offset.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. For the owner: `cargo run -- --endless --deadline 20s`.
+- **Possible follow-up:** cars move in whole road cells (as in Normal mode), so at 4× they may look slightly steppy next to the gliding road. If so, they can get their own fractional sprite like the moon.
 
 ### feature/endless-compositor
 
