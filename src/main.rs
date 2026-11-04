@@ -23,12 +23,13 @@ use starry_journey::model::city::generate_normal_city;
 use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
 use starry_journey::moon::{
-    is_station, moon_at, moon_sprite, MoonState, MOON_SPRITE_REACH, STATION_SPRITE_REACH,
+    is_station, moon_at, moon_sprite, MoonState, MOON_SPRITE_REACH, PASS_SECONDS,
+    STATION_SPRITE_REACH,
 };
 use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
-use starry_journey::station::StationFate;
+use starry_journey::station::{radio_line, StationFate};
 use starry_journey::street::{apply_paint, mark_opaque, CellPaint, StreetLayer};
 use starry_journey::traffic::{Traffic, Verge};
 use winit::{
@@ -895,9 +896,14 @@ impl Renderer {
     /// Shows the silly startup lines while an Endless city is being built,
     /// and clears them when it is done.
     fn update_status(&mut self, construction_seconds: f64) {
+        // The station's radio calls come first (owner idea, 2026-11-03),
+        // in both modes; then the Endless startup lines.
+        let radio = self.moon_state.filter(is_station).and_then(|moon| {
+            radio_line(moon.lap, moon.lap_seconds, self.station_fate, PASS_SECONDS)
+        });
         let building = self.scene.endless.is_some() && !self.scene.reveal.is_complete();
-        let status = building.then(|| quip_at(self.scene.seed, construction_seconds));
-        self.notice.set_status(status);
+        let quip = building.then(|| quip_at(self.scene.seed, construction_seconds));
+        self.notice.set_status(radio.or(quip));
     }
 
     /// Seconds since the app started, the clock for the message notice.

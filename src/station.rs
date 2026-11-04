@@ -67,6 +67,31 @@ pub fn run_lead() -> f64 {
     TRENCH_RUN_SECONDS + ESCAPE_SECONDS + FUSE_SECONDS
 }
 
+/// Radio call in the message box while the red ship flies the trench
+/// (owner idea, 2026-11-03).
+pub const GOING_IN: &str = "Red-5 Going In";
+/// Radio call from the moment the red ship climbs away until shortly after
+/// the explosion.
+pub const GREAT_SHOT: &str = "Great shot, kid! That was one in a million!";
+/// How long the second call stays up after the explosion, in seconds.
+pub const GREAT_SHOT_LINGER: f64 = 1.0;
+
+/// The radio call to show `t` seconds into station `lap`, if any: during
+/// the trench run [`GOING_IN`], then from the climb away until
+/// [`GREAT_SHOT_LINGER`] after the blast [`GREAT_SHOT`]. Only laps that end
+/// in destruction have a run, so only they have calls. O(1).
+pub fn radio_line(lap: u64, t: f64, fate: StationFate, pass_seconds: f64) -> Option<&'static str> {
+    let at = destruction_time(lap, fate, pass_seconds)?;
+    let age = t - (at - run_lead());
+    if (0.0..TRENCH_RUN_SECONDS).contains(&age) {
+        Some(GOING_IN)
+    } else if age >= TRENCH_RUN_SECONDS && t < at + GREAT_SHOT_LINGER {
+        Some(GREAT_SHOT)
+    } else {
+        None
+    }
+}
+
 /// The hero ship's nose position (offset from the station center) at `age`
 /// seconds after the trench run began, or `None` once it has gone. The ship
 /// flies left to right along the trench (row offset 0), then climbs away to
@@ -421,6 +446,33 @@ mod tests {
                 fuse.cells.iter().all(|c| c.2 != HERO_RED),
                 "{key}: gone before the blast"
             );
+        }
+    }
+
+    #[test]
+    fn radio_calls_follow_the_trench_run_and_the_blast() {
+        let at = FORCED_DESTROY_AT * PASS;
+        let start = at - run_lead();
+        let line = |t: f64| radio_line(0, t, StationFate::Destroy, PASS);
+        assert_eq!(line(start - 0.01), None, "quiet before the run");
+        assert_eq!(line(start), Some(GOING_IN));
+        assert_eq!(line(start + TRENCH_RUN_SECONDS - 0.01), Some(GOING_IN));
+        assert_eq!(
+            line(start + TRENCH_RUN_SECONDS),
+            Some(GREAT_SHOT),
+            "climbing away"
+        );
+        assert_eq!(line(at), Some(GREAT_SHOT));
+        assert_eq!(line(at + GREAT_SHOT_LINGER - 0.01), Some(GREAT_SHOT));
+        assert_eq!(line(at + GREAT_SHOT_LINGER), None);
+        // "Going in" shows while the red ship is in the trench.
+        assert!(hero_at(1.0, f64::from(R)).is_some());
+        // No run, no calls.
+        for t in [0.0, 100.0, 200.0, 300.0, 400.0, 599.0] {
+            assert_eq!(radio_line(0, t, StationFate::Survive, PASS), None);
+        }
+        for line in [GOING_IN, GREAT_SHOT] {
+            assert!(line.encode_utf16().count() <= crate::message::MESSAGE_LIMIT_UTF16);
         }
     }
 
