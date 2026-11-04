@@ -53,17 +53,18 @@ pub const QUICK_FADE: f64 = 1.5;
 /// Strips kept on the GPU per layer: the one fading out and the one in.
 pub const SLOTS: usize = 2;
 
+/// Each layer's keyframe pace (far to near), as a share of the base
+/// interval. The shares differ, so the layers' cross-fades drift apart
+/// instead of the whole sky pulsing on one beat (owner, 2026-11-04: "they
+/// are too synchronized").
+pub const LAYER_PACE: [f64; 4] = [1.5, 1.17, 1.0, 0.87];
+
 /// Seconds of cloud time between keyframes for layer `band` under `cover`:
-/// 8 s calm down to 2.5 s in a boiling storm; the far layer changes half
-/// as often again.
+/// 8 s calm down to 2.5 s in a boiling storm, times the layer's
+/// [`LAYER_PACE`].
 pub fn keyframe_interval(cover: Cover, band: usize) -> f64 {
     let churn = weather(cover)[1].churn;
-    let base = 8.0 - 5.5 * churn;
-    if band == 0 {
-        base * 1.5
-    } else {
-        base
-    }
+    (8.0 - 5.5 * churn) * LAYER_PACE[band.min(LAYER_PACE.len() - 1)]
 }
 
 /// Everything needed to render one layer's strip.
@@ -656,6 +657,16 @@ mod tests {
         assert!(keyframe_interval(Cover::Broken, 0) > keyframe_interval(Cover::Broken, 3));
         assert!((keyframe_interval(Cover::Clear, 2) - 8.0).abs() < 1e-12);
         assert!((keyframe_interval(Cover::Storm, 2) - 2.5).abs() < 1e-12);
+        // Every layer keeps its own beat.
+        for a in 0..CLOUD_LAYERS {
+            for b in a + 1..CLOUD_LAYERS {
+                let (x, y) = (
+                    keyframe_interval(Cover::Broken, a),
+                    keyframe_interval(Cover::Broken, b),
+                );
+                assert!((x - y).abs() > 0.5, "layers {a} and {b} share a beat");
+            }
+        }
     }
 
     #[test]

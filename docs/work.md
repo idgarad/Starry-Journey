@@ -339,6 +339,27 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent.
+- **Cloud families (owner, 2026-11-04):** "we should be creating clouds just as much as we are removing them Kind of like some clouds having offspring... Imagine a big box on the back most cloud layer. Then the next layer closer we create a few random boxes that overlap the first one". The owner chose families within each distance band, so the perspective stays.
+  - Each life of a heap slot is a new generation, with its own seeded shape and place. Before, the same heap regrew in the same spot.
+  - Each depth row's back sub-layer holds parents. The front sub-layer holds their 2-4 offspring:
+    - 30-55% of the parent's width and a little taller;
+    - born at staggered times (5-65% into the parent's life) and living 0.4-0.8 of a parent lifetime, so some outlive the parent;
+    - standing on the parent's base (one condensation level), so they read as nearer by overlap and their own lit edge.
+  - The parent coverage lift is 1.25. Measured mid-layer coverage, old to new: Puffs 0.045 to 0.038, Scattered 0.109 to 0.100, Broken 0.246 to 0.229, Overcast 0.330 to 0.322, Storm 0.456 to 0.476.
+- **Slower, unsynchronized fades (owner, 2026-11-04):** "The fade in and out is still too fast... They are too synchronized".
+  - Likely cause of the lockstep: each layer cross-fades every changed pixel together between keyframes, and all four layers shared a start. Each layer now has its own keyframe pace, `skyclouds::LAYER_PACE = [1.5, 1.17, 1.0, 0.87]`, so the cross-fades drift apart.
+  - Typical lifetimes are 1800 s calm and 300 s in a storm (were 600 s and 100 s). Each slot's life is spread 0.4x to 2x, evenly in log.
+  - Each cloud has its own fade-in share (0.1-0.4 of its life) and fade-out share (0.15-0.5).
+  - Calm edge drift and rise are about 3x slower: `0.0003 + 0.01 × churn²` and `0.0002 + 0.09 × churn²`. Storms are unchanged. A scattered sky now changes about 4% of its cloudy cells in 10 s (was about 6%).
+  - Tests:
+    - new tests check that a reborn cloud is a new cloud, offspring overlap their parents, births balance deaths within 30%, clouds fade at their own paces, and every layer keeps its own beat;
+    - longer windows for the time tests (change over 15 minutes, clear-cloudy-clear over 2 hours, births over 2 hours), because clouds now live longer;
+    - the moon-halo test now picks a cell deep inside thick cloud with the moon on it (it had been picking a cell far from the moon);
+    - the flat-base bar is 75% (owner decision). Across 12 seeds the old heaps averaged 78% and families 77%, so 80% had only passed on a lucky seed.
+  - `cargo test`: PASS, 255 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

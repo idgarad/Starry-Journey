@@ -51,14 +51,16 @@ pub const MAX_OPACITY: f64 = 0.92;
 /// Columns between cumulus slots overhead: about one heap per slot at full
 /// cover. Slots shrink with distance toward the horizon.
 pub const HEAP_SPACING: f64 = 110.0;
-/// Seconds a heap lives (grows in, matures, dissolves) in calm weather.
-/// Owner, 2026-11-04: the fade in and out must be very slow, at least 80%
-/// slower than the first version's 120 s.
-pub const LIFETIME_CALM: f64 = 600.0;
-/// Seconds a heap lives in a boiling storm (first version: 20 s).
-pub const LIFETIME_STORM: f64 = 100.0;
-// Checked when building: at least five times the first version's lives.
-const _: () = assert!(LIFETIME_CALM >= 5.0 * 120.0 && LIFETIME_STORM >= 5.0 * 20.0);
+/// Typical seconds a heap lives (grows in, matures, dissolves) in calm
+/// weather; each heap's own life is 0.4 to 2 times this. Owner,
+/// 2026-11-04: the fade in and out must be very slow (first version 120 s,
+/// then 600 s, still too fast).
+pub const LIFETIME_CALM: f64 = 1800.0;
+/// Typical seconds a heap lives in a boiling storm (first version: 20 s,
+/// then 100 s).
+pub const LIFETIME_STORM: f64 = 300.0;
+// Checked when building: at least three times the second version's lives.
+const _: () = assert!(LIFETIME_CALM >= 3.0 * 600.0 && LIFETIME_STORM >= 3.0 * 100.0);
 /// Rows of cumulus from overhead to the horizon.
 pub const HEAP_DEPTHS: i32 = 10;
 /// How much faster a heap's balls fall off below its base line: bases are
@@ -298,8 +300,8 @@ impl LayerField {
         // square keeps a storm's full boil while calming everything else.
         let churn = self.weather.churn * self.weather.churn;
         (
-            self.time * (0.0008 + 0.01 * churn),
-            -self.time * (0.0006 + 0.09 * churn),
+            self.time * (0.0003 + 0.01 * churn),
+            -self.time * (0.0002 + 0.09 * churn),
         )
     }
 
@@ -405,95 +407,228 @@ impl LayerField {
         }
     }
 
-    /// One depth row's heaps of one `parity` (alternate slots): `t` is 0
-    /// overhead to 1 at the horizon. Front heaps (parity 1) sit a little
-    /// lower, so they read as nearer.
+    /// One depth row's heaps: `t` is 0 overhead to 1 at the horizon.
+    /// `parity` 0 is the back sub-layer of parent heaps; 1 is the front
+    /// sub-layer of their offspring (owner design, 2026-11-04: a big cloud
+    /// behind, smaller ones born in front of it, overlapping it).
+    ///
+    /// Each slot along the world holds one parent at a time. A parent lives
+    /// a seeded lifetime (see [`LIFETIME_CALM`]), and each life is a new
+    /// generation with its own shape and place, so a reborn cloud is a new
+    /// cloud. During its life it gives birth, at staggered times, to 2-4
+    /// smaller offspring overlapping it from slightly nearer; offspring can
+    /// outlive their parent. So clouds keep appearing as others dissolve.
+    /// O(slots × (1 + offspring) × balls + octaves).
     fn heap_row_density(&self, x: f64, row: f64, depth: i32, t: f64, parity: i32) -> f64 {
-        let coverage = self.weather.coverage;
         let scale = 1.0 - 0.78 * t;
         let spacing = HEAP_SPACING * scale;
-        // Bases step down toward the horizon.
-        let base_v = 0.36 + 0.62 * t.powf(0.8);
         let salt = depth * 1000;
         let slot = (x / spacing).floor() as i32;
         let mut field: f64 = 0.0;
-        for k in slot - 2..=slot + 2 {
-            if k.rem_euclid(2) != parity {
-                continue;
-            }
+        for k in slot - 3..=slot + 3 {
+            let lifetime = self.slot_lifetime(k, depth);
             let r = |n: i32| hash(k, salt + n, self.seed);
-            // Each heap grows over 0.3 of coverage past its own threshold.
-            // A life cycle: each heap grows in, matures, and dissolves over
-            // its own seeded lifetime (about 10 minutes calm, 100 s in a
-            // storm), then another takes its slot. Coverage is lifted a
-            // little so the sky stays as cloudy on average.
-            let lifetime = (LIFETIME_CALM - (LIFETIME_CALM - LIFETIME_STORM) * self.weather.churn)
-                * (0.7 + 0.6 * r(7));
-            let phase = (self.time / lifetime + r(8)).rem_euclid(1.0);
-            let life = smoothstep(0.0, 0.2, phase) * smoothstep(1.0, 0.7, phase);
-            if life <= 0.0 {
+            // Age in lifetimes: the whole part counts generations.
+            let age = self.time / lifetime + r(8);
+            let generation = age.floor();
+            if parity == 0 {
+                field += self.parent_field(x, row, k, generation, age - generation, depth, t);
                 continue;
             }
-            let grow = smoothstep(r(1), r(1) + 0.3, coverage * 1.3) * life;
-            if grow <= 0.0 {
-                continue;
-            }
-            // Heaps get bigger as the sky fills; distant ones are flatter.
-            let width = spacing * (0.6 + 1.1 * r(2)) * (0.4 + 0.6 * grow) * (0.8 + 0.5 * coverage);
-            let height = width * (0.32 + 0.16 * r(3)) * (1.0 - 0.35 * t);
-            let center = (f64::from(k) + 0.2 + 0.6 * r(4)) * spacing;
-            if (x - center).abs() > width {
-                continue;
-            }
-            // Jittered bases, so the rows blend into one recession.
-            let lower = 0.03 * scale * f64::from(parity);
-            let flat_base =
-                self.sky_rows * (base_v + lower + 0.1 * scale * (r(5) - 0.5)).min(0.995);
-            // A gentle undulation of a row or two along the base, so even
-            // big heaps never sit on a ruler-straight line.
-            let wobble = value_noise(x / (7.0 * scale), f64::from(k), self.seed ^ 0x7e57) - 0.5;
-            let base_row = flat_base + wobble * 5.0 * scale.max(0.5);
-            // Bases are squashed, not cut: below the base line each ball
-            // falls off BASE_SQUASH times faster, so big heaps are nearly
-            // flat underneath with rounded ends and small puffs stay round.
-            if row > base_row + height * 0.5 {
-                continue;
-            }
-            let balls = 5 + (r(6) * 6.99) as i32;
-            for ball in 0..balls {
-                let h = |n: i32| hash(k, salt + 100 + ball * 8 + n, self.seed);
-                // Spread across the heap, bunched toward the middle.
-                let u = (h(0) + h(1)) - 1.0;
-                let size = 1.0 - 0.55 * u.abs();
-                let radius = height * 0.5 * size * (0.75 + 0.45 * h(2));
-                let bx = center + u * width * 0.42;
-                // Central balls stack higher; all rest near the base.
-                let lift = radius * (0.35 + 0.9 * h(3) * (1.0 - u.abs()));
-                let by = base_row - lift;
-                let dy = if row > base_row {
-                    (base_row - by) + (row - base_row) * BASE_SQUASH
-                } else {
-                    row - by
-                };
-                let d2 = ((x - bx).powi(2) + dy * dy) / (radius * radius);
-                if d2 < 1.0 {
-                    field += life * (1.0 - d2) * (1.0 - d2);
-                }
+            // Offspring of this generation and of the last (which may
+            // outlive their parent).
+            for g in [generation - 1.0, generation] {
+                field += self.offspring_field(x, row, k, g, age - g, depth, t);
             }
         }
         if field <= 0.0 {
             return 0.0;
         }
         let (sx, sy) = self.layer.scale();
+        let (drift, rise) = self.churn_offset();
         let detail = fractal(
-            x / (sx * scale) + self.churn_offset().0,
-            row / (sy * scale) + self.churn_offset().1,
+            x / (sx * scale) + drift,
+            row / (sy * scale) + rise,
             self.seed ^ (salt + parity) as u32,
             4,
             true,
         );
         let rough = field + 0.45 * (detail - 0.5);
         smoothstep(0.3, 0.75, rough)
+    }
+
+    /// Seconds each life of slot `k` in depth row `depth` lasts: the
+    /// weather's typical life, spread 0.4x to 2x (evenly in log) by slot so
+    /// heaps never fall into step with each other.
+    fn slot_lifetime(&self, k: i32, depth: i32) -> f64 {
+        let typical = LIFETIME_CALM - (LIFETIME_CALM - LIFETIME_STORM) * self.weather.churn;
+        typical * 0.4 * 5f64.powf(hash(k, depth * 1000 + 7, self.seed))
+    }
+
+    /// The seed of slot `k`'s generation `generation`: each life of a slot
+    /// draws a fresh cloud.
+    fn generation_seed(&self, generation: f64) -> u32 {
+        self.seed ^ (generation as i64 as u32).wrapping_mul(0x9e37_79b9)
+    }
+
+    /// The parent of slot `k`, generation `generation`, at `phase` (0..1)
+    /// of its life: where it stands and how big it is when fully grown, or
+    /// `None` if this sky's coverage doesn't call for it.
+    fn parent_heap(&self, k: i32, generation: f64, depth: i32, t: f64) -> Option<Heap> {
+        let coverage = self.weather.coverage;
+        let scale = 1.0 - 0.78 * t;
+        let spacing = HEAP_SPACING * scale;
+        let salt = depth * 1000;
+        let seed = self.generation_seed(generation);
+        let q = |n: i32| hash(k, salt + n, seed);
+        // Each parent grows over 0.3 of coverage past its own threshold, so
+        // raising coverage adds clouds without popping.
+        let grow = smoothstep(q(1), q(1) + 0.3, coverage * 1.25);
+        if grow <= 0.0 {
+            return None;
+        }
+        // Heaps get bigger as the sky fills; distant ones are flatter.
+        let width = spacing * (0.6 + 1.1 * q(2)) * (0.8 + 0.5 * coverage);
+        // Bases step down toward the horizon, jittered so the rows blend
+        // into one recession.
+        let base_v = 0.36 + 0.62 * t.powf(0.8);
+        Some(Heap {
+            center: (f64::from(k) + 0.2 + 0.6 * q(4)) * spacing,
+            width,
+            height: width * (0.32 + 0.16 * q(3)) * (1.0 - 0.35 * t),
+            base: self.sky_rows * (base_v + 0.1 * scale * (q(5) - 0.5)).min(0.995),
+            grow,
+            rise: 0.1 + 0.3 * q(10),
+            fall: 0.15 + 0.35 * q(11),
+            key: (k, salt, seed),
+        })
+    }
+
+    /// The density contribution of slot `k`'s parent of `generation` at
+    /// `phase` of its life.
+    #[allow(clippy::too_many_arguments)]
+    fn parent_field(
+        &self,
+        x: f64,
+        row: f64,
+        k: i32,
+        generation: f64,
+        phase: f64,
+        depth: i32,
+        t: f64,
+    ) -> f64 {
+        let Some(parent) = self.parent_heap(k, generation, depth, t) else {
+            return 0.0;
+        };
+        let life = life_envelope(phase, parent.rise, parent.fall);
+        self.heap_field(x, row, &parent, life, t)
+    }
+
+    /// The density contribution of the offspring of slot `k`'s parent of
+    /// `generation`, `age` parent lifetimes after that parent's birth.
+    /// Each child is born at its own time in the parent's life, lives
+    /// 0.4-0.8 of a parent lifetime, and stands on the parent's base,
+    /// overlapping it from in front.
+    #[allow(clippy::too_many_arguments)]
+    fn offspring_field(
+        &self,
+        x: f64,
+        row: f64,
+        k: i32,
+        generation: f64,
+        age: f64,
+        depth: i32,
+        t: f64,
+    ) -> f64 {
+        if age < 0.0 {
+            return 0.0;
+        }
+        let Some(parent) = self.parent_heap(k, generation, depth, t) else {
+            return 0.0;
+        };
+        let (_, salt, seed) = parent.key;
+        let count = 2 + (hash(k, salt + 9, seed) * 2.99) as i32;
+        let mut field = 0.0;
+        for child in 0..count {
+            let h = |n: i32| hash(k, salt + 500 + child * 16 + n, seed);
+            let birth = 0.05 + 0.6 * h(0);
+            let span = 0.4 + 0.4 * h(1);
+            let phase = (age - birth) / span;
+            if !(0.0..1.0).contains(&phase) {
+                continue;
+            }
+            let width = parent.width * (0.3 + 0.25 * h(2));
+            let heap = Heap {
+                center: parent.center + (h(3) - 0.5) * parent.width * 1.1,
+                width,
+                height: width * (0.4 + 0.2 * h(4)) * (1.0 - 0.35 * t),
+                // A family shares its base (one condensation level), so
+                // offspring read as nearer by overlap and their own lit
+                // edge, not by hanging lower.
+                base: parent.base,
+                grow: parent.grow,
+                rise: 0.1 + 0.3 * h(6),
+                fall: 0.15 + 0.35 * h(7),
+                key: (k, salt + 500 + child * 16, seed),
+            };
+            field += self.heap_field(x, row, &heap, life_envelope(phase, heap.rise, heap.fall), t);
+        }
+        field
+    }
+
+    /// Metaball density of one `heap` at `life` (0..1, scaling its size
+    /// and weight, so it grows in and dissolves rather than popping).
+    ///
+    /// A heap is a cluster of soft balls whose densities add, so
+    /// overlapping balls merge into one lumpy (cauliflower) silhouette. Big
+    /// balls sit low in the middle, smaller ones stack around and above
+    /// them, and their bottoms are squashed into a nearly flat, rounded
+    /// base. O(balls).
+    fn heap_field(&self, x: f64, row: f64, heap: &Heap, life: f64, t: f64) -> f64 {
+        let amount = heap.grow * life;
+        if amount <= 0.0 {
+            return 0.0;
+        }
+        let scale = 1.0 - 0.78 * t;
+        let width = heap.width * (0.4 + 0.6 * amount);
+        let height = heap.height * (0.4 + 0.6 * amount);
+        if (x - heap.center).abs() > width {
+            return 0.0;
+        }
+        let (k, salt, seed) = heap.key;
+        // A gentle undulation of a row or two along the base, so even big
+        // heaps never sit on a ruler-straight line.
+        let wobble = value_noise(x / (7.0 * scale), f64::from(salt), seed ^ 0x7e57) - 0.5;
+        let base_row = heap.base + wobble * 5.0 * scale.max(0.5);
+        // Bases are squashed, not cut: below the base line each ball falls
+        // off BASE_SQUASH times faster, so big heaps are nearly flat
+        // underneath with rounded ends and small puffs stay round.
+        if row > base_row + height * 0.5 {
+            return 0.0;
+        }
+        let balls = 5 + (hash(k, salt + 6, seed) * 6.99) as i32;
+        let mut field = 0.0;
+        for ball in 0..balls {
+            let h = |n: i32| hash(k, salt + 100 + ball * 8 + n, seed);
+            // Spread across the heap, bunched toward the middle.
+            let u = (h(0) + h(1)) - 1.0;
+            let size = 1.0 - 0.55 * u.abs();
+            let radius = height * 0.5 * size * (0.75 + 0.45 * h(2));
+            let bx = heap.center + u * width * 0.42;
+            // Central balls stack higher; all rest near the base.
+            let lift = radius * (0.35 + 0.9 * h(3) * (1.0 - u.abs()));
+            let by = base_row - lift;
+            let dy = if row > base_row {
+                (base_row - by) + (row - base_row) * BASE_SQUASH
+            } else {
+                row - by
+            };
+            let d2 = ((x - bx).powi(2) + dy * dy) / (radius * radius);
+            if d2 < 1.0 {
+                field += life * (1.0 - d2) * (1.0 - d2);
+            }
+        }
+        field
     }
 
     /// Opacity of a cell with `density`: `1 - exp(-thickness × density)`,
@@ -506,6 +641,33 @@ impl LayerField {
     pub fn transmission(&self, density: f64) -> f64 {
         1.0 - self.opacity(density)
     }
+}
+
+/// One cumulus heap, fully grown: a parent or an offspring.
+#[derive(Debug, Clone, Copy)]
+struct Heap {
+    /// World column of its middle.
+    center: f64,
+    /// Half-width in cells.
+    width: f64,
+    /// Height in cells.
+    height: f64,
+    /// The row of its (squashed) base.
+    base: f64,
+    /// 0..1: how far this sky's coverage has grown it in.
+    grow: f64,
+    /// Shares of its life spent growing in (0.1-0.4) and dissolving
+    /// (0.15-0.5): each cloud fades at its own pace.
+    rise: f64,
+    fall: f64,
+    /// `(slot, salt, seed)` for its seeded balls.
+    key: (i32, i32, u32),
+}
+
+/// How alive a cloud is at `phase` (0..1) of its life: it grows over the
+/// first `rise` of it and dissolves over the last `fall`.
+fn life_envelope(phase: f64, rise: f64, fall: f64) -> f64 {
+    smoothstep(0.0, rise, phase) * smoothstep(1.0, 1.0 - fall, phase)
 }
 
 /// The moon as a light on the clouds, in screen cells.
@@ -763,7 +925,9 @@ mod tests {
         // Heaps have flat bases. With the sky full, heaps at different
         // depths overlap, so flatness is checked locally: most neighbouring
         // columns end on the same bottom row (within one), with steps only
-        // where one heap gives way to another.
+        // where one heap gives way to another. The bar is 75% (owner,
+        // 2026-11-04): across 12 seeds the first heaps averaged 78% and
+        // cloud families 77%, so 80% only passed on a lucky seed.
         let bottom = |x: i32| {
             (0..ROWS)
                 .rev()
@@ -776,7 +940,7 @@ mod tests {
             .filter(|w| (w[0] - w[1]).abs() <= 1)
             .count();
         assert!(
-            flat * 10 >= (bottoms.len() - 1) * 8,
+            flat * 100 >= (bottoms.len() - 1) * 75,
             "{flat} of {}",
             bottoms.len() - 1
         );
@@ -905,16 +1069,34 @@ mod tests {
         // it is at most (1 - MAX_OPACITY) of its strength.
         let opaque_weight = field.transmission(1.0);
         assert!(opaque_weight < 0.1);
-        let dense = (0..400)
-            .map(|x| f64::from(x) + 0.5)
-            .find(|&x| field.sublayer_density(x, 100.5, 0) > 0.95)
+        // A cell deep inside thick cloud: dense for 16 cells all round, so
+        // whatever direction the moon is in, cloud lies between.
+        let deep = |x: f64, row: f64| {
+            (-16..=16).step_by(4).all(|dx| {
+                (-16..=16).step_by(4).all(|dy| {
+                    field.sublayer_density(x + f64::from(dx), row + f64::from(dy), 1) > 0.95
+                })
+            })
+        };
+        let (dense, row) = (0..600)
+            .flat_map(|x| {
+                (60..200)
+                    .step_by(4)
+                    .map(move |r| (f64::from(x) + 0.5, f64::from(r) + 0.5))
+            })
+            .find(|&(x, r)| deep(x, r))
             .expect("a dense cell");
-        let with = light_at(&field, 0, dense, 100.5, dense, Some(moon));
+        let moon = Light {
+            x: dense + 3.0,
+            y: row - 3.0,
+            ..moon
+        };
+        let with = light_at(&field, 1, dense, row, dense, Some(moon));
         let far = light_at(
             &field,
-            0,
+            1,
             dense,
-            100.5,
+            row,
             dense,
             Some(Light {
                 x: 10_000.0,
@@ -1005,7 +1187,7 @@ mod tests {
                 .map(|(x, y)| f.density(f64::from(x) + 0.5, f64::from(y) + 0.5))
                 .collect::<Vec<f64>>()
         };
-        let (a, b, later) = (sample(10.0), sample(10.1), sample(90.0));
+        let (a, b, later) = (sample(10.0), sample(10.1), sample(900.0));
         let step: f64 = a.iter().zip(&b).map(|(p, q)| (p - q).abs()).sum::<f64>() / a.len() as f64;
         let drift: f64 = a
             .iter()
@@ -1016,14 +1198,14 @@ mod tests {
         assert!(step < 0.01, "a tenth of a second changes little: {step}");
         assert!(
             drift > 5.0 * step,
-            "a minute and a half changes a lot: {drift} vs {step}"
+            "a quarter of an hour changes a lot: {drift} vs {step}"
         );
     }
 
     #[test]
     fn heaps_fade_in_and_out_over_their_lives() {
         // Somewhere a cell is clear, then cloudy, then clear again, over
-        // half an hour of calm weather.
+        // two hours of calm weather.
         let field = sky_fields(Cover::Broken, ROWS, 5)[1];
         let mut found = false;
         'cells: for x in (0..400).step_by(7) {
@@ -1033,7 +1215,7 @@ mod tests {
                         .at_time(t)
                         .density(f64::from(x) + 0.5, f64::from(y) + 0.5)
                 };
-                let series: Vec<f64> = (0..72).map(|i| at(f64::from(i) * 25.0)).collect();
+                let series: Vec<f64> = (0..120).map(|i| at(f64::from(i) * 60.0)).collect();
                 let first_cloud = series.iter().position(|&d| d > 0.5);
                 if let Some(start) = first_cloud {
                     let clear_before = series[..start].contains(&0.0);
@@ -1049,13 +1231,9 @@ mod tests {
     }
 
     #[test]
-    fn heaps_live_at_least_five_times_longer_than_the_first_version() {
-        // The first version lived 120 s calm and 20 s in a storm; the owner
-        // asked for the fades to be at least 80% slower (the lifetimes are
-        // checked at build time next to their constants).
-        // Over 10 s a calm sky changes only at its edges: heaps spend about
-        // 100 s growing in or dissolving, so edges creep a cell every few
-        // seconds (measured: about 6% of cloud cells flip in 10 s).
+    fn calm_skies_change_only_slowly_at_the_edges() {
+        // The lifetimes are checked at build time next to their constants.
+        // Over 10 s a calm sky changes only at its edges, and little.
         let field = sky_fields(Cover::Scattered, ROWS, 2)[1];
         let (a, b) = (field.at_time(100.0), field.at_time(110.0));
         let cells: Vec<(f64, f64)> = (0..300)
@@ -1077,6 +1255,100 @@ mod tests {
         assert!(
             changed * 10 < cloudy,
             "{changed} of {cloudy} cells changed in 10 s"
+        );
+    }
+
+    #[test]
+    fn clouds_fade_at_their_own_paces() {
+        // Lifetimes and fade lengths vary from heap to heap, so they never
+        // fade in step.
+        let field = sky_fields(Cover::Overcast, ROWS, 11)[1];
+        let heaps: Vec<Heap> = (0..60)
+            .filter_map(|k| field.parent_heap(k, 0.0, 3, 0.3))
+            .collect();
+        assert!(heaps.len() > 20);
+        let spread = |f: fn(&Heap) -> f64| {
+            let values: Vec<f64> = heaps.iter().map(f).collect();
+            let max = values.iter().copied().fold(f64::MIN, f64::max);
+            let min = values.iter().copied().fold(f64::MAX, f64::min);
+            max - min
+        };
+        assert!(spread(|h| h.rise) > 0.2, "fade-in lengths vary");
+        assert!(spread(|h| h.fall) > 0.2, "fade-out lengths vary");
+        let lives: Vec<f64> = (0..60).map(|k| field.slot_lifetime(k, 3)).collect();
+        let longest = lives.iter().copied().fold(f64::MIN, f64::max);
+        let shortest = lives.iter().copied().fold(f64::MAX, f64::min);
+        assert!(
+            longest > 3.0 * shortest,
+            "lifetimes vary: {shortest} to {longest}"
+        );
+    }
+
+    #[test]
+    fn a_reborn_cloud_is_a_new_cloud() {
+        // Each life of a slot draws a fresh shape in a fresh place.
+        let field = sky_fields(Cover::Overcast, ROWS, 8)[1];
+        let mut moved = 0;
+        for k in 0..20 {
+            let a = field.parent_heap(k, 3.0, 2, 0.2);
+            let b = field.parent_heap(k, 4.0, 2, 0.2);
+            if let (Some(a), Some(b)) = (a, b) {
+                if (a.center - b.center).abs() > 1.0 || (a.width - b.width).abs() > 1.0 {
+                    moved += 1;
+                }
+            }
+        }
+        assert!(moved >= 5, "generations differ: {moved}");
+    }
+
+    #[test]
+    fn offspring_are_born_in_front_of_their_parents() {
+        // Cells of the front (offspring) sub-layer mostly sit over a parent
+        // in the back sub-layer of the same depth row.
+        let field = sky_fields(Cover::Broken, ROWS, 9)[1];
+        let (mut front, mut over_parent) = (0, 0);
+        for i in 0..6 {
+            let f = field.at_time(f64::from(i) * 90.0);
+            for x in (0..600).step_by(3) {
+                let x = f64::from(x) + 0.5;
+                for row in (100..280).step_by(3) {
+                    let row = f64::from(row) + 0.5;
+                    if f.sublayer_density(x, row, 4) > 0.5 {
+                        front += 1;
+                        let near = (-12..=12)
+                            .any(|dy| f.sublayer_density(x, row + f64::from(dy), 5) > 0.2);
+                        over_parent += usize::from(near);
+                    }
+                }
+            }
+        }
+        assert!(front > 50, "offspring exist: {front}");
+        assert!(
+            over_parent * 10 >= front * 6,
+            "offspring overlap parents: {over_parent} of {front}"
+        );
+    }
+
+    #[test]
+    fn clouds_appear_about_as_often_as_they_vanish() {
+        let field = sky_fields(Cover::Broken, ROWS, 10)[1];
+        let (mut born, mut gone) = (0, 0);
+        for x in (0..600).step_by(6) {
+            for row in (80..280).step_by(6) {
+                let (x, row) = (f64::from(x) + 0.5, f64::from(row) + 0.5);
+                let mut was = field.at_time(0.0).density(x, row) > 0.5;
+                for i in 1..60 {
+                    let now = field.at_time(f64::from(i) * 120.0).density(x, row) > 0.5;
+                    born += usize::from(now && !was);
+                    gone += usize::from(was && !now);
+                    was = now;
+                }
+            }
+        }
+        assert!(born > 50, "clouds are born: {born}");
+        assert!(
+            born * 10 >= gone * 7 && gone * 10 >= born * 7,
+            "births {born} balance deaths {gone}"
         );
     }
 
