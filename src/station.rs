@@ -38,9 +38,10 @@ pub const ORBIT_TILT: f64 = 0.45;
 pub const DESTROY_CHANCE: f64 = 0.3;
 /// Random destruction time as a fraction of the lap (the station is high).
 pub const DESTROY_WINDOW: (f64, f64) = (0.35, 0.65);
-/// Forced destruction time as a fraction of the lap: 12 seconds after the
-/// app opens when it starts on the station lap.
-pub const FORCED_DESTROY_AT: f64 = 0.32;
+/// Forced destruction time as a fraction of the lap: 15 seconds after the
+/// app opens when it starts on the station lap, so the trench run begins
+/// about 5 seconds in.
+pub const FORCED_DESTROY_AT: f64 = 0.325;
 /// Length of the full-disk flash in seconds.
 pub const FLASH_SECONDS: f64 = 0.25;
 /// Length of the whole destruction sequence in seconds.
@@ -52,7 +53,7 @@ pub const DEBRIS: u32 = 30;
 /// The hero ship's color: pure red in every palette.
 pub const HERO_RED: Rgb = Rgb([0xff, 0x20, 0x20]);
 /// Seconds the hero takes to fly the trench, edge to edge.
-pub const TRENCH_RUN_SECONDS: f64 = 2.5;
+pub const TRENCH_RUN_SECONDS: f64 = 5.0;
 /// Seconds the hero takes to climb away after the trench.
 pub const ESCAPE_SECONDS: f64 = 1.5;
 /// Quiet seconds between the hero leaving and the explosion.
@@ -377,8 +378,14 @@ mod tests {
         assert_eq!(destruction_time(1, StationFate::Survive, PASS), None);
         assert_eq!(
             destruction_time(1, StationFate::Destroy, PASS),
-            Some(0.32 * PASS)
+            Some(FORCED_DESTROY_AT * PASS)
         );
+        // Opening on the station lap (30% in), the trench run starts about
+        // 5 s after launch and the blast comes about 15 s after.
+        let opening = crate::moon::START_FRACTION * PASS;
+        let blast = FORCED_DESTROY_AT * PASS - opening;
+        assert!((blast - 15.0).abs() < 1e-9, "{blast}");
+        assert!(blast - run_lead() >= 5.0);
         let destroyed = (0..10_000)
             .filter(|&lap| destruction_time(lap, StationFate::Chance, PASS).is_some())
             .count();

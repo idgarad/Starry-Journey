@@ -47,7 +47,7 @@ Options:
                      one phase per 10-minute lap. Default: waxing-crescent.
   --station-fate F   On the new-moon lap a battle station is under attack:
                      chance (30% it is destroyed, default), destroy (blows up
-                     about 12 s after opening on that lap), or survive.
+                     about 15 s after opening on that lap), or survive.
   -h, --help         Show this help.
 
 Keys: P palette, R new city, +/- speed, E Normal/Endless, Space pause scrolling,
