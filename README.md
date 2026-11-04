@@ -58,6 +58,14 @@ cargo run --release --bin clouds -- all 1 vga   # preset (or all), seed, palette
 
 It writes `target/cloud-preview/<preset>-<seed>-<palette>.bmp` and prints the path.
 
+To see the real app at chosen moments without opening a window (snapshot mode):
+
+```powershell
+cargo run --release -- --snapshot 0,30s,12m --clouds storm --seed 7
+```
+
+It runs the app on simulated time through the real GPU shader and writes one PNG per moment into `target/snapshots/<YYYYMMDD-HHMMSS>/`, printing each path. The same options and seed always give the same pictures. Runs take longer for storms and big sizes (a 12-minute storm at 1920x1080 took about 6 minutes); `--size 960x540` is about four times faster.
+
 ### Options
 
 | Option | Effect |
@@ -70,6 +78,10 @@ It writes `target/cloud-preview/<preset>-<seed>-<palette>.bmp` and prints the pa
 | `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 15 s after opening on that lap), or `survive`. |
+| `--seed N` | Build city number N (0 to 4294967295) instead of a random one. The same seed gives the same city and clouds. |
+| `--snapshot T,...` | Open no window; save a PNG of each moment T (durations as for `--timer`, or `0`). See above. |
+| `--size WxH` | Snapshot size in pixels (default `1920x1080`; each side 16 to 8192). Only with `--snapshot`. |
+| `--snapshot-dir D` | Folder for snapshot runs (default `target/snapshots`). Only with `--snapshot`. |
 | `-h`, `--help` | Show usage. |
 
 Pass options after `--` when using cargo: `cargo run -- --pixel-size 3`.
@@ -101,7 +113,8 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 
 | Path | Contents |
 | --- | --- |
-| [src/main.rs](src/main.rs), [src/present.wgsl](src/present.wgsl) | Window, input, fullscreen/monitor handling, and GPU presentation of the city buffer. |
+| [src/main.rs](src/main.rs), [src/present.wgsl](src/present.wgsl) | Window, input, fullscreen/monitor handling, and GPU presentation of the city buffer; also snapshot mode's offscreen rendering on simulated time. |
+| [src/snapshot.rs](src/snapshot.rs) | Snapshot mode helpers: a dependency-free PNG writer and run folder names. |
 | [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |
 | [src/clouds.rs](src/clouds.rs) | Cloud shapes, coverage presets, wind and parallax, and moonlit four-tone drawing. |
 | [src/endless.rs](src/endless.rs), [src/quips.rs](src/quips.rs) | Endless mode's four scrolling layer cities with bounded buffers, and the startup quips. |

@@ -10,8 +10,9 @@
 
 use std::{
     error::Error,
+    path::PathBuf,
     sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use starry_journey::clock::{format_remaining, ConstructionClock};
@@ -32,6 +33,7 @@ use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::skyclouds::{SkyClouds, SLOTS as CLOUD_SLOTS};
+use starry_journey::snapshot::{encode_png, frame_name, run_id};
 use starry_journey::station::{radio_line, StationFate};
 use starry_journey::street::{mark_opaque, Span, StreetLayer};
 use starry_journey::traffic::{Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH};
@@ -57,6 +59,11 @@ const SPEED_STEP: f64 = 0.25;
 const STREET_MARGIN: i32 = 2;
 /// Window title prefix.
 const TITLE: &str = "Starry Journey";
+/// Simulated frames per second in snapshot mode (the motion step cap).
+const SNAPSHOT_FPS: f64 = 30.0;
+/// The offscreen texture format for snapshots: sRGB, like the window
+/// surface the app prefers, so the shader output is encoded the same way.
+const SNAPSHOT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 #[derive(Default)]
 struct App {
@@ -123,7 +130,7 @@ impl ApplicationHandler for App {
 
         match pollster::block_on(Renderer::new(
             Arc::clone(&window),
-            random_seed(),
+            self.options.seed.unwrap_or_else(random_seed),
             self.options.clone(),
         )) {
             Ok(renderer) => {
@@ -602,7 +609,8 @@ impl Scene {
 }
 
 struct Renderer {
-    surface: wgpu::Surface<'static>,
+    /// The window surface; `None` in snapshot mode, which draws offscreen.
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
@@ -670,6 +678,31 @@ struct Renderer {
     cloud_texture: wgpu::Texture,
     options: LaunchOptions,
     scale_factor: f64,
+    /// Snapshot mode: seconds of simulated time since the start, which
+    /// replaces the real clock; `None` runs on real time.
+    virtual_elapsed: Option<f64>,
+}
+
+/// Opens the device on `adapter`, asking for the adapter's real texture
+/// size limit (often 16384, not the 8192 default), which leaves room for
+/// wide surfaces such as a city spanning several monitors.
+async fn request_device(
+    adapter: &wgpu::Adapter,
+) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
+    adapter
+        .request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("Starry Journey device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits {
+                    max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
+                    ..wgpu::Limits::default()
+                },
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        )
+        .await
 }
 
 impl Renderer {
@@ -688,23 +721,7 @@ impl Renderer {
             })
             .await
             .ok_or("No compatible graphics adapter was found.")?;
-        let (device, queue) = adapter
-            .request_device(
-                &wgpu::DeviceDescriptor {
-                    label: Some("Starry Journey device"),
-                    required_features: wgpu::Features::empty(),
-                    // The adapter's real texture size limit (often 16384,
-                    // not the 8192 default) leaves room for wide surfaces
-                    // such as a city spanning several monitors.
-                    required_limits: wgpu::Limits {
-                        max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
-                        ..wgpu::Limits::default()
-                    },
-                    memory_hints: wgpu::MemoryHints::Performance,
-                },
-                None,
-            )
-            .await?;
+        let (device, queue) = request_device(&adapter).await?;
 
         let capabilities = surface.get_capabilities(&adapter);
         // An sRGB surface re-encodes the decoded sRGB texture exactly.
@@ -724,7 +741,63 @@ impl Renderer {
             ..surface_config
         };
         surface.configure(&device, &surface_config);
+        Self::build(
+            device,
+            queue,
+            Some(surface),
+            surface_config,
+            window.scale_factor(),
+            seed,
+            options,
+        )
+    }
 
+    /// A renderer with no window for snapshot mode: it draws into an
+    /// offscreen `size` texture on simulated time, and its clouds run in
+    /// lockstep so the same seed gives the same pictures.
+    async fn offscreen(
+        size: (u32, u32),
+        seed: u32,
+        options: LaunchOptions,
+    ) -> Result<Self, Box<dyn Error>> {
+        let instance = wgpu::Instance::default();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                force_fallback_adapter: false,
+            })
+            .await
+            .ok_or("No graphics adapter was found for snapshots.")?;
+        let (device, queue) = request_device(&adapter).await?;
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            format: SNAPSHOT_FORMAT,
+            width: size.0,
+            height: size.1,
+            present_mode: wgpu::PresentMode::Fifo,
+            desired_maximum_frame_latency: 2,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: Vec::new(),
+        };
+        let mut renderer = Self::build(device, queue, None, surface_config, 1.0, seed, options)?;
+        renderer.virtual_elapsed = Some(0.0);
+        renderer.sky_clouds.set_lockstep(true);
+        Ok(renderer)
+    }
+
+    /// Everything after the device and surface: the pipeline, textures,
+    /// and scene. `surface_config` gives the frame size and format.
+    fn build(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        surface: Option<wgpu::Surface<'static>>,
+        surface_config: wgpu::SurfaceConfiguration,
+        scale_factor: f64,
+        seed: u32,
+        options: LaunchOptions,
+    ) -> Result<Self, Box<dyn Error>> {
+        let surface_format = surface_config.format;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("City presentation shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
@@ -796,7 +869,7 @@ impl Renderer {
             .iter()
             .position(|palette| palette.key == DEFAULT_PALETTE_KEY)
             .unwrap_or(0);
-        let scale_factor = window.scale_factor();
+        let start = Instant::now();
         let scene = Scene::new(
             seed,
             surface_config.width,
@@ -860,8 +933,8 @@ impl Renderer {
             speed: 1.0,
             last_frame: None,
             clock: options.clock,
-            construction_start: Instant::now(),
-            app_start: Instant::now(),
+            construction_start: start,
+            app_start: start,
             moon_state: None,
             moon_now: None,
             moon_start_step: options.moon_start_step,
@@ -878,10 +951,30 @@ impl Renderer {
             cloud_texture,
             options,
             scale_factor,
+            virtual_elapsed: None,
         };
         renderer.upload();
         renderer.update_message();
         Ok(renderer)
+    }
+
+    /// The time now: real time, or in snapshot mode the start plus the
+    /// simulated seconds.
+    fn now(&self) -> Instant {
+        match self.virtual_elapsed {
+            Some(seconds) => self.app_start + Duration::from_secs_f64(seconds.max(0.0)),
+            None => Instant::now(),
+        }
+    }
+
+    /// Snapshot mode: moves simulated time to `seconds` and runs one frame.
+    /// The clouds run in lockstep (they wait for any keyframe this frame
+    /// uses), so the run does not depend on how fast this machine renders.
+    fn step_to(&mut self, seconds: f64) {
+        self.virtual_elapsed = Some(seconds);
+        self.advance();
+        // Flush this frame's uploads; nothing is drawn until a capture.
+        self.queue.submit(None);
     }
 
     /// The configured surface size in physical pixels.
@@ -908,7 +1001,9 @@ impl Renderer {
         }
         self.surface_config.width = size.width;
         self.surface_config.height = size.height;
-        self.surface.configure(&self.device, &self.surface_config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.surface_config);
+        }
         // The scene grid always reserves the road rows (see Scene::new).
         let new_grid = Grid::with_scaling(size.width, size.height, true, self.scaling());
         if new_grid != self.scene.grid {
@@ -925,7 +1020,7 @@ impl Renderer {
                 self.scene.endless_camera(),
             );
             self.moon_state = None;
-            self.update_moon(Instant::now());
+            self.update_moon(self.now());
             self.rebuild_clouds();
             self.scene.compose();
             self.upload();
@@ -944,10 +1039,10 @@ impl Renderer {
             self.scene.endless.is_some().then_some(0.0),
         );
         // Restart restarts a duration timer (Rebuild Prompt); resizing keeps it.
-        self.construction_start = Instant::now();
+        self.construction_start = self.now();
         self.paused = false;
         self.moon_state = None;
-        self.update_moon(Instant::now());
+        self.update_moon(self.now());
         self.rebuild_clouds();
         self.scene.compose();
         self.upload();
@@ -959,10 +1054,9 @@ impl Renderer {
         self.palette_index = (self.palette_index + 1) % palettes().len();
         let palette = palette_at(self.palette_index);
         self.scene.set_palette(palette);
-        self.notice
-            .flash(palette.label, self.seconds(Instant::now()));
+        self.notice.flash(palette.label, self.seconds(self.now()));
         self.moon_state = None;
-        self.update_moon(Instant::now());
+        self.update_moon(self.now());
         self.sky_clouds.set_palette(palette);
         self.scene.compose();
         self.upload();
@@ -974,7 +1068,7 @@ impl Renderer {
         self.cover = self.cover.next();
         self.sky_clouds.set_cover(self.cover);
         self.notice
-            .flash(self.cover.label(), self.seconds(Instant::now()));
+            .flash(self.cover.label(), self.seconds(self.now()));
     }
 
     /// New clouds for the current scene (same seed and grid).
@@ -986,6 +1080,7 @@ impl Renderer {
             self.cover,
             palette_at(self.palette_index),
         );
+        self.sky_clouds.set_lockstep(self.virtual_elapsed.is_some());
     }
 
     /// The moon as a light for the clouds, at its live position and scaled
@@ -1086,7 +1181,7 @@ impl Renderer {
         );
         self.paused = false;
         self.moon_state = None;
-        self.update_moon(Instant::now());
+        self.update_moon(self.now());
         self.rebuild_clouds();
         self.scene.compose();
         self.upload();
@@ -1108,7 +1203,7 @@ impl Renderer {
     /// Advances construction by the real time since the previous frame and
     /// uploads the image if any cell changed.
     fn advance(&mut self) {
-        let now = Instant::now();
+        let now = self.now();
         let dt = self
             .last_frame
             .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
@@ -1167,7 +1262,7 @@ impl Renderer {
     fn update_message(&mut self) {
         let text = self
             .notice
-            .text(self.seconds(Instant::now()))
+            .text(self.seconds(self.now()))
             .map(str::to_string);
         let key = MessageKey {
             text,
@@ -1531,10 +1626,84 @@ impl Renderer {
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let frame = self.surface.get_current_texture()?;
+        let Some(surface) = &self.surface else {
+            return Ok(());
+        };
+        let frame = surface.get_current_texture()?;
         let frame_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        self.draw_to(&frame_view);
+        frame.present();
+        Ok(())
+    }
+
+    /// Snapshot mode: draws the current frame offscreen and reads it back
+    /// as RGBA rows (sRGB-encoded, like the window shows).
+    fn capture(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+        let (width, height) = self.surface_size();
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Snapshot frame"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        self.draw_to(&texture.create_view(&wgpu::TextureViewDescriptor::default()));
+        // Buffer rows must be a multiple of 256 bytes.
+        let row = width * 4;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Snapshot readback"),
+            size: u64::from(padded) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Snapshot copy"),
+            });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            texture.size(),
+        );
+        self.queue.submit(Some(encoder.finish()));
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()??;
+        let mapped = slice.get_mapped_range();
+        let mut rgba = Vec::with_capacity((row * height) as usize);
+        for line in mapped.chunks(padded as usize).take(height as usize) {
+            rgba.extend_from_slice(&line[..row as usize]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        Ok(rgba)
+    }
+
+    /// Draws the scene into `view` (the window frame or a snapshot).
+    fn draw_to(&self, view: &wgpu::TextureView) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1544,7 +1713,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Present city"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame_view,
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1560,9 +1729,45 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        frame.present();
-        Ok(())
     }
+}
+
+/// Snapshot mode (`--snapshot`): runs the app with no window on simulated
+/// time, 30 frames per second, and saves a PNG of each requested moment
+/// into a new `YYYYMMDD-HHMMSS` folder under `--snapshot-dir`. Prints each
+/// file's path. O(frames + keyframes).
+fn run_snapshots(options: LaunchOptions, times: &[f64]) -> Result<(), Box<dyn Error>> {
+    let seed = options.seed.unwrap_or_else(random_seed);
+    let size = options.size;
+    let unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let dir = PathBuf::from(&options.snapshot_dir).join(run_id(unix));
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Could not create {}: {error}", dir.display()))?;
+    println!(
+        "Snapshots of seed {seed} at {}x{} into {}",
+        size.0,
+        size.1,
+        dir.display()
+    );
+    let mut renderer = pollster::block_on(Renderer::offscreen(size, seed, options))?;
+    let mut next = 0;
+    let mut frame: u64 = 0;
+    while next < times.len() {
+        let seconds = frame as f64 / SNAPSHOT_FPS;
+        renderer.step_to(seconds);
+        while next < times.len() && times[next] <= seconds + 1e-9 {
+            let rgba = renderer.capture()?;
+            let path = dir.join(frame_name(times[next]));
+            std::fs::write(&path, encode_png(size.0, size.1, &rgba))
+                .map_err(|error| format!("Could not write {}: {error}", path.display()))?;
+            println!("{}", path.display());
+            next += 1;
+        }
+        frame += 1;
+    }
+    Ok(())
 }
 
 /// Paints the street's back layer (road and background trees) into
@@ -1749,6 +1954,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if options.help {
         println!("{USAGE}");
         return Ok(());
+    }
+    if let Some(times) = options.snapshot.clone() {
+        return run_snapshots(options, &times);
     }
     let event_loop = EventLoop::new()?;
     let mut app = App {
