@@ -5,9 +5,46 @@
 | Branch | Contents | Status |
 | --- | --- | --- |
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | In review |
-| `feature/endless-compositor` | Sharp device-resolution layer caches reconstructed at fractional positions in linear light (smooth scrolling) | Planned |
+| `feature/endless-compositor` | Layers placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); street and traffic on an overlay | In review (branched from `feature/endless-layers`) |
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera; headlights keep lighting trees | Planned |
 | `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
+
+### feature/endless-compositor
+
+- **Report (owner, 2026-11-03):** "the scrolling is terrible", as it was in the Python version before sub-pixel positioning and "some light trick to prevent flickering".
+- **Cause:** layers moved in whole cells (3 device pixels). The far layer at 0.4 cells/s stepped once every 2.5 s, and the four layers stepped at different moments.
+- **Fix (the Rebuild Prompt's compositor):**
+  - **Sub-pixel positions:** each layer is placed at its exact fractional device-pixel offset `(viewX - originX) × cell`. A device pixel takes the two pixels of the layer's sharp device-resolution image that it overlaps, weighted by overlap.
+  - **The light trick:** texels are decoded from sRGB to linear light (the `Rgba8UnormSrgb` texture format decodes) and premultiplied by alpha, then interpolated, then composited far to near with "over". The result is encoded once by the sRGB surface. Interpolating encoded values instead darkens a moving edge whenever it sits between pixels, which reads as flicker.
+- **Deviation (equivalent result):** the spec keeps a sharp device-resolution cache texture per layer. Here the shader computes the same values from the cell-resolution layer texture, because the cache's pixel `x` is just cell `floor(x / cell)`. This saves memory and avoids texture-size limits on wide surfaces (planned multi-monitor support): the cache at 1080p would be 4032 px wide, and over 8192 beyond about 4K wide.
+- **Delivered:**
+  - [src/present.wgsl](../src/present.wgsl):
+    - The background texture holds the Normal/construction frame, or the sky, stars, and moon while Endless scrolls.
+    - Four layer textures are reconstructed as above, followed by the overlay and the message box.
+    - `Params` carries the four layer offsets and a layers-on flag.
+  - [src/endless.rs](../src/endless.rs):
+    - Layer buffers are transparent on sky.
+    - `layer_image` exposes each buffer with a process-unique revision; rebases, palette changes, and new cities all get new revisions.
+    - `source_offset_px` is computed in f64 from the buffer origin, so it stays precise however far the camera goes.
+    - `reconstruct_row` is a CPU mirror of the shader math, used for tests.
+  - [src/main.rs](../src/main.rs):
+    - While scrolling, the cell-resolution frame is only the sky and moon (buildings hide the moon on the GPU now). The street, trees, and traffic go to a transparent overlay.
+    - Layer textures are uploaded only when their revision changes, reusing storage when the size matches. Scrolling itself writes just the 96-byte uniform each frame.
+    - The device requests the adapter's real `max_texture_dimension_2d`.
+  - [src/street.rs](../src/street.rs): `mark_opaque` for overlay cells.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 210 tests. New tests:
+    - whole-pixel offsets reproduce the sharp image exactly;
+    - a grey cell moving across black in quarter-pixel steps keeps its linear-light brightness constant (to 1e-9), while the encoded-space alternative dims by more than 5% between pixels;
+    - coverage at the buffer edges;
+    - layer alpha (0 on sky, 255 on buildings) and revisions after a palette change, a rebase, and a new city;
+    - fractional source offsets;
+    - the scrolling background is sky only, and the overlay is opaque exactly on street cells, with Normal-mode colors.
+  - The shader passes the existing WGSL validation test.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. The GPU output is not compared against the CPU mirror automatically. For the owner: `cargo run -- --endless --deadline 20s`, then watch the far layers glide at `-` (0.25×) and at 4×.
+- **Not yet:** the road and trees still stand still (`feature/endless-street`). Stars and the moon don't scroll, by design.
 
 ### feature/endless-layers
 
@@ -55,7 +92,7 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent. For the owner: `cargo run -- --endless --deadline 30s`, then watch the quips and the hand-off to scrolling; try `Space`, `E`, `P`, and `+`.
-- **Not yet:** layers snap to whole cells, so far layers step visibly at low speed until `feature/endless-compositor`. The road and trees stay still while the layers move (cars still drive), until `feature/endless-street`. There are no clouds yet.
+- **Not yet:** layers snap to whole cells (fixed by `feature/endless-compositor`; the owner called this scrolling "terrible"). The road and trees stay still while the layers move (cars still drive), until `feature/endless-street`. There are no clouds yet.
 
 ## REBUILD-003: Normal-mode rendering
 
