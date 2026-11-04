@@ -8,6 +8,8 @@
 //! and GPU presentation.
 
 pub mod clock;
+pub mod cloudgen;
+pub mod clouds;
 pub mod config;
 pub mod endless;
 pub mod message;
@@ -16,6 +18,7 @@ pub mod moon;
 pub mod quips;
 pub mod raster;
 pub mod reveal;
+pub mod skyclouds;
 pub mod station;
 pub mod street;
 pub mod traffic;

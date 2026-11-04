@@ -13,3 +13,10 @@ winit = "0.30.9"
 [dev-dependencies]
 naga = { version = "24.0.0", features = ["wgsl-in"] }
 serde_json = "1"
+
+# Light optimization for `cargo run`/`cargo test` (owner decision,
+# 2026-11-04): the procedural clouds are several times too slow unoptimized,
+# so debug runs would not show how they really move. Debug info and
+# assertions stay on.
+[profile.dev]
+opt-level = 1

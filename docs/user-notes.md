@@ -134,6 +134,7 @@ Edit the file to keep the right result and delete the marker lines, then run `gi
 - `cargo run -- --moon-phase new --station-fate destroy` shows the station under attack: about 5 seconds in a red ship runs the trench (5 seconds) and climbs away, and the station blows up a few seconds later (`survive` keeps it; default is a 30% chance).
 - `cargo run -- --message "This meeting will start shortly"` shows a message box over the city. Pressing `P` shows the new palette's name there for 2 seconds, then the message comes back. Quote the text so it counts as one argument.
 - `cargo run -- --endless --deadline 30s` builds an Endless city in 30 seconds (with silly status lines), then it starts scrolling. `E` switches modes, `Space` pauses the scrolling.
+- `cargo run -- --clouds storm` starts under storm clouds; press `C` to step through clear, puffs, scattered, broken, overcast, and storm (the name shows in the message box).
 - `cargo run -- --moon-phase full` opens on a full moon; `--moon-phase new` shows the battle station right away. Names: new, waxing-crescent, first-quarter, waxing-gibbous, full, waning-gibbous, last-quarter, waning-crescent (or 0-7).
 - `cargo run -- --pixel-size 4` tries another pixel size (default 3); `cargo run -- --pixel-size spec` uses the spec's about 240 rows. The `--` tells cargo that the options are for the app, not for cargo.
 

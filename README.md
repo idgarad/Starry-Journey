@@ -30,6 +30,7 @@ cargo run
 | --- | --- |
 | `P` | Next palette (its name shows in the message box for 2 seconds) |
 | `R` | New city (construction restarts) |
+| `C` | Cycle the cloud cover (its name shows in the message box) |
 | `E` | Switch between Normal and Endless mode |
 | `Space` | Pause or resume Endless scrolling |
 | `+` / `-` | Construction speed, 0.25× to 4× |
@@ -49,6 +50,14 @@ To preview a whole generated city as text:
 cargo run --bin city -- 160 60 1    # columns, rows, seed
 ```
 
+To preview the procedural clouds as an image (BMP, opens in Windows Photos):
+
+```powershell
+cargo run --release --bin clouds -- all 1 vga   # preset (or all), seed, palette, [moon phase 0-7]
+```
+
+It writes `target/cloud-preview/<preset>-<seed>-<palette>.bmp` and prints the path.
+
 ### Options
 
 | Option | Effect |
@@ -56,6 +65,7 @@ cargo run --bin city -- 160 60 1    # columns, rows, seed
 | `--pixel-size N` | Each virtual pixel is N screen pixels (1–16, times display scaling). Default 3. Bigger windows show more city and more sky. |
 | `--pixel-size spec` | Scale pixels with screen height instead, so every screen shows about 240 virtual rows (the Rebuild Prompt formula). |
 | `--timer D`, `--deadline D` | Finish building the city in exactly D, whatever the speed. A bare number is minutes; `90s`, `25m`, `1h30m` also work. |
+| `--clouds C` | Cloud cover: `clear`, `puffs`, `scattered` (default), `broken`, `overcast`, or `storm`. |
 | `--endless` | Endless mode: the city is built, then scrolls forever in four parallax layers. Silly status lines show while it builds (unless `--message` is set). Works with `--timer`. |
 | `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
@@ -93,6 +103,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | --- | --- |
 | [src/main.rs](src/main.rs), [src/present.wgsl](src/present.wgsl) | Window, input, fullscreen/monitor handling, and GPU presentation of the city buffer. |
 | [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |
+| [src/clouds.rs](src/clouds.rs) | Cloud shapes, coverage presets, wind and parallax, and moonlit four-tone drawing. |
 | [src/endless.rs](src/endless.rs), [src/quips.rs](src/quips.rs) | Endless mode's four scrolling layer cities with bounded buffers, and the startup quips. |
 | [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |
 | [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind), `mast`, `tint`, `windows`, `decorations`, and `city` (the generator that assembles them). |

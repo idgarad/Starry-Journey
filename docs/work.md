@@ -7,7 +7,408 @@
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
 | `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | Merged |
-| `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
+| `feature/clouds` | Puffs, banks, and decks; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit, four tones | In review |
+| `feature/cloud-lights` | City glow on cloud undersides; rooftop searchlights with visible beams; sun as a light source (shown with the day/night cycle) | Planned |
+| `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | Planned |
+
+### feature/clouds
+
+- **Decisions (owner, 2026-11-03):**
+  - Clouds need variety and density: occasional puffs, and heavy coverage for the rain and thunderstorms to come.
+  - Clouds appear in both modes (the spec has them in Endless only).
+  - Coverage presets are chosen with `--clouds` and cycled with `C`.
+  - The moon sits behind the clouds.
+  - Clouds are lit dynamically by the moon, the city's light, searchlights, the sun, and lightning, with "all the lights" tackled. Lightning comes in three kinds: inside a cloud, between clouds, and to the ground at the tallest building.
+  - Split into three branches: this one (shapes, presets, motion, ambient and moonlight), then `feature/cloud-lights`, then `feature/lightning`.
+- **Agent defaults (for the owner to tune):**
+  - Default cover is scattered. It follows the spec: `max(3, ceil(cols / 130))` clouds, mostly banks of 38-90 x 6-13.
+  - Four tones per cloud, between the palette's sky and star colors.
+  - Edges are 55% opaque against open sky.
+  - The wind is the spec's 0.35 cells/s. In Endless the clouds also follow a tenth of the camera, slower than the farthest city layer.
+- **Measured coverage** (share of the whole sky down to the ground, 1080p at 3 px, mean of 8 seeds):
+
+  | Preset | Coverage |
+  | --- | --- |
+  | Clear | 0% |
+  | Puffs | 0.2% |
+  | Scattered | 0.6% |
+  | Broken | 8.0% |
+  | Overcast | 23.9% |
+  | Storm | 45.5% |
+- **Delivered:**
+  - [src/clouds.rs](../src/clouds.rs):
+    - `Cover` (the six presets, with `next`, `label`, `key`, `parse`, and `cloud_count`) and `CloudKind`.
+    - Shapes are stepped domes in two-row strips:
+      - puffs: rounded, at most about half as tall as wide;
+      - banks: a main dome giving the spec height, plus smaller ones;
+      - decks: a tall body with wandering sides and a lumpy top. Deck height scales with the sky (25-40% for storms), so heavy skies stay heavy on any screen.
+    - Domes are capped at 0.55 rows per cell of half-width, so they stay rounded.
+    - `CloudField` holds the wind, Endless parallax, the `cols + 160` wrap span (with new shapes on wrap), a strip two columns wider than the screen on each side, and `coverage()`.
+    - `cell_light`: the top two rows of each column are lit and the bottom two shaded. The moon adds a glow by phase that fades with the square of the distance within 2.2 radii (dimmer inside thick cloud), and a rim on the edges facing it.
+    - `draw` snaps light to four tones. Edges are soft only against open sky.
+  - [src/config.rs](../src/config.rs): `--clouds` (exit code 2 for an unknown preset).
+  - [src/main.rs](../src/main.rs):
+    - The renderer owns the `CloudField`, rebuilt with the scene; `C` cycles the cover and names it in the message box.
+    - Clouds are redrawn only when they move a whole cell, a cloud wraps, or the moon moves a cell or changes phase. The station lap is a new moon, so it gives no light.
+  - [src/present.wgsl](../src/present.wgsl): the cloud strip is drawn after the moon and before the city, slid by its fractional offset with linear-light reconstruction.
+- **Tuning by looking (off-screen renders reviewed by the agent):**
+  - The first version had tall arched "tombstone" decks, a thin hairline under each bank, banded undersides, bullseye rings around the moon, and storms nearly invisible on black.
+  - Fixes:
+    - flatter domes;
+    - ragged deck sheets;
+    - per-column shading;
+    - a squared, shorter moon glow;
+    - no bank slab;
+    - solid edges where clouds overlap (they had drawn diagonal seams);
+    - slightly brighter storm and overcast tones.
+  - Overcast still reads as flat-topped decks rather than a full ceiling; it needs the owner's eye.
+- **Redesign (owner feedback, 2026-11-03: "All those clouds are terrible. We need different shapes"; clouds should be "slightly transparent even with thick clouds so the moon light (and later sun light) can bleed through"):**
+  - The agent had tuned against its own renders, not the owner's references. The references in `.ai/` (the Python version, `ref9`, `refimage7`, `reimage8`) all show horizontal, layered, low-contrast, see-through clouds; none show dome-shaped cumulus.
+  - The new shapes:
+    - wisps: long thin streaks;
+    - lenses: the Python version's flat stepped saucers, widest a third of the way up;
+    - banks: stacks of offset strips with gaps and trailing tails.
+    
+    Banks are never taller than a fifth of their width.
+  - Every cloud is translucent: interiors are at most 85% opaque (wisps 45%, lenses 70%, banks 80%, scaled by preset), edges against open sky are faded to 60% of that, and stacked overlaps are capped at 90%. The moon glows through even the heaviest storm.
+  - Measured coverage:
+
+    | Preset | Coverage |
+    | --- | --- |
+    | Puffs | 0.4% |
+    | Scattered | 0.6% |
+    | Broken | 5.6% |
+    | Overcast | 24.3% |
+    | Storm | 42.8% |
+  - Still open: overcast and storm read as streaky stripes, and fair-weather lenses are faint. This waits for owner direction.
+- **Moon glow (owner feedback, 2026-11-03: "The method for your moon glow looks bad", with a screenshot of a grey disk beside a crescent):**
+  - **Bug:** the clouds took the moon's position from `moon_state`, which is refreshed only when the moon's look changes (a new lap or phase). The glow sat where the moon had been when the lap began, about 40 cells off. A new `moon_now` holds the live moon every frame; cloud light, the redraw key, and the station radio calls use it.
+  - **Method:** the glow was quantized into the four cloud tones, which made a hard-edged disk the size of the moon, regardless of phase.
+    - [src/clouds.rs](../src/clouds.rs) `moon_glow` is now a smooth falloff (the square of the distance, out to 3 radii, strength 0.55 times brightness). `MoonLight::for_phase` adds `lit_side`, and `glow_center` leans toward the lit limb as the moon thins.
+    - [src/present.wgsl](../src/present.wgsl) applies the same formula per device pixel in linear light, tinted with the palette's star color and weighted by the cloud's opacity, so it lights clouds but never open sky.
+    - The CPU keeps only the silver rim on edges facing the moon.
+  - Tests: the glow fades continuously with no jumps and is gone beyond its reach; a new moon gives none; a waxing crescent glows to the right and a waning one to the left; the tones no longer carry the glow.
+  - `cargo test`: PASS, 243 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - The agent reviewed CPU renders that mirror the shader: a crescent behind overcast, and a full moon behind a storm.
+- **Builds now go to `target/agent`:** the owner had the app running, which locked `target/debug`.
+- **Reference-matched redesign (owner, 2026-11-04):** the owner supplied two references: outlined pixel-art cumulus ("more of a look like this"), and billowing distant cumulus "for far distant clouds". Clouds are now two layers, each with its own depth.
+  - **Near clouds (first reference):**
+    - rounded lobes on a flat base (the biggest near the middle), a filled base, and a short 2-5 cell tail;
+    - a one-cell outline, a shadow band along the bottom quarter, and a highlight just under the top outline;
+    - creases on the upper arc of a lobe where it overlaps one behind it;
+    - about 3-4 times wider than tall;
+    - outlines facing a moon of at least half brightness become highlights (a silver lining).
+  - **Far clouds (second reference):**
+    - towers of rounded puffs (one to three peaks), standing on the horizon behind the city, with no outline;
+    - each puff is shaded like a sphere lit from the moon's direction (Lambert), with sky light on upward faces and darker lower puffs;
+    - a lumpy horizon bank for broken, overcast, and storm skies, mostly dark and lit only along its upper rims;
+    - far wind is 0.12 cells/s, and Endless parallax 0.04 of the camera (near: 0.35 and 0.1).
+  - Draw order: sky, moon, far clouds, near clouds, city, street. The smooth moon glow applies to both layers (a shared `moonlit` function in the shader).
+  - Deviation: outlines step one cell at a time, like the reference, not in the spec's two-cell strips.
+  - The far layer uses its own texture (binding 13) and uniform slot, and its own seed (the cloud seed XOR a salt).
+  - **Tuning by looking (agent, CPU renders mirroring the shader):**
+    - Problems seen: concentric crease arcs on every lobe; tails showing as long base lines; towers reading as rocky hills; a storm bank like a pile of shaded balls; flat-topped bank lumps.
+    - Fixes:
+      - creases limited to upper arcs over a lobe behind;
+      - 2-5 cell tails;
+      - bigger tower puffs with more tonal range;
+      - a dark, rim-lit bank;
+      - bank lumps stop before they reach the top of their box.
+    - Near-cloud creases may still be busier than the reference; this is for the owner to judge.
+- **Far clouds only in storms, hanging from the top (owner, 2026-11-04):** "those background clouds are only needed when there is going to be a storm and they should be higher... The top of the background clouds should likely be aligned to the top of the scene."
+  - Only the storm preset has far clouds. Broken and overcast lost their towers and bank.
+  - Far clouds are built standing on a base and then flipped (`flip_vertical`), so they hang from row 0: heavy lobes reaching down, and a lumpy ceiling bank along the top.
+  - The lowest puffs are now centered on the base and cut flat by it, so each mass attaches along a wide flat edge rather than a single point (a test caught the pinched attachment).
+  - Shading: cells near the ceiling are deep inside the mass and darker. The bank is lit only along its lower rims.
+  - Tests: far clouds appear only in storms, sit at row 0, and are widest where they attach. Three tests that had used far clouds in overcast or broken skies now use storms.
+  - `cargo test`: PASS, 240 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - Open for the owner: near storm clouds share the upper band and cover much of the ceiling, and a few short dark slabs show along the top edge where bank pieces meet.
+  - **Bug found by a test:** `f64::signum(0.0)` is `1.0` in Rust, so a moon straight above a cell lit the wrong outline side. A three-way sign is used instead.
+  - `cargo test`: PASS, 240 tests. The cloud tests were rewritten for the new shapes. They check:
+    - flat bottoms, lobed tops, and proportions;
+    - outline, shadow, body, and highlight roles, and that creases exist;
+    - far clouds stand on the horizon, their side facing the moon is brighter, and a full moon lights them more than a new one;
+    - coverage rises with the preset in both layers, and storms cover more than half the sky in total;
+    - the opacity caps;
+    - wind and parallax per layer;
+    - an hour of wrapping in both layers;
+    - determinism;
+    - layer tones, and storms darker than fair weather;
+    - the glow and the crescent lean;
+    - the silver lining;
+    - the strip offset.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 241 tests after the redesign (238 before it). The redesign adds tests that:
+    - every shape is built of two-row strips;
+    - clouds are flat and wide (width at least 4 times height), and wisps are at most 4 rows;
+    - lenses are widest low and taper to both ends;
+    - banks narrow upward and sometimes have gaps;
+    - no cell exceeds 85% opacity, and wisps are fainter than storm banks;
+    - a drawn storm is never fully opaque, even where clouds overlap.
+  - The first cloud version's tests (before the redesign): New tests:
+    - preset cycling, parsing, and the spec count;
+    - shapes are paired two-row strips within their size ranges, reach their top, and have flat bases;
+    - puffs stay rounder than tall, and banks have no thin ledge;
+    - edge depth;
+    - coverage rises strictly from clear to storm, with storm over 40%;
+    - clouds stay above the ground row;
+    - wind rate and parallax;
+    - an hour of 4x Endless wraps with new shapes, keeps the count, and leaves nothing behind;
+    - determinism;
+    - a full moon lights nearby clouds and a new moon doesn't; the moon-facing rim; undersides darker than tops;
+    - four palette tones with translucent edges in all 12 palettes; storms darker than fair weather;
+    - the strip offset;
+    - `--clouds` parsing.
+
+    The fixes above changed two of my own new tests: the bank-ledge test now checks for a ledge rather than any full-width base, and the deck height bound allows trimmed lumpy tops.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. For the owner: `cargo run -- --clouds broken`, then press `C` to cycle; also try `--endless`.
+
+### Procedural clouds (in progress on `feature/clouds`)
+
+- **Decision (owner, 2026-11-04):** "I think our model is fundamentally flawed... we need to go procedural on them, just like how we build the city." Choices:
+  - a density field;
+  - no outlines anywhere (soft dithered edges, shaded only by light);
+  - a preview tool first, with shapes signed off before they are wired into the app.
+- **GitHub issue #1** (filed from the Python version, "procedural cloud coverage with moonlight transmission") shaped the design:
+  - continuous noise density rather than only sprites;
+  - coverage separate from thickness;
+  - moon and stars behind the clouds, with `T = exp(-k × density)`;
+  - restrained edge light with no halo through opaque cloud;
+  - no popping between coverage levels.
+
+  Issue #2 (keeping building types in sync with the Python version) is unrelated and not started.
+- **Conflict noted:** the owner earlier wanted thick clouds slightly transparent; the issue wants dense cloud to hide the moon. Opacity is capped at 92% as a compromise.
+- **[src/cloudgen.rs](../src/cloudgen.rs)** (pure; not yet used by the app):
+  - Seeded value noise and fractal noise (with a billow variant).
+  - Three layers like the city's:
+    - high: streaky sheets;
+    - mid: cumulus;
+    - low: dark scud.
+  - High and low layers are continuous noise fields over world coordinates, faded across their band. The coverage threshold grows clouds smoothly.
+  - **Mid cumulus are metaball heaps** in seeded world slots (110 columns apart), like roadside trees. Each heap has 5-11 soft balls whose densities add into a lumpy silhouette, with big balls low in the middle, a hard pixel-flat base, and billow noise on the edges. Each slot has its own coverage threshold, and its heap grows smoothly as coverage passes it, so there is no popping.
+  - `weather(cover)` gives each layer's coverage and thickness. Opacity is `1 - exp(-thickness × density)`, at most 0.92.
+  - `light_at` does self-shadowing: it marches 8 steps of 2 cells toward the moon, and light falls off as `exp(-0.5 × density passed)`. Edge light near the moon is weighted by transmission, so opaque cloud never glows.
+  - A 4x4 Bayer dither handles edges below 30% opacity.
+  - `tone_ramp` gives five tones per layer, darker for overcast and storm.
+- **[src/bin/clouds.rs](../src/bin/clouds.rs):** `cargo run --release --bin clouds -- [preset|all] [seed] [palette] [phase 0-7]` writes `target/cloud-preview/<preset>-<seed>-<palette>.bmp` at 1080p with 3 px cells: sky, stars, the moon, then the layers back to front in linear light. All five presets render in under a second. It needs no new dependency.
+- **How the design got here (agent, reviewing preview renders):**
+  1. A pure field for every layer drew the mid layer as a mountain range.
+  2. Softer profiles and grouping made walls with V-shaped valleys.
+  3. Slot heaps with domes made smooth loaves.
+  4. Lobed domes made gumdrops and specks.
+  5. Metaballs made recognizable cumulus.
+
+  Fields remain the right tool for sheets.
+- **Verification (2026-11-04):**
+  - `cargo test`: PASS, 251 tests. The 11 generator tests check:
+    - noise is seeded, continuous, and in range;
+    - coverage rises with the preset and clear is empty;
+    - sweeping the coverage dial never shrinks or jumps by more than 8%;
+    - the field is continuous along the world and doesn't repeat;
+    - every heap has a pixel-flat base (most of its columns end on the same row);
+    - thick cloud hides the moon and thin cloud lets it through, and opacity never reaches solid;
+    - the side facing the moon is brighter;
+    - no halo through opaque cloud;
+    - the dither pattern;
+    - layers stay in their bands, and a storm fills over 60% of the upper sky;
+    - tones.
+  - Test changes during development: the flat-base test moved from a single shared base row to "flat within each heap", because heaps sit at their own heights. The storm coverage check now measures the upper 60% of the sky, where clouds live, because the lower part is behind the skyline.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+- **Fill the sky to the horizon (owner, 2026-11-04):** "for simplicity we should fill the whole sky to give us a better sense of perspective... they should fill the sky to the horizon."
+  - Layer bands now cover the sky:
+    - high: 0-45%;
+    - mid: 0-100%;
+    - low: 55-100%.
+  - **Perspective:**
+    - Cumulus come in 10 depth rows from overhead to the horizon. Down that range, the scale goes from 1 to 0.22 (slot spacing shrinking with it), bases step down from 36% to 98% of the sky with jitter, and heaps get up to 35% flatter.
+    - Each row is seeded separately, and the densest row wins where rows overlap.
+    - Sheet noise shrinks toward the horizon too (`perspective(v) = 1 - 0.68 v`).
+  - Sheet edges dissolve: the high layer thins toward its lower edge and the low layer toward its upper edge, so neither has a ruler-straight boundary.
+  - The flat-base test now checks local flatness: at least 80% of neighbouring columns end within one row of each other. The whole sky is a single overlapping run, so the old per-heap check couldn't apply.
+  - Cost: the generator tests take about 21 s in a debug build, because each cell checks 10 depth rows. The release preview is still under a second. The app will need incremental strip rendering (already planned).
+  - Still for the owner's eye: some overhead heaps are a little boxy.
+  - `cargo test`: PASS, 251 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+- **Overlap and rounded bases (owner, 2026-11-04):** "you are missing the ability to overlap clouds. They seem... stenciled... If you allow them to overlap a bit then you get some better 3D effect", and "a lot of them have abnormally trimmed bottoms... perfectly straight lines".
+  - Cause: all heaps in a layer were merged into one density field, so overlaps fused into one flat shape; and a hard cut at each base sliced every ball straight.
+  - **Overlap:**
+    - each depth row is split into two interleaved sets of heaps (alternate slots), giving 20 sub-layers;
+    - sub-layers are drawn far to near, each lit and self-shadowed on its own, so a nearer heap's lit edge shows against the one behind it;
+    - front sets sit slightly lower, so they read as nearer;
+    - `haze(sub)` fades farther sub-layers up to 35% toward the sky color, and sheets get a fixed haze.
+  - **Rounded bases:**
+    - below the base line, balls fall off 3 times faster (`BASE_SQUASH`) instead of being cut, so big heaps are nearly flat with rounded ends and small puffs stay round;
+    - each base also undulates by a row or two along its length (seeded value noise), so overlapping balls can't line up into a ruler-straight edge.
+  - API: `LayerField::sublayers`, `sublayer_density`, and `haze`. `light_at` takes the sub-layer, and `density` is the maximum over sub-layers. The preview composites sub-layers back to front with haze; it takes about 2.5 s for all five presets in release.
+  - **New tests:**
+    - no sub-layer's heap bottom stays on one row for 30 or more columns. The first run found a 35-column line, which the undulation fixed;
+    - nearer heaps overlap farther ones in overcast skies;
+    - far sub-layers are hazier.
+  - `cargo test`: PASS, 253 tests (about 31 s in debug, mostly the generator).
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+- **Integrated into the app (owner, 2026-11-04):** "perfect looking so far. Lets integrate those and see how they look in an endless run. The question is the moon light interaction."
+  - [src/skyclouds.rs](../src/skyclouds.rs): `render_strip` composites every layer and sub-layer far to near in linear light, into a straight-alpha sRGB strip with transparent sky. The combined opacity is capped at 94%, so the moon always shows faintly; a test caught 20 overlapping sub-layers stacking to fully opaque.
+  - **`CloudWorker`, a background thread:**
+    - it always renders the newest request and skips older ones;
+    - it is not joined on drop, so a resize or restart never waits for a strip nobody will see.
+  - **`SkyClouds`:**
+    - the view is the wind (0.35 cells/s × speed, at most 1/30 s per frame) plus 0.1 of the Endless camera;
+    - the strip is the screen plus 96 cells on each side, slid by the GPU;
+    - a fresh strip is requested when the view is 1.5 margins in, when the cover or palette changes (the old strip shows until the new one is ready), or when the moon has moved 4 cells or changed phase.
+  - **Moonlight, as issue #1 asks:**
+    - the moon is drawn behind the clouds and shows through `exp(-k × density)`;
+    - clouds are lit by the self-shadowing march toward the moon's live position, scaled by its phase;
+    - the station lap is a new moon, so it gives no light;
+    - edge light comes only through thin cloud.
+
+    The GPU moon glow was removed, because it also brightened dense cloud, against the issue.
+  - **Removed:**
+    - the old sprite clouds (`CloudField`, near and far layers) and their 17 tests;
+    - the far-cloud texture binding;
+    - the glow uniforms and the shader's `moonlit` function.
+
+    `src/clouds.rs` now holds only the `Cover` presets.
+  - Cost: in a debug build a strip takes about 3 s on the worker thread (about 0.6 s in release), and frames never wait on it. The first clouds appear a few seconds after launch in a debug build.
+  - Tests:
+    - a clear strip is transparent;
+    - strips have translucent cloud and open sky, capped at 94%;
+    - neighbouring strips agree where they overlap, since the field is world-anchored;
+    - every palette renders;
+    - the worker delivers the newest request in order;
+    - `SkyClouds` drifts with wind and camera, swaps strips, and handles a cover change;
+    - a moon move of 4 cells relights, and a 1-cell move does not.
+  - `cargo test`: PASS, 243 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (the owner is using the machine).
+- **Four cloud layers, life cycles, and boiling (owner, 2026-11-04):** "give clouds their own 4 layers so we can have a bit more 'energy' in the cloud mix... clouds can fade in and out of existence... In bad thunderstorms I've even seen them 'boil'". The owner approved the plan and `opt-level = 1` for dev builds ("yes to all").
+  - **Build setting:** `[profile.dev] opt-level = 1` in `Cargo.toml`. A debug-build sky now takes 0.71 s instead of 2.7 s (release: 0.55 s). Debug info and assertions stay on.
+  - **Four distance layers:**
+    - `cloudgen::layer_parts` splits the 22 parts: far (high streaks and heap rows 7-9), mid-far (rows 4-6), mid-near (rows 2-3 and low scud), near (rows 0-1);
+    - winds are 0.15/0.25/0.35/0.5 cells/s, and the layers follow 0.03/0.06/0.1/0.16 of the Endless camera;
+    - the worker keeps only the newest request per layer and renders the nearest first.
+  - **Life cycles:**
+    - each heap has a seeded lifetime of `(120 - 100 × churn) × (0.7..1.3)` s, growing over the first 20% and dissolving over the last 30%; its balls' weights scale with its life, so it shrinks and fades rather than vanishing;
+    - coverage is lifted 1.3× to keep the sky as cloudy on average;
+    - `LayerWeather::churn` runs from 0 (clear) through 0.1-0.35 to 1 (storm);
+    - `LayerField::at_time` sets the cloud time.
+  - **Boiling:** the billowy detail drifts slowly sideways and rises at `0.003 + 0.09 × churn` noise units per second, so storm tops churn upward.
+  - **Keyframes and cross-fade:**
+    - each layer renders keyframes an interval ahead: `8 - 5.5 × churn` s (8 s calm, 2.5 s in a storm), 1.5× for the far layer;
+    - the GPU blends from the previous keyframe to the next in linear light over the time until the next is due, so forming heaps fade in and edges morph;
+    - every keyframe is lit with the moon's current position, which replaces the separate relight step;
+    - a cover or palette change fades in over 1.5 s;
+    - the cloud clock runs with the speed setting and stops on pause.
+  - The cloud texture holds 8 strips (4 layers × 2 slots). The shader receives each layer's front and back offsets, fade, and front slot.
+  - The base wobble was tightened (wavelength 7 instead of 9, height 5 instead of 4), after the straight-bottom test found a 30-column run with the larger lifted heaps.
+  - Tests:
+    - the four layers cover every part exactly once, far to near;
+    - clouds change smoothly over a tenth of a second but substantially over 90 s;
+    - heaps fade in and out over their lives (a cell goes clear, then cloudy, then clear);
+    - storms churn more than twice as much as broken skies in 5 s;
+    - keyframes at different times differ;
+    - keyframe intervals per cover and layer;
+    - layers drift at their own speeds;
+    - keyframes cross-fade forward in time, with fades staying in 0..1;
+    - a cover change fades in quickly, and pausing stops the clock.
+  - `cargo test`: PASS, 250 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
+- **Slower cloud lives (owner, 2026-11-04):** "The fade in and out needs to be very slow. slow it at least 80%."
+  - Heap lifetimes are 5 times longer: `cloudgen::LIFETIME_CALM` is 600 s (was 120 s) and `LIFETIME_STORM` is 100 s (was 20 s), still scaled by a seeded 0.7..1.3. A heap grows over the first 20% of its life and dissolves over the last 30%, so a calm fade in takes about 2 minutes.
+  - The calm edge drift and rise are about 80% slower: churn is now squared, giving `0.0008 + 0.01 × churn²` drift and `0.0006 + 0.09 × churn²` rise. A storm (churn 1) boils as before.
+  - A compile-time check keeps the lifetimes at least 5 times the first version's.
+  - The cover or palette quick fade (1.5 s) is unchanged.
+  - Tests:
+    - the fade test samples 72 × 25 s;
+    - a new test checks that a scattered sky changes under 10% of its cloudy cells in 10 s (measured about 6%; edges still creep about a cell every few seconds).
+  - `cargo test`: PASS, 251 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
+- **Cloud families (owner, 2026-11-04):** "we should be creating clouds just as much as we are removing them Kind of like some clouds having offspring... Imagine a big box on the back most cloud layer. Then the next layer closer we create a few random boxes that overlap the first one". The owner chose families within each distance band, so the perspective stays.
+  - Each life of a heap slot is a new generation, with its own seeded shape and place. Before, the same heap regrew in the same spot.
+  - Each depth row's back sub-layer holds parents. The front sub-layer holds their 2-4 offspring:
+    - 30-55% of the parent's width and a little taller;
+    - born at staggered times (5-65% into the parent's life) and living 0.4-0.8 of a parent lifetime, so some outlive the parent;
+    - standing on the parent's base (one condensation level), so they read as nearer by overlap and their own lit edge.
+  - The parent coverage lift is 1.25. Measured mid-layer coverage, old to new: Puffs 0.045 to 0.038, Scattered 0.109 to 0.100, Broken 0.246 to 0.229, Overcast 0.330 to 0.322, Storm 0.456 to 0.476.
+- **Slower, unsynchronized fades (owner, 2026-11-04):** "The fade in and out is still too fast... They are too synchronized".
+  - Likely cause of the lockstep: each layer cross-fades every changed pixel together between keyframes, and all four layers shared a start. Each layer now has its own keyframe pace, `skyclouds::LAYER_PACE = [1.5, 1.17, 1.0, 0.87]`, so the cross-fades drift apart.
+  - Typical lifetimes are 1800 s calm and 300 s in a storm (were 600 s and 100 s). Each slot's life is spread 0.4x to 2x, evenly in log.
+  - Each cloud has its own fade-in share (0.1-0.4 of its life) and fade-out share (0.15-0.5).
+  - Calm edge drift and rise are about 3x slower: `0.0003 + 0.01 × churn²` and `0.0002 + 0.09 × churn²`. Storms are unchanged. A scattered sky now changes about 4% of its cloudy cells in 10 s (was about 6%).
+  - Tests:
+    - new tests check that a reborn cloud is a new cloud, offspring overlap their parents, births balance deaths within 30%, clouds fade at their own paces, and every layer keeps its own beat;
+    - longer windows for the time tests (change over 15 minutes, clear-cloudy-clear over 2 hours, births over 2 hours), because clouds now live longer;
+    - the moon-halo test now picks a cell deep inside thick cloud with the moon on it (it had been picking a cell far from the moon);
+    - the flat-base bar is 75% (owner decision). Across 12 seeds the old heaps averaged 78% and families 77%, so 80% had only passed on a lucky seed.
+  - `cargo test`: PASS, 255 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
+- **Keyframes never snap (owner, 2026-11-04):** "The fades are still sudden... CLouds just suddenly vanish... our gentle fade in out doesn't really work if we are only periodically redrawing the layers."
+  - Measured first, with simulations of exactly what the shader shows (offline probes, not committed):
+    - The model is smooth. Each heap's visible mass takes a median 2.5 min to fade in and 3.5 min to fade out (quickest 10%: 1-1.5 min).
+    - Broken skies, Normal or Endless camera: no visible spot changed by more than 0.4 within 2 s of cloud time.
+    - Storms: 45,381 of 6.7 million samples did. Storm keyframes due every 2.5-4 s arrived 8-10 s apart, because one thread rendered all four layers in turn (about 2.8 s per round at full size). Each late keyframe then snapped in over the 1.5 s quick fade.
+  - Fixes in `skyclouds`:
+    - A keyframe always fades over the whole cloud time since the previous one, even if it arrived late. If rendering lags, the clouds evolve a little slower instead of jumping.
+    - `CloudWorker` runs one thread per layer, so a slow layer never holds up the others. A round now takes as long as the slowest layer, not the sum of all four.
+    - `effective_interval` stretches a layer's keyframe interval to `RENDER_HEADROOM` (1.5) times the cloud time its last render took, so the next keyframe is ready before the current fade ends.
+    - The next keyframe is due an interval after the current one's time, not the clock's. A queued strip the view has nearly run past is dropped and requested again.
+  - After the fixes, storms: 17,581 of 6.7 million samples changed sharply within 2 s (down 61%). What remains is the storm boil itself (detail rises 0.09 noise units per second at churn 1). Broken: still none.
+  - Tried and reverted: shrinking a dying heap instead of fading its weight. It made no measurable difference.
+  - Tests:
+    - a regression test checks that late keyframes still fade over their whole gap (it fails on the old code: "faded 1.5 s over a 2.3 s gap");
+    - slow renders stretch the interval.
+  - `cargo test`: PASS, 257 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
+- **Matched fade-in and fade-out (owner, 2026-11-04):** watching a storm at 4x, "It almost like fade outs and fade ins aren't the same speed."
+  - Cause: each cloud drew its fade-in share (0.1-0.4 of its life) and its fade-out share (0.15-0.5) separately. Measured in a storm, mass 10%-90%: fade-in median 29 s (quickest 10%: 12 s, about 3 s at 4x), fade-out median 39 s.
+  - Now `cloudgen::fade_share` gives each cloud one share, 0.3-0.45, for both its fade-in and its fade-out. Lifetimes are spread 0.5x-2x (was 0.4x-2x).
+  - Measured in a storm: fade-in median 47 s, fade-out median 47 s (quickest 10%: 29 s each).
+  - The parent coverage lift is 1.4 (was 1.25), so skies stay as cloudy. Mid-layer coverage: Puffs 0.042, Scattered 0.101, Broken 0.233, Overcast 0.317, Storm 0.418. Storm sits a little under the first heaps' 0.456, because its heaps are already all grown.
+  - Tests:
+    - a new test checks that a cloud's mass at each phase of its life equals its mass at the mirrored phase;
+    - the fade-pace test now checks that fade lengths vary between clouds and that each fades out as fast as it faded in;
+    - the moon-halo test searches more of the sky for a cell deep inside thick cloud, because clouds now spend more of their life part-faded. The check itself is unchanged.
+  - `cargo test`: PASS, 258 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
+- **Slower storm fades (owner, 2026-11-04):** "yep fade still too fast at x4".
+  - `cloudgen::LIFETIME_STORM` is 900 s (was 300 s). Calm stays 1800 s. Covers in between interpolate by churn.
+  - Measured in a storm, mass 10%-90%: fade-in and fade-out both take a median 140 s (was 47 s), and the quickest 10% about 86 s (was 29 s). At 4x that is about 35 s and 21 s of real time.
+  - The storm boil is unchanged.
+  - `cargo test`: PASS, 258 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
+- **Still open:**
+  - reduced motion;
+  - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
+- **Earlier next steps:**
+  - wire the generator into the app;
+  - render the strips incrementally, so drifting only computes new columns;
+  - apply the shader glow by transmission;
+  - respect pause and reduced motion;
+  - retire `src/clouds.rs`'s sprite shapes.
 
 ### feature/endless-street
 
