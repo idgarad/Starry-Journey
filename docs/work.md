@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
 | `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
-| `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; headlights keep lighting trees | In review |
+| `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | In review |
 | `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
 
 ### feature/endless-street
@@ -42,7 +42,17 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent. For the owner: `cargo run -- --endless --deadline 20s`.
-- **Possible follow-up:** cars move in whole road cells (as in Normal mode), so at 4× they may look slightly steppy next to the gliding road. If so, they can get their own fractional sprite like the moon.
+- **Smooth cars (owner request, 2026-11-03: "we should smooth the cars"):**
+  - [src/traffic.rs](../src/traffic.rs) `Traffic::sprites` draws each vehicle into its own 13 × 2 sprite (the longest truck plus its beam), at its unrounded world position. Its beam and body are kept separate.
+  - `beam_cells` and `body_cells` now define both the cell painter and the sprites, so they can't drift apart; a test checks that a sprite at a whole cell draws exactly what the painter draws, for both lanes and a truck.
+  - The street is split into a back layer (road and background trees) and a front layer (foreground trees).
+  - The shader draws, between those two layers, every vehicle's beam and then every vehicle's body, each at its fractional position with linear-light reconstruction. A follower's beam never covers the car ahead, as before.
+  - Vehicle sprites live in one 13 × 24 atlas, uploaded when traffic moves. Each frame passes six slot offsets computed from the current road view.
+  - Normal mode's cars glide too, since both modes share the draw path.
+  - `cargo test`: PASS, 221 tests. Also new: the back and front street layers carry exactly the Normal colors, and the front layer holds exactly the foreground trees.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 
 ### feature/endless-compositor
 
