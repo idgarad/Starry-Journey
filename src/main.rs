@@ -4,7 +4,9 @@
 //! the library. This binary generates a Normal-mode city for the window's
 //! grid, reveals it one logical cell at a time over 240 seconds at 1x,
 //! uploads the shown image as a texture whenever it changes, and draws each
-//! logical cell as a `cell x cell` block of device pixels.
+//! logical cell as a `cell x cell` block of device pixels. The message box
+//! (`--message`, and the palette name after `P`) is rasterized on the CPU
+//! and drawn over the city at device resolution.
 
 use std::{
     error::Error,
@@ -14,6 +16,7 @@ use std::{
 
 use starry_journey::clock::{format_remaining, ConstructionClock};
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
+use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
 use starry_journey::model::grid::{CellScaling, Grid};
@@ -111,7 +114,7 @@ impl ApplicationHandler for App {
         match pollster::block_on(Renderer::new(
             Arc::clone(&window),
             random_seed(),
-            self.options,
+            self.options.clone(),
         )) {
             Ok(renderer) => {
                 self.window = Some(window);
@@ -405,8 +408,17 @@ struct Renderer {
     bind_group_layout: wgpu::BindGroupLayout,
     params: wgpu::Buffer,
     city_texture: wgpu::Texture,
+    /// The message box image (premultiplied sRGB; 1 x 1 when hidden).
+    message_texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
     scene: Scene,
+    /// What the message box shows (`--message`, or a palette name).
+    notice: Notice,
+    /// The inputs of the box currently uploaded, so it is redrawn only when
+    /// the text, palette, surface, or scale changes.
+    message_key: Option<MessageKey>,
+    /// Message box position and size in device pixels (width 0: hidden).
+    message_rect: [f32; 4],
     palette_index: usize,
     speed: f64,
     last_frame: Option<Instant>,
@@ -500,6 +512,16 @@ impl Renderer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -533,8 +555,8 @@ impl Renderer {
             cache: None,
         });
         let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Cell size"),
-            size: 16,
+            label: Some("Cell size and message box"),
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -553,7 +575,14 @@ impl Renderer {
             options.cell_scaling(scale_factor),
         );
         let city_texture = create_city_texture(&device, &scene.grid);
-        let bind_group = create_bind_group(&device, &bind_group_layout, &city_texture, &params);
+        let message_texture = create_message_texture(&device, 1, 1);
+        let bind_group = create_bind_group(
+            &device,
+            &bind_group_layout,
+            &city_texture,
+            &message_texture,
+            &params,
+        );
         let mut renderer = Self {
             surface,
             device,
@@ -563,8 +592,12 @@ impl Renderer {
             bind_group_layout,
             params,
             city_texture,
+            message_texture,
             bind_group,
             scene,
+            notice: Notice::new(options.message.clone()),
+            message_key: None,
+            message_rect: [0.0; 4],
             palette_index,
             speed: 1.0,
             last_frame: None,
@@ -578,6 +611,7 @@ impl Renderer {
             scale_factor,
         };
         renderer.upload();
+        renderer.update_message();
         Ok(renderer)
     }
 
@@ -648,7 +682,10 @@ impl Renderer {
     /// changing construction progress.
     fn next_palette(&mut self) {
         self.palette_index = (self.palette_index + 1) % palettes().len();
-        self.scene.set_palette(palette_at(self.palette_index));
+        let palette = palette_at(self.palette_index);
+        self.scene.set_palette(palette);
+        self.notice
+            .flash(palette.label, self.seconds(Instant::now()));
         self.moon_state = None;
         self.update_moon(Instant::now());
         self.scene.compose();
@@ -679,6 +716,99 @@ impl Renderer {
             self.scene.compose();
             self.upload();
         }
+        self.update_message();
+    }
+
+    /// Seconds since the app started, the clock for the message notice.
+    fn seconds(&self, now: Instant) -> f64 {
+        now.duration_since(self.app_start).as_secs_f64()
+    }
+
+    /// Redraws and uploads the message box if what it shows, the palette,
+    /// the surface, or the scale changed since the last upload.
+    fn update_message(&mut self) {
+        let text = self
+            .notice
+            .text(self.seconds(Instant::now()))
+            .map(str::to_string);
+        let key = MessageKey {
+            text,
+            palette_index: self.palette_index,
+            surface: self.surface_size(),
+            scale_factor: self.scale_factor,
+        };
+        if self.message_key.as_ref() == Some(&key) {
+            return;
+        }
+        let image = key.text.as_deref().and_then(|text| {
+            render_message_box(
+                message_font(),
+                text,
+                key.surface,
+                key.scale_factor,
+                palette_at(key.palette_index),
+            )
+        });
+        self.message_key = Some(key);
+        match image {
+            Some(image) => self.upload_message(&image),
+            None => self.message_rect = [0.0; 4],
+        }
+        self.write_params();
+    }
+
+    /// Uploads a message box image, recreating its texture when the size
+    /// changes.
+    fn upload_message(&mut self, image: &MessageImage) {
+        let size = self.message_texture.size();
+        if size.width != image.width || size.height != image.height {
+            self.message_texture = create_message_texture(&self.device, image.width, image.height);
+            self.rebind();
+        }
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.message_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &image.rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(image.width * 4),
+                rows_per_image: Some(image.height),
+            },
+            self.message_texture.size(),
+        );
+        self.message_rect = [
+            image.x as f32,
+            image.y as f32,
+            image.width as f32,
+            image.height as f32,
+        ];
+    }
+
+    /// Recreates the bind group after a texture was replaced.
+    fn rebind(&mut self) {
+        self.bind_group = create_bind_group(
+            &self.device,
+            &self.bind_group_layout,
+            &self.city_texture,
+            &self.message_texture,
+            &self.params,
+        );
+    }
+
+    /// Writes the cell size and the message box rectangle for the shader.
+    fn write_params(&self) {
+        let cell = self.scene.grid.cell as f32;
+        let [x, y, width, height] = self.message_rect;
+        let params: [f32; 8] = [cell, 0.0, 0.0, 0.0, x, y, width, height];
+        let bytes: Vec<u8> = params
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        self.queue.write_buffer(&self.params, 0, &bytes);
     }
 
     /// Recomputes the moon if its position or (visibly) its phase changed.
@@ -735,12 +865,7 @@ impl Renderer {
         let size = self.city_texture.size();
         if size.width != width || size.height != height {
             self.city_texture = create_city_texture(&self.device, &self.scene.grid);
-            self.bind_group = create_bind_group(
-                &self.device,
-                &self.bind_group_layout,
-                &self.city_texture,
-                &self.params,
-            );
+            self.rebind();
         }
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
@@ -757,13 +882,7 @@ impl Renderer {
             },
             self.city_texture.size(),
         );
-        let cell = self.scene.grid.cell as f32;
-        let params: [f32; 4] = [cell, 0.0, 0.0, 0.0];
-        let bytes: Vec<u8> = params
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect();
-        self.queue.write_buffer(&self.params, 0, &bytes);
+        self.write_params();
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -827,13 +946,44 @@ fn create_city_texture(device: &wgpu::Device, grid: &Grid) -> wgpu::Texture {
     })
 }
 
+/// The inputs that decide the message box image.
+#[derive(Debug, Clone, PartialEq)]
+struct MessageKey {
+    text: Option<String>,
+    palette_index: usize,
+    surface: (u32, u32),
+    scale_factor: f64,
+}
+
+/// Creates the device-resolution message box texture. Its bytes are
+/// premultiplied sRGB values that the shader blends itself, so the format is
+/// plain `Rgba8Unorm`, not an sRGB format.
+fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Message box"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
 fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     texture: &wgpu::Texture,
+    message_texture: &wgpu::Texture,
     params: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let message_view = message_texture.create_view(&wgpu::TextureViewDescriptor::default());
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("City texture and cell size"),
         layout,
@@ -845,6 +995,10 @@ fn create_bind_group(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&message_view),
             },
         ],
     })

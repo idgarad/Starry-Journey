@@ -13,7 +13,32 @@
 | `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
 | `feature/moon` | 39-cell moon crossing in 10 minutes; phase fixed per lap, 8-phase cycle; `--moon-phase`; battle station with fighters, trench run, and `--station-fate` | Merged |
 | `feature/night-traffic` | Cars and trucks after completion; headlights with road beams and tree lighting (top lane lights top trees, bottom lane bottom trees) | Merged |
+| `feature/message-box` | `--message` box over the scene; palette name shown for 2 s on `P`, then the message returns | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
+
+### feature/message-box
+
+- **Decisions (owner, 2026-11-03):**
+  - Build the message box before Endless mode.
+  - Reuse the box for the palette name: on a palette change it briefly shows the name, then restores the message. The agent chose 2 seconds, with no fade.
+  - Text uses a font crate and a bundled font (rather than a hand-drawn pixel font or egui). The agent chose `fontdue` 0.9.5 (pure Rust; MIT/Apache-2.0/Zlib) and Noto Sans Regular (SIL OFL 1.1, 607 KB, from the Noto project).
+  - The message is set at launch only (`--message`). Editing in the app waits for the native UI decision.
+- **Delivered:**
+  - [src/message.rs](../src/message.rs):
+    - `parse_message` trims, treats blank text as no box, and rejects more than 240 UTF-16 units (supplementary characters count as 2).
+    - `Notice` shows the message steadily; `flash` shows a palette name for `PALETTE_NOTICE_SECONDS` (2 s). A new flash restarts the timer.
+    - `wrap_text` breaks at spaces and at newlines; words too long for a line break between characters, never before a combining mark or joiner.
+    - `render_message_box` follows the spec's styling: centered at 50% / 42%, at most 640 CSS px wide with 16 px side clearance, palette `bg` at 75% opacity, `star` text, border halfway between them, lines centered. Box sizes are in CSS px times the scale factor: 24 px text, 18 × 10 px padding, 2 px border. Output is premultiplied sRGB RGBA.
+  - [src/fonts/](../src/fonts/): `NotoSans-Regular.ttf` compiled into the binary with `include_bytes!`, and `NotoSans-OFL.txt`.
+  - [src/config.rs](../src/config.rs): `--message TEXT` (also `--message=TEXT`), with an error and exit code 2 for repeats, a missing value, or too-long text. `LaunchOptions` is now `Clone` instead of `Copy`.
+  - [src/main.rs](../src/main.rs) and [src/present.wgsl](../src/present.wgsl): a second, device-resolution texture holds the box. The shader blends it over the city in sRGB space, the way a browser blends a 75%-opacity box, and decodes the result for the sRGB surface. The box is re-rendered only when its text, palette, surface size, or scale changes. `P` flashes the palette label.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 185 tests. New tests cover trimming and blank text, literal markup, the 240-unit boundary with supplementary characters, flash and restore (with and without a message, and a re-flash), wrapping (spaces, newlines, long words, combining marks), the font's Latin/Greek/Cyrillic coverage, centering at 50% / 42%, palette colors and the 75% background in all 12 palettes, the border midpoint, the 640 px limit at 1× and 2×, side clearance on a 320 × 180 window, height clipping, and determinism. Config tests cover `--message` parsing and errors. The existing shader-validation test covers the updated WGSL.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - Box images rendered off-screen (ArtDeco, Ink on Parchment) were inspected by the agent: text is crisp, wrapping is centered, "Café" with a combining accent is placed correctly, and tags show literally.
+  - GUI: reviewed and approved by the owner ("looks good").
+- **Not yet:** in-app editing, scrolling for tall content, Amber phosphor message styling (display-effects step), and text shaping for complex scripts.
 
 ### feature/night-traffic
 

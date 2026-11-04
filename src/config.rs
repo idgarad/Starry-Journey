@@ -1,13 +1,15 @@
 //! Launch options from the command line (Rebuild Prompt, "Configuration And
 //! Launcher", native equivalent).
 //!
-//! For now this covers `--timer` (alias `--deadline`), the Starry Journey
-//! extension `--pixel-size`, and `--help`. The spec's other options
+//! For now this covers `--timer` (alias `--deadline`), `--message`, the
+//! Starry Journey extensions `--pixel-size`, `--moon-phase`, and
+//! `--station-fate`, and `--help`. The spec's other options
 //! (`--speed`, `--palette`, `--ends-at`, ...) join this parser in the
 //! launch-configuration feature. Invalid input is
 //! reported as an error message; the binary exits with code 2.
 
 use crate::clock::{parse_duration, ConstructionClock};
+use crate::message::parse_message;
 use crate::model::grid::CellScaling;
 use crate::model::rng::js_round;
 use crate::moon::{parse_moon_phase, START_PHASE_STEP};
@@ -34,6 +36,9 @@ Options:
                      1 second to 24 hours. Example: --timer 10 for a meeting
                      that starts in 10 minutes, --timer 10s for a quick test.
   --deadline D       Same as --timer.
+  --message TEXT     Show TEXT in a box over the city (at most 240 UTF-16
+                     units; quote it). Blank text shows no box. Changing the
+                     palette shows its name there for 2 seconds.
   --moon-phase P     Phase the moon opens on: new, waxing-crescent,
                      first-quarter, waxing-gibbous, full, waning-gibbous,
                      last-quarter, waning-crescent (or 0-7). It then advances
@@ -61,7 +66,7 @@ impl Default for PixelSize {
 }
 
 /// Parsed launch options.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LaunchOptions {
     /// Virtual pixel size.
     pub pixel_size: PixelSize,
@@ -71,6 +76,8 @@ pub struct LaunchOptions {
     pub moon_start_step: u64,
     /// What happens to the station on its laps.
     pub station_fate: StationFate,
+    /// Text for the message box (`--message`); `None` hides the box.
+    pub message: Option<String>,
     /// True if help was requested.
     pub help: bool,
 }
@@ -82,6 +89,7 @@ impl Default for LaunchOptions {
             clock: ConstructionClock::default(),
             moon_start_step: START_PHASE_STEP,
             station_fate: StationFate::default(),
+            message: None,
             help: false,
         }
     }
@@ -121,6 +129,7 @@ where
     let mut timer_given = false;
     let mut moon_given = false;
     let mut fate_given = false;
+    let mut message_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -180,6 +189,16 @@ where
                         ))
                     }
                 };
+            }
+            "--message" => {
+                if message_given {
+                    return Err("--message was given more than once".to_string());
+                }
+                message_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--message needs text, for example --message \"Back soon\"")?;
+                options.message = parse_message(&value)?;
             }
             _ => return Err(format!("unknown option '{arg}'")),
         }
@@ -332,6 +351,31 @@ mod tests {
         assert!(parse(&["--station-fate", "maybe"]).is_err());
         assert!(parse(&["--station-fate"]).is_err());
         assert!(parse(&["--station-fate", "chance", "--station-fate", "destroy"]).is_err());
+    }
+
+    #[test]
+    fn message_option_is_trimmed_literal_text() {
+        assert_eq!(parse(&[]).unwrap().message, None);
+        assert_eq!(
+            parse(&["--message", "  Back in 5 <b>min</b>  "])
+                .unwrap()
+                .message
+                .as_deref(),
+            Some("Back in 5 <b>min</b>")
+        );
+        assert_eq!(
+            parse(&["--message=a=b"]).unwrap().message.as_deref(),
+            Some("a=b")
+        );
+        assert_eq!(parse(&["--message", "   "]).unwrap().message, None);
+    }
+
+    #[test]
+    fn bad_or_repeated_messages_are_rejected() {
+        assert!(parse(&["--message"]).is_err());
+        assert!(parse(&["--message", "a", "--message", "b"]).is_err());
+        let long = "x".repeat(241);
+        assert!(parse(&["--message", &long]).unwrap_err().contains("240"));
     }
 
     #[test]

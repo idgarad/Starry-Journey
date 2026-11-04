@@ -28,7 +28,7 @@ cargo run
 
 | Key | Action |
 | --- | --- |
-| `P` | Next palette |
+| `P` | Next palette (its name shows in the message box for 2 seconds) |
 | `R` | New city (construction restarts) |
 | `+` / `-` | Construction speed, 0.25× to 4× |
 | `F` | Toggle fullscreen on the selected display |
@@ -54,6 +54,7 @@ cargo run --bin city -- 160 60 1    # columns, rows, seed
 | `--pixel-size N` | Each virtual pixel is N screen pixels (1–16, times display scaling). Default 3. Bigger windows show more city and more sky. |
 | `--pixel-size spec` | Scale pixels with screen height instead, so every screen shows about 240 virtual rows (the Rebuild Prompt formula). |
 | `--timer D`, `--deadline D` | Finish building the city in exactly D, whatever the speed. A bare number is minutes; `90s`, `25m`, `1h30m` also work. |
+| `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 12 s after opening on that lap), or `survive`. |
 | `-h`, `--help` | Show usage. |
@@ -88,6 +89,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | Path | Contents |
 | --- | --- |
 | [src/main.rs](src/main.rs), [src/present.wgsl](src/present.wgsl) | Window, input, fullscreen/monitor handling, and GPU presentation of the city buffer. |
+| [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |
 | [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |
 | [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind), `mast`, `tint`, `windows`, `decorations`, and `city` (the generator that assembles them). |
 | [src/bin/shapes.rs](src/bin/shapes.rs), [src/bin/city.rs](src/bin/city.rs) | Text previews of building shapes and of a whole generated city. |

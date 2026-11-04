@@ -5,6 +5,7 @@ edition = "2021"
 default-run = "starry-journey"
 
 [dependencies]
+fontdue = "0.9.5"
 pollster = "0.4"
 wgpu = "24.0.5"
 winit = "0.30.9"
