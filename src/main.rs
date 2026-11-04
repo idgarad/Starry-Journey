@@ -15,7 +15,7 @@ use std::{
 };
 
 use starry_journey::clock::{format_remaining, ConstructionClock};
-use starry_journey::cloudgen::Light;
+use starry_journey::cloudgen::{Light, CLOUD_LAYERS};
 use starry_journey::clouds::Cover;
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
 use starry_journey::endless::EndlessCity;
@@ -1010,24 +1010,62 @@ impl Renderer {
             0.0
         };
         let light = self.cloud_light();
-        if self.sky_clouds.advance(dt, self.speed, camera, light) {
-            self.upload_clouds();
+        let arrived = self.sky_clouds.advance(dt, self.speed, camera, light);
+        for (band, &new) in arrived.iter().enumerate() {
+            if new {
+                self.upload_cloud_layer(band);
+            }
         }
     }
 
-    /// Uploads the cloud strip, resizing its texture when needed.
-    fn upload_clouds(&mut self) {
-        let Some(image) = self.sky_clouds.image() else {
-            return;
-        };
-        let (width, height) = (image.width as u32, image.rows as u32);
+    /// Uploads one cloud layer's strip into its band of the shared cloud
+    /// texture (four strips stacked, far at the top). A resized texture
+    /// gets every layer re-uploaded.
+    fn upload_cloud_layer(&mut self, band: usize) {
+        let (width, rows) = (
+            self.sky_clouds.strip_width() as u32,
+            self.sky_clouds.strip_rows() as u32,
+        );
+        let height = rows * CLOUD_LAYERS as u32;
         let size = self.cloud_texture.size();
-        if size.width != width || size.height != height {
+        let bands: Vec<usize> = if size.width != width || size.height != height {
             self.cloud_texture = create_layer_texture(&self.device, width, height);
             self.rebind();
+            (0..CLOUD_LAYERS).collect()
+        } else {
+            vec![band]
+        };
+        for band in bands {
+            let Some(image) = self.sky_clouds.image(band) else {
+                continue;
+            };
+            if image.width as u32 != width || image.rows as u32 != rows {
+                continue; // a strip for an older sky size
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.cloud_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: band as u32 * rows,
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &image.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(rows),
+                },
+                wgpu::Extent3d {
+                    width,
+                    height: rows,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
-        let image = self.sky_clouds.image().expect("checked above");
-        self.write_grid_texture(&self.cloud_texture, &image.rgba);
     }
 
     /// Switches between Normal and Endless mode (`E`, a Starry Journey
@@ -1309,17 +1347,18 @@ impl Renderer {
                 None => params.extend([0.0; 4]),
             }
         }
-        let clouds_on = if self.sky_clouds.image().is_some() {
-            1.0
-        } else {
-            0.0
-        };
-        params.extend([
-            self.sky_clouds.strip_offset_px(self.scene.grid.cell) as f32,
-            0.0,
-            clouds_on,
-            0.0,
-        ]);
+        // Cloud layers: four offsets, then four on/off switches.
+        let cell = self.scene.grid.cell;
+        params.extend(
+            (0..CLOUD_LAYERS).map(|band| self.sky_clouds.strip_offset_px(band, cell) as f32),
+        );
+        params.extend((0..CLOUD_LAYERS).map(|band| {
+            if self.sky_clouds.image(band).is_some() {
+                1.0
+            } else {
+                0.0
+            }
+        }));
         let bytes: Vec<u8> = params
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -1601,7 +1640,7 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (8 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 = (9 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 

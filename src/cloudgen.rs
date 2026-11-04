@@ -554,6 +554,34 @@ pub fn tone_ramp(layer: Layer, cover: Cover, palette: &Palette) -> [Rgb; TONES] 
     })
 }
 
+/// Cloud layers by distance, like the city's four parallax layers (owner
+/// decision, 2026-11-04): far, mid-far, mid-near, near.
+pub const CLOUD_LAYERS: usize = 4;
+
+/// The parts of the sky in distance layer `band` (0 farthest, 3 nearest),
+/// as `(field index into sky_fields, sub-layer)` pairs in drawing order
+/// (far to near):
+///
+/// - far: the high streaks and the heaps of depth rows 7-9 (the horizon);
+/// - mid-far: heap rows 4-6;
+/// - mid-near: heap rows 2-3 and the low scud;
+/// - near: heap rows 0-1 (big, overhead).
+pub fn layer_parts(band: usize) -> Vec<(usize, usize)> {
+    // Mid sub-layers: depth d has front 2d and back 2d + 1; back first.
+    let heaps = |depths: std::ops::RangeInclusive<usize>| {
+        depths
+            .rev()
+            .flat_map(|d| [(1, 2 * d + 1), (1, 2 * d)])
+            .collect::<Vec<_>>()
+    };
+    match band {
+        0 => [vec![(0, 0)], heaps(7..=9)].concat(),
+        1 => heaps(4..=6),
+        2 => [vec![(2, 0)], heaps(2..=3)].concat(),
+        _ => heaps(0..=1),
+    }
+}
+
 /// The three layer fields for a preset, high to low.
 pub fn sky_fields(cover: Cover, sky_rows: i32, seed: u32) -> [LayerField; 3] {
     let weather = weather(cover);
@@ -868,6 +896,36 @@ mod tests {
         let storm = coverage(&sky_fields(Cover::Storm, ROWS, 8), 0.0, 400, upper);
         assert!(storm > 0.6, "{storm}");
         assert!(Layer::Low.ambient() < Layer::High.ambient());
+    }
+
+    #[test]
+    fn the_four_distance_layers_cover_every_part_exactly_once() {
+        let mut parts: Vec<(usize, usize)> = (0..CLOUD_LAYERS).flat_map(layer_parts).collect();
+        let total = parts.len();
+        parts.sort_unstable();
+        parts.dedup();
+        assert_eq!(parts.len(), total, "no part in two layers");
+        let fields = sky_fields(Cover::Storm, ROWS, 1);
+        let expected: usize = fields.iter().map(LayerField::sublayers).sum();
+        assert_eq!(total, expected, "every part in some layer");
+        // Within a layer, heap parts run far to near (back sub-layers first).
+        for band in 0..CLOUD_LAYERS {
+            let heaps: Vec<usize> = layer_parts(band)
+                .into_iter()
+                .filter(|&(f, _)| f == 1)
+                .map(|(_, sub)| sub)
+                .collect();
+            assert!(heaps.windows(2).all(|w| w[0] > w[1]), "{band}: {heaps:?}");
+        }
+        // Nearer layers hold nearer heaps.
+        let nearest = |band: usize| {
+            layer_parts(band)
+                .iter()
+                .filter(|p| p.0 == 1)
+                .map(|p| p.1)
+                .min()
+        };
+        assert!(nearest(3) < nearest(2) && nearest(2) < nearest(1) && nearest(1) < nearest(0));
     }
 
     #[test]

@@ -5,9 +5,9 @@
 // Draw order (Rebuild Prompt, "Final draw order"), in linear light:
 // 1. background: the sky and stars;
 // 2. the moon (or battle station), at its exact fractional position;
-// 2b. the procedural clouds (src/skyclouds.rs), lit on a background
-//    thread, slid with the wind and (in Endless) a tenth of the camera, in
-//    front of the moon and behind the city;
+// 2b. the procedural clouds (src/skyclouds.rs) in four layers far to
+//    near, lit on a background thread, each slid with its own wind and
+//    share of the Endless camera, in front of the moon and behind the city;
 // 3. the city: in Normal mode and during construction, the still city
 //    (transparent where nothing is built yet); while Endless scrolls, the
 //    four layers, far to near, at fractional positions;
@@ -45,10 +45,15 @@ struct Params {
     // Per vehicle slot: x, y device pixels from the sprite's top-left to
     // the screen's top-left; z: 1 when the slot holds a vehicle.
     vehicles: array<vec4<f32>, 6>,
-    // Clouds: x device pixels from the strip's left edge to the screen's
-    // left edge (fractional); z: 1 when there are clouds.
-    clouds: vec4<f32>,
+    // Cloud layers 0 (far) to 3 (near): device pixels from each layer's
+    // strip's left edge to the screen's left edge (fractional).
+    cloud_offsets: vec4<f32>,
+    // Cloud layers: 1 when the layer has a strip.
+    cloud_layers_on: vec4<f32>,
 }
+
+// Cloud strips stacked in one texture, far (top) to near.
+const CLOUD_LAYERS: u32 = 4u;
 
 // Vehicle slots in the atlas; the atlas holds every beam sprite (rows
 // 2 * slot) above every body sprite (rows 12 + 2 * slot).
@@ -147,6 +152,31 @@ fn vehicle_sample(slot: u32, body: bool, position: vec2<f32>) -> vec4<f32> {
     return mix(top, bottom, t.y);
 }
 
+// One cloud texel of layer `band`, premultiplied; transparent outside the
+// layer's band of the shared texture.
+fn cloud_texel(x: i32, row: i32, band: u32) -> vec4<f32> {
+    let dims = vec2<i32>(textureDimensions(cloud_strip));
+    let rows = dims.y / i32(CLOUD_LAYERS);
+    if (x < 0 || x >= dims.x || row < 0 || row >= rows) {
+        return vec4<f32>(0.0);
+    }
+    return premultiplied(cloud_strip, x, i32(band) * rows + row);
+}
+
+// A cloud layer at its fractional offset, reconstructed like sharp_sample
+// but confined to its band of the texture.
+fn cloud_sample(band: u32, offset: f32, position: vec2<f32>) -> vec4<f32> {
+    let cell = params.cell.x;
+    let u = floor(position) + vec2<f32>(offset, 0.0);
+    let first = floor(u);
+    let t = u - first;
+    let c0 = vec2<i32>(floor(first / cell));
+    let c1 = vec2<i32>(floor((first + 1.0) / cell));
+    let top = mix(cloud_texel(c0.x, c0.y, band), cloud_texel(c1.x, c0.y, band), t.x);
+    let bottom = mix(cloud_texel(c0.x, c1.y, band), cloud_texel(c1.x, c1.y, band), t.x);
+    return mix(top, bottom, t.y);
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -164,10 +194,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (params.moon.z > 0.5) {
         color = over(sharp_sample(moon_sprite, params.moon.xy, position.xy), color);
     }
-    // The clouds, lit (including by the moon) on a background thread;
-    // they let some of the moon and stars behind them through.
-    if (params.clouds.z > 0.5) {
-        color = over(sharp_sample(cloud_strip, vec2<f32>(params.clouds.x, 0.0), position.xy), color);
+    // The cloud layers far to near, each at its own fractional offset, lit
+    // (including by the moon) on a background thread; they let some of the
+    // moon and stars behind them through.
+    for (var band = 0u; band < CLOUD_LAYERS; band++) {
+        if (params.cloud_layers_on[band] > 0.5) {
+            color = over(cloud_sample(band, params.cloud_offsets[band], position.xy), color);
+        }
     }
     if (params.cell.z > 0.5) {
         color = over(premultiplied(still_city, texel.x, texel.y), color);
