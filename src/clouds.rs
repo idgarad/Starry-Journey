@@ -528,6 +528,9 @@ pub struct MoonLight {
     pub radius: f64,
     /// 0 for a new moon, 1 for a full moon.
     pub brightness: f64,
+    /// Which side is lit: +1 right (waxing), -1 left (waning), 0 full or
+    /// new.
+    pub lit_side: f64,
 }
 
 impl MoonLight {
@@ -535,6 +538,50 @@ impl MoonLight {
     pub fn brightness_for_phase(phase: f64) -> f64 {
         1.0 - (phase.rem_euclid(1.0) - 0.5).abs() * 2.0
     }
+
+    /// The moon at `(x, row)` with `radius`, lit for `phase`.
+    pub fn for_phase(x: f64, row: f64, radius: f64, phase: f64) -> Self {
+        let phase = phase.rem_euclid(1.0);
+        let lit_side = if phase == 0.0 || phase == 0.5 {
+            0.0
+        } else if phase < 0.5 {
+            1.0
+        } else {
+            -1.0
+        };
+        Self {
+            x,
+            row,
+            radius,
+            brightness: Self::brightness_for_phase(phase),
+            lit_side,
+        }
+    }
+
+    /// Where the glow is centered, in cells: on the disk for a full moon,
+    /// leaning toward the lit limb as the moon thins to a crescent.
+    pub fn glow_center(&self) -> (f64, f64) {
+        let lean = self.lit_side * self.radius * 0.6 * (1.0 - self.brightness);
+        (self.x + lean, self.row)
+    }
+}
+
+/// How far the moon's glow on clouds reaches, in moon radii.
+pub const MOON_GLOW_REACH: f64 = 3.0;
+/// Glow strength on a cloud cell next to a full moon.
+pub const MOON_GLOW_STRENGTH: f64 = 0.55;
+
+/// The moon's glow on a cloud at `(x, row)` (cells): a smooth falloff
+/// with the square of the distance from [`MoonLight::glow_center`], out to
+/// [`MOON_GLOW_REACH`] radii, scaled by brightness. The presentation shader
+/// applies this same formula per device pixel in linear light, weighted by
+/// the cloud's opacity, so it brightens clouds but never open sky, and
+/// never quantizes into rings. O(1).
+pub fn moon_glow(moon: &MoonLight, x: f64, row: f64) -> f64 {
+    let (cx, cy) = moon.glow_center();
+    let distance = ((x - cx).powi(2) + (row - cy).powi(2)).sqrt();
+    let fade = (1.0 - distance / (MOON_GLOW_REACH * moon.radius)).max(0.0);
+    MOON_GLOW_STRENGTH * moon.brightness * fade * fade
 }
 
 /// Everything lighting the clouds this frame.
@@ -543,17 +590,14 @@ pub struct CloudLights {
     pub moon: Option<MoonLight>,
 }
 
-/// How far the moon's glow reaches, in moon radii.
-pub const MOON_GLOW_REACH: f64 = 2.5;
-
 /// How much light a cloud cell gets, before quantizing (0 dark, 1 bright).
 ///
 /// `surface` is the cell's distance in rows below the top of its column
 /// and above the bottom: the top two rows catch sky light and the bottom
-/// two are shaded, so every layer gets its own highlight. The moon adds,
-/// scaled by its brightness: a glow fading with the square of the distance
-/// within [`MOON_GLOW_REACH`] radii, and a rim on edge cells whose neighbor
-/// toward the moon is open sky. O(1).
+/// two are shaded, so every layer gets its own highlight. The moon adds a
+/// silver rim, scaled by its brightness, on edge cells whose neighbor
+/// toward it is open sky. (Its smooth glow is applied on the GPU; see
+/// [`moon_glow`].) O(1).
 pub fn cell_light(
     cloud: &Cloud,
     cx: i32,
@@ -573,8 +617,6 @@ pub fn cell_light(
     if let Some(moon) = lights.moon {
         let (dx, dy) = (moon.x - screen.0, moon.row - screen.1);
         let distance = (dx * dx + dy * dy).sqrt();
-        let fade = (1.0 - distance / (MOON_GLOW_REACH * moon.radius)).max(0.0);
-        light += moon.brightness * 0.6 * fade * fade;
         if cloud.depth_at(cx, cy) == 1 && distance > 0.0 {
             let step = (dx.signum() as i32, dy.signum() as i32);
             let toward = [(step.0, 0), (0, step.1), step];
@@ -1091,43 +1133,70 @@ mod tests {
     }
 
     #[test]
-    fn a_full_moon_lights_nearby_clouds_and_a_new_moon_does_not() {
-        let cloud = block_cloud();
-        let moon = |brightness| CloudLights {
-            moon: Some(MoonLight {
-                x: 14.0,
-                row: 4.0,
-                radius: 19.5,
-                brightness,
-            }),
-        };
-        let at =
-            |lights: &CloudLights| cell_light(&cloud, 10, 4, (4, 3), (10.5, 4.5), 0.25, lights);
-        let none = at(&CloudLights::default());
-        assert!(at(&moon(1.0)) > none + 0.2);
-        assert_eq!(at(&moon(0.0)), none);
+    fn the_glow_is_smooth_scales_with_phase_and_stays_near_the_moon() {
+        let full = MoonLight::for_phase(100.0, 50.0, 19.5, 0.5);
+        let new = MoonLight::for_phase(100.0, 50.0, 19.5, 0.0);
+        assert_eq!(
+            moon_glow(&new, 100.0, 50.0),
+            0.0,
+            "a new moon gives no glow"
+        );
+        let at_center = moon_glow(&full, 100.0, 50.0);
+        assert!((at_center - MOON_GLOW_STRENGTH).abs() < 1e-12);
+        // It fades continuously (no steps) and is gone beyond its reach.
+        let mut previous = at_center;
+        for step in 1..=60 {
+            let glow = moon_glow(&full, 100.0 + f64::from(step), 50.0);
+            assert!(glow <= previous);
+            assert!(previous - glow < 0.05, "no jumps: {previous} to {glow}");
+            previous = glow;
+        }
+        let reach = MOON_GLOW_REACH * 19.5;
+        assert_eq!(moon_glow(&full, 100.0 + reach + 1.0, 50.0), 0.0);
         assert_eq!(MoonLight::brightness_for_phase(0.5), 1.0);
-        assert_eq!(MoonLight::brightness_for_phase(0.0), 0.0);
         assert!((MoonLight::brightness_for_phase(0.25) - 0.5).abs() < 1e-12);
-        let far = CloudLights {
-            moon: Some(MoonLight {
-                x: 500.0,
-                ..moon(1.0).moon.unwrap()
-            }),
+    }
+
+    #[test]
+    fn a_crescent_glows_from_its_lit_limb() {
+        let waxing = MoonLight::for_phase(100.0, 50.0, 19.5, 0.125);
+        let waning = MoonLight::for_phase(100.0, 50.0, 19.5, 0.875);
+        assert_eq!(waxing.lit_side, 1.0);
+        assert_eq!(waning.lit_side, -1.0);
+        assert!(waxing.glow_center().0 > 100.0, "waxing: lit on the right");
+        assert!(waning.glow_center().0 < 100.0, "waning: lit on the left");
+        let full = MoonLight::for_phase(100.0, 50.0, 19.5, 0.5);
+        assert_eq!(full.glow_center(), (100.0, 50.0));
+        // The right side of a waxing crescent glows more than the left.
+        assert!(moon_glow(&waxing, 130.0, 50.0) > moon_glow(&waxing, 70.0, 50.0));
+    }
+
+    #[test]
+    fn tones_no_longer_carry_the_glow() {
+        // Inside a cloud, away from its edge, the moon changes nothing in
+        // the quantized tones; the GPU adds the glow smoothly instead.
+        let cloud = block_cloud();
+        let lights = CloudLights {
+            moon: Some(MoonLight::for_phase(14.0, 4.0, 19.5, 0.5)),
         };
-        assert_eq!(at(&far), none);
+        let with = cell_light(&cloud, 10, 4, (4, 3), (10.5, 4.5), 0.25, &lights);
+        let without = cell_light(
+            &cloud,
+            10,
+            4,
+            (4, 3),
+            (10.5, 4.5),
+            0.25,
+            &CloudLights::default(),
+        );
+        assert_eq!(with, without);
     }
 
     #[test]
     fn the_edge_facing_the_moon_gets_a_rim() {
         let cloud = block_cloud();
         let lights = CloudLights {
-            moon: Some(MoonLight {
-                x: 400.0,
-                row: 4.0,
-                radius: 19.5,
-                brightness: 1.0,
-            }),
+            moon: Some(MoonLight::for_phase(400.0, 4.0, 19.5, 0.5)),
         };
         let facing = cell_light(&cloud, 19, 4, (4, 3), (19.5, 4.5), 0.25, &lights);
         let away = cell_light(&cloud, 0, 4, (4, 3), (0.5, 4.5), 0.25, &lights);

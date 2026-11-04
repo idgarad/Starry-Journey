@@ -47,6 +47,11 @@ struct Params {
     // Clouds: x device pixels from the strip's left edge to the screen's
     // left edge (fractional); z: 1 when there are clouds.
     clouds: vec4<f32>,
+    // The moon's glow on clouds: x, y its center in device pixels, z its
+    // reach in device pixels, w its strength (0 for none).
+    moon_glow: vec4<f32>,
+    // The glow's color in linear light (the palette's star color).
+    glow_color: vec4<f32>,
 }
 
 // Vehicle slots in the atlas; the atlas holds every beam sprite (rows
@@ -164,7 +169,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         color = over(sharp_sample(moon_sprite, params.moon.xy, position.xy), color);
     }
     if (params.clouds.z > 0.5) {
-        color = over(sharp_sample(cloud_strip, vec2<f32>(params.clouds.x, 0.0), position.xy), color);
+        let cloud = sharp_sample(cloud_strip, vec2<f32>(params.clouds.x, 0.0), position.xy);
+        color = over(cloud, color);
+        // Moonlight glowing through the clouds: a smooth falloff in linear
+        // light (clouds::moon_glow), weighted by the cloud's opacity, so it
+        // lights clouds but never open sky and never steps into rings.
+        if (params.moon_glow.w > 0.0) {
+            let distance = length(position.xy - params.moon_glow.xy);
+            let fade = max(0.0, 1.0 - distance / params.moon_glow.z);
+            color += params.glow_color.rgb * params.moon_glow.w * fade * fade * cloud.a;
+        }
     }
     if (params.cell.z > 0.5) {
         color = over(premultiplied(still_city, texel.x, texel.y), color);

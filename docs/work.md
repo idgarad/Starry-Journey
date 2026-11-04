@@ -81,6 +81,18 @@
     | Overcast | 24.3% |
     | Storm | 42.8% |
   - Still open: overcast and storm read as streaky stripes, and fair-weather lenses are faint. This waits for owner direction.
+- **Moon glow (owner feedback, 2026-11-03: "The method for your moon glow looks bad", with a screenshot of a grey disk beside a crescent):**
+  - **Bug:** the clouds took the moon's position from `moon_state`, which is refreshed only when the moon's look changes (a new lap or phase). The glow sat where the moon had been when the lap began, about 40 cells off. A new `moon_now` holds the live moon every frame; cloud light, the redraw key, and the station radio calls use it.
+  - **Method:** the glow was quantized into the four cloud tones, which made a hard-edged disk the size of the moon, regardless of phase.
+    - [src/clouds.rs](../src/clouds.rs) `moon_glow` is now a smooth falloff (the square of the distance, out to 3 radii, strength 0.55 times brightness). `MoonLight::for_phase` adds `lit_side`, and `glow_center` leans toward the lit limb as the moon thins.
+    - [src/present.wgsl](../src/present.wgsl) applies the same formula per device pixel in linear light, tinted with the palette's star color and weighted by the cloud's opacity, so it lights clouds but never open sky.
+    - The CPU keeps only the silver rim on edges facing the moon.
+  - Tests: the glow fades continuously with no jumps and is gone beyond its reach; a new moon gives none; a waxing crescent glows to the right and a waning one to the left; the tones no longer carry the glow.
+  - `cargo test`: PASS, 243 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - The agent reviewed CPU renders that mirror the shader: a crescent behind overcast, and a full moon behind a storm.
+- **Builds now go to `target/agent`:** the owner had the app running, which locked `target/debug`.
 - **Verification (2026-11-03):**
   - `cargo test`: PASS, 241 tests after the redesign (238 before it). The redesign adds tests that:
     - every shape is built of two-row strips;

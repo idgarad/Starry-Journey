@@ -15,9 +15,11 @@ use std::{
 };
 
 use starry_journey::clock::{format_remaining, ConstructionClock};
-use starry_journey::clouds::{CloudField, CloudLights, Cover, MoonLight};
+use starry_journey::clouds::{
+    CloudField, CloudLights, Cover, MoonLight, MOON_GLOW_REACH, MOON_GLOW_STRENGTH,
+};
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
-use starry_journey::endless::EndlessCity;
+use starry_journey::endless::{decode_srgb, EndlessCity};
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
@@ -648,8 +650,12 @@ struct Renderer {
     construction_start: Instant,
     /// When the app started; the moon follows real time from here.
     app_start: Instant,
-    /// The moon as last drawn; `None` forces a redraw.
+    /// The moon as last drawn into its sprite; `None` forces a redraw. Its
+    /// position is only as fresh as the last redraw.
     moon_state: Option<MoonState>,
+    /// The moon right now (updated every frame), for anything that needs
+    /// its live position, such as the clouds' moonlight.
+    moon_now: Option<MoonState>,
     /// Moon phase step on the first lap (`--moon-phase`).
     moon_start_step: u64,
     /// What happens to the station (`--station-fate`).
@@ -860,6 +866,7 @@ impl Renderer {
             construction_start: Instant::now(),
             app_start: Instant::now(),
             moon_state: None,
+            moon_now: None,
             moon_start_step: options.moon_start_step,
             station_fate: options.station_fate,
             paused: false,
@@ -979,11 +986,13 @@ impl Renderer {
     /// moon, which gives no light.
     fn cloud_lights(&self) -> CloudLights {
         CloudLights {
-            moon: self.moon_state.map(|moon| MoonLight {
-                x: moon.exact_x,
-                row: moon.exact_row,
-                radius: f64::from(MOON_DIAMETER) / 2.0,
-                brightness: MoonLight::brightness_for_phase(moon.phase),
+            moon: self.moon_now.map(|moon| {
+                MoonLight::for_phase(
+                    moon.exact_x,
+                    moon.exact_row,
+                    f64::from(MOON_DIAMETER) / 2.0,
+                    moon.phase,
+                )
             }),
         }
     }
@@ -997,7 +1006,7 @@ impl Renderer {
             0.0
         };
         let moved = self.clouds.advance(dt, self.speed, camera);
-        let key = self.moon_state.map(|m| (m.x, m.row, m.phase.to_bits()));
+        let key = self.moon_now.map(|m| (m.x, m.row, m.phase.to_bits()));
         if moved || key != self.cloud_light_key {
             self.redraw_clouds();
         }
@@ -1005,7 +1014,7 @@ impl Renderer {
 
     /// Draws the cloud strip with the current light and uploads it.
     fn redraw_clouds(&mut self) {
-        self.cloud_light_key = self.moon_state.map(|m| (m.x, m.row, m.phase.to_bits()));
+        self.cloud_light_key = self.moon_now.map(|m| (m.x, m.row, m.phase.to_bits()));
         let rgba = self
             .clouds
             .draw(palette_at(self.palette_index), &self.cloud_lights());
@@ -1099,7 +1108,7 @@ impl Renderer {
     fn update_status(&mut self, construction_seconds: f64) {
         // The station's radio calls come first (owner idea, 2026-11-03),
         // in both modes; then the Endless startup lines.
-        let radio = self.moon_state.filter(is_station).and_then(|moon| {
+        let radio = self.moon_now.filter(is_station).and_then(|moon| {
             radio_line(moon.lap, moon.lap_seconds, self.station_fate, PASS_SECONDS)
         });
         let building = self.scene.endless.is_some() && !self.scene.reveal.is_complete();
@@ -1309,6 +1318,22 @@ impl Renderer {
             clouds_on,
             0.0,
         ]);
+        // The moon's glow on the clouds, at the moon's live position.
+        match self.cloud_lights().moon {
+            Some(moon) => {
+                let (gx, gy) = moon.glow_center();
+                params.extend([
+                    ((gx + 0.5) * cell64) as f32,
+                    ((gy + 0.5) * cell64) as f32,
+                    (MOON_GLOW_REACH * moon.radius * cell64) as f32,
+                    (MOON_GLOW_STRENGTH * moon.brightness) as f32,
+                ]);
+            }
+            None => params.extend([0.0; 4]),
+        }
+        let star = palette_at(self.palette_index).star.0;
+        let linear = |v: u8| decode_srgb(f64::from(v) / 255.0) as f32;
+        params.extend([linear(star[0]), linear(star[1]), linear(star[2]), 0.0]);
         let bytes: Vec<u8> = params
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -1329,6 +1354,7 @@ impl Renderer {
             MOON_SPRITE_REACH
         });
         self.moon_position = (moon.exact_x - reach, moon.exact_row - reach);
+        self.moon_now = Some(moon);
         let look = |m: &MoonState| (m.lap, m.phase.to_bits());
         let same_look = self.moon_state.as_ref().map(look) == Some(look(&moon));
         if same_look && !is_station(&moon) {
@@ -1589,7 +1615,7 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (8 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 = (10 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 
