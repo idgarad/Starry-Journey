@@ -1,32 +1,39 @@
 //! Clouds (Rebuild Prompt, "Clouds"; Starry Journey extensions, owner
 //! decisions 2026-11-03: variety and density for later rain and storms,
-//! clouds in both modes, dynamic lighting).
+//! clouds in both modes, translucent and dynamically lit).
 //!
-//! **Shapes.** Every cloud is a union of stepped domes on a shared flat
-//! base, built from two-cell-high strips as the spec describes. Three kinds:
-//! small rounded *puffs*, the spec's long stepped *banks* (38-90 x 6-13),
-//! and broad thick *decks* for overcast and storms.
+//! **Shapes.** Clouds are horizontal and layered, like the owner's
+//! references (the Python version's stepped lenses, and the layered haze
+//! of the mood images), built from two-cell-high strips as the spec says:
+//! - *wisps*: long thin streaks, one or two strips tall;
+//! - *lenses*: flat stepped saucers, widest just below the middle and
+//!   tapering in steps to pointed ends;
+//! - *banks*: stacks of offset, uneven strips with occasional gaps between
+//!   layers, so they read as stratified haze. Overcast and storms use wide,
+//!   deep banks.
 //!
 //! **Coverage.** A [`Cover`] preset (clear, puffs, scattered, broken,
 //! overcast, storm) sets how many clouds there are, which kinds, how big,
-//! and how dark. Scattered follows the spec: `max(3, ceil(cols / 130))`
-//! clouds, mostly banks.
+//! how dark, and how opaque. Scattered keeps the spec's count:
+//! `max(3, ceil(cols / 130))`.
+//!
+//! **Translucency.** No cloud is fully opaque: wisps are faint, and even
+//! the thickest storm cell lets some light through, so the moon (and later
+//! the sun) always glows through. Edges are fainter than interiors.
 //!
 //! **Motion.** Clouds live in their own world, seen through a view that
 //! drifts with the wind at 0.35 cells per second times the speed setting
-//! and, in Endless mode, follows the root camera at a tenth of its speed
-//! (far behind the farthest city layer). A cloud that drifts out past the
-//! left of the `cols + 160` wrap span comes back on the right with a fresh
-//! shape. Seeded with `seed XOR 0xc2b2ae35`.
+//! and, in Endless mode, follows the root camera at a tenth of its speed.
+//! A cloud that drifts out past the left of the `cols + 160` wrap span
+//! comes back on the right with a fresh shape. Seeded with
+//! `seed XOR 0xc2b2ae35`.
 //!
-//! **Light.** Cells store only shape (how far each is from the cloud's
-//! edge); color comes from the light sources each time the strip is drawn,
+//! **Light.** Cells store only shape (how far each is from the edge);
+//! color comes from the light sources each time the strip is drawn,
 //! snapped to four tones between the palette's sky and star colors. This
 //! branch has ambient night light and moonlight: brightness by phase, a
-//! lit rim on the edges facing the moon, and a glow on clouds near it.
-//! Thin edges are translucent, so the moon and stars show softly through
-//! them. City glow, searchlights, the sun, and lightning join the same
-//! model later.
+//! lit rim on the edges facing the moon, and a glow near it. City glow,
+//! searchlights, the sun, and lightning join the same model later.
 
 use crate::model::grid::Grid;
 use crate::model::palette::{Palette, Rgb};
@@ -44,8 +51,13 @@ pub const WRAP_MARGIN: i32 = 80;
 pub const MAX_MOTION_STEP: f64 = 1.0 / 30.0;
 /// Number of light tones a cloud is drawn in.
 pub const TONES: usize = 4;
-/// Opacity of a cloud's outermost cells (thin edges).
-pub const EDGE_ALPHA: f64 = 0.55;
+/// Opacity of a cloud's outermost cells, relative to its interior.
+pub const EDGE_FADE: f64 = 0.6;
+/// The most opaque any cloud cell can be, so light always bleeds through.
+pub const MAX_OPACITY: f64 = 0.85;
+/// The most opaque overlapping clouds can stack up to, so light bleeds
+/// through even the heaviest storm.
+pub const MAX_STACKED_OPACITY: f64 = 0.9;
 /// Extra columns on each side of the drawn strip, so the GPU can slide it.
 pub const STRIP_MARGIN: i32 = 2;
 
@@ -54,16 +66,16 @@ pub const STRIP_MARGIN: i32 = 2;
 pub enum Cover {
     /// No clouds.
     Clear,
-    /// A few small fair-weather puffs.
+    /// A few small lenses and wisps.
     Puffs,
-    /// The spec's default: a few long banks and some puffs.
+    /// The spec's default: a few lenses and wisps.
     #[default]
     Scattered,
-    /// More and bigger clouds, some decks.
+    /// More and bigger clouds, some layered banks.
     Broken,
-    /// Mostly decks covering much of the sky.
+    /// Wide layered banks across much of the sky.
     Overcast,
-    /// Heavy, dark, low decks (lightning arrives in a later feature).
+    /// Deep, dark banks (lightning arrives in a later feature).
     Storm,
 }
 
@@ -80,9 +92,20 @@ pub const COVERS: [Cover; 6] = [
 /// The three cloud shapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloudKind {
-    Puff,
+    Wisp,
+    Lens,
     Bank,
-    Deck,
+}
+
+impl CloudKind {
+    /// Interior opacity before the preset's scale: wisps are faint.
+    fn opacity(self) -> f64 {
+        match self {
+            CloudKind::Wisp => 0.45,
+            CloudKind::Lens => 0.7,
+            CloudKind::Bank => 0.8,
+        }
+    }
 }
 
 /// What a preset asks for.
@@ -92,83 +115,89 @@ struct CoverSpec {
     cols_per_cloud: f64,
     /// Fewest clouds when there are any.
     min_clouds: usize,
-    /// Relative weights of puffs, banks, and decks.
+    /// Relative weights of wisps, lenses, and banks.
     weights: [f64; 3],
-    /// Size multiplier for banks and decks.
+    /// Size multiplier for lenses and banks.
     size: f64,
-    /// Ambient light on the clouds (0 black, 1 full star color).
+    /// Ambient light on the clouds (0 dark, 1 bright).
     ambient: f64,
     /// Tone range: fractions from the sky color toward the star color.
     tone_range: (f64, f64),
     /// Altitude band for cloud tops, as fractions of the ground row.
     band: (f64, f64),
-    /// Deck heights as fractions of the sky's rows, so heavy skies stay
-    /// heavy on any screen.
-    deck_height: (f64, f64),
+    /// Bank heights as fractions of the sky's rows.
+    bank_height: (f64, f64),
+    /// Bank widths as fractions of the screen's columns.
+    bank_width: (f64, f64),
+    /// Opacity scale (thicker skies are more opaque, up to MAX_OPACITY).
+    opacity: f64,
 }
 
 impl Cover {
     fn spec(self) -> CoverSpec {
+        let fair = CoverSpec {
+            cols_per_cloud: f64::INFINITY,
+            min_clouds: 0,
+            weights: [0.5, 0.5, 0.0],
+            size: 1.0,
+            ambient: 0.3,
+            tone_range: (0.12, 0.5),
+            band: (0.04, 0.45),
+            bank_height: (0.05, 0.08),
+            bank_width: (0.25, 0.45),
+            opacity: 0.9,
+        };
         match self {
-            Cover::Clear => CoverSpec {
-                cols_per_cloud: f64::INFINITY,
-                min_clouds: 0,
-                weights: [1.0, 0.0, 0.0],
-                size: 1.0,
-                ambient: 0.3,
-                tone_range: (0.08, 0.45),
-                band: (0.04, 0.45),
-                deck_height: (0.06, 0.08),
-            },
+            Cover::Clear => fair,
             Cover::Puffs => CoverSpec {
-                cols_per_cloud: 90.0,
-                min_clouds: 3,
-                weights: [1.0, 0.0, 0.0],
-                size: 1.0,
-                ambient: 0.3,
-                tone_range: (0.08, 0.45),
-                band: (0.06, 0.45),
-                deck_height: (0.06, 0.08),
+                cols_per_cloud: 110.0,
+                min_clouds: 4,
+                weights: [0.4, 0.6, 0.0],
+                size: 0.7,
+                ..fair
             },
             Cover::Scattered => CoverSpec {
                 cols_per_cloud: 130.0,
                 min_clouds: 3,
-                weights: [0.3, 0.7, 0.0],
-                size: 1.0,
-                ambient: 0.28,
-                tone_range: (0.08, 0.42),
-                band: (0.04, 0.45),
-                deck_height: (0.06, 0.08),
+                weights: [0.45, 0.55, 0.0],
+                size: 1.2,
+                ..fair
             },
             Cover::Broken => CoverSpec {
-                cols_per_cloud: 50.0,
+                cols_per_cloud: 55.0,
                 min_clouds: 6,
-                weights: [0.15, 0.5, 0.35],
-                size: 1.4,
-                ambient: 0.25,
-                tone_range: (0.07, 0.38),
+                weights: [0.35, 0.4, 0.25],
+                size: 1.3,
+                ambient: 0.27,
+                tone_range: (0.07, 0.4),
                 band: (0.03, 0.42),
-                deck_height: (0.08, 0.14),
+                bank_height: (0.06, 0.12),
+                opacity: 0.95,
+                ..fair
             },
             Cover::Overcast => CoverSpec {
-                cols_per_cloud: 45.0,
-                min_clouds: 8,
-                weights: [0.05, 0.3, 0.65],
+                cols_per_cloud: 70.0,
+                min_clouds: 6,
+                weights: [0.25, 0.15, 0.6],
                 size: 1.5,
                 ambient: 0.24,
-                tone_range: (0.07, 0.32),
-                band: (0.0, 0.4),
-                deck_height: (0.15, 0.25),
+                tone_range: (0.07, 0.34),
+                band: (0.0, 0.35),
+                bank_height: (0.12, 0.22),
+                bank_width: (0.45, 0.9),
+                opacity: 1.0,
             },
             Cover::Storm => CoverSpec {
-                cols_per_cloud: 28.0,
-                min_clouds: 10,
-                weights: [0.0, 0.15, 0.85],
+                cols_per_cloud: 55.0,
+                min_clouds: 8,
+                weights: [0.15, 0.05, 0.8],
                 size: 1.8,
                 ambient: 0.2,
-                tone_range: (0.06, 0.26),
-                band: (0.0, 0.36),
-                deck_height: (0.25, 0.4),
+                tone_range: (0.06, 0.28),
+                band: (0.0, 0.3),
+                bank_height: (0.2, 0.36),
+                bank_width: (0.6, 1.2),
+                opacity: 1.0,
             },
         }
     }
@@ -244,6 +273,8 @@ pub struct Cloud {
     /// Per cell, row-major: 0 outside, else the distance to the nearest
     /// outside cell (1 on the edge, capped at 3).
     pub depth: Vec<u8>,
+    /// Interior opacity, at most [`MAX_OPACITY`].
+    pub opacity: f64,
 }
 
 impl Cloud {
@@ -264,70 +295,44 @@ impl Cloud {
     pub fn area(&self) -> usize {
         self.depth.iter().filter(|&&d| d > 0).count()
     }
-}
 
-/// Tallest a dome may be, in rows per cell of half-width: domes stay wide
-/// and rounded instead of rising into arches.
-pub const DOME_ASPECT: f64 = 0.55;
-
-/// One stepped dome: centered at `cx`, standing on strip `base` (counted
-/// from the mask's bottom), `half` cells half-wide at its base and
-/// `strips` two-row strips tall.
-#[derive(Debug, Clone, Copy)]
-struct Dome {
-    cx: f64,
-    half: f64,
-    base: i32,
-    strips: i32,
-}
-
-impl Dome {
-    /// A dome no taller than [`DOME_ASPECT`] allows and no more than
-    /// `room` strips.
-    fn flat(cx: f64, half: f64, base: i32, room: i32) -> Self {
-        let rows = half * DOME_ASPECT;
-        let strips = ((rows / 2.0).round() as i32).clamp(1, room.max(1));
-        Self {
-            cx,
-            half,
-            base,
-            strips,
+    /// The opacity of local cell `(cx, cy)`: the interior opacity, faded on
+    /// the outermost cells; 0 outside.
+    pub fn alpha_at(&self, cx: i32, cy: i32) -> f64 {
+        match self.depth_at(cx, cy) {
+            0 => 0.0,
+            1 => self.opacity * EDGE_FADE,
+            _ => self.opacity,
         }
     }
 }
 
-/// Builds a cloud mask: a slab (one `(left, right)` span per strip, from
-/// the bottom) plus domes. Every strip is two rows, so outlines step in
-/// whole cells. O(width × height).
-fn build_mask(width: i32, height: i32, slab: &[(i32, i32)], domes: &[Dome]) -> Vec<bool> {
+/// One horizontal run of a cloud: two rows (a strip), from the bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Run {
+    strip: i32,
+    left: i32,
+    right: i32,
+}
+
+/// Builds a mask `width x 2 * strips` from runs. O(cells).
+fn mask_from_runs(width: i32, strips: i32, runs: &[Run]) -> Vec<bool> {
+    let height = 2 * strips;
     let mut mask = vec![false; (width * height) as usize];
-    let mut fill = |strip: i32, left: i32, right: i32| {
-        for row in [height - 1 - 2 * strip, height - 2 - 2 * strip] {
-            if row < 0 {
+    for run in runs {
+        for row in [height - 1 - 2 * run.strip, height - 2 - 2 * run.strip] {
+            if !(0..height).contains(&row) {
                 continue;
             }
-            for x in left.max(0)..right.min(width) {
+            for x in run.left.max(0)..run.right.min(width) {
                 mask[(row * width + x) as usize] = true;
             }
-        }
-    };
-    for (strip, &(left, right)) in slab.iter().enumerate() {
-        fill(strip as i32, left, right);
-    }
-    for dome in domes {
-        for strip in 0..dome.strips {
-            let t = (f64::from(strip) + 0.5) / f64::from(dome.strips);
-            let half = (dome.half * (1.0 - t * t).sqrt()).round();
-            let left = (dome.cx - half).round() as i32;
-            let right = (dome.cx + half).round() as i32;
-            fill(dome.base + strip, left, right);
         }
     }
     mask
 }
 
-/// Drops empty rows above the shape, in whole strips. Returns the new
-/// height. O(cells).
+/// Drops empty strips above the shape. Returns the new height. O(cells).
 fn trim_top(mask: &mut Vec<bool>, width: i32, height: i32) -> i32 {
     let w = width as usize;
     let first = (0..height as usize)
@@ -374,109 +379,133 @@ fn edge_depths(mask: &[bool], width: i32, height: i32) -> Vec<u8> {
     depth
 }
 
-/// Generates one cloud of `kind` with its left edge at `x`. `size` scales
-/// banks and decks; `deck_rows` bounds deck heights. O(cloud cells).
+/// Rounds a half-width down to an even number of cells, so outlines step
+/// in two-cell increments like the spec's strips.
+fn even(half: f64) -> i32 {
+    ((half / 2.0).floor() as i32 * 2).max(1)
+}
+
+/// Runs for a lens `width` wide and `strips` tall: widest a third of the
+/// way up, narrowing in steps toward the top and (less) toward the bottom,
+/// so the ends are pointed and the base nearly flat.
+fn lens_runs(width: i32, strips: i32, offset: i32, base: i32) -> Vec<Run> {
+    let center = f64::from(width) / 2.0;
+    let widest = f64::from(strips - 1) / 3.0;
+    (0..strips)
+        .map(|strip| {
+            let above = f64::from(strip) - widest;
+            let reach = if above >= 0.0 {
+                f64::from(strips) - widest
+            } else {
+                widest + 1.0
+            };
+            let t = (above.abs() / reach).min(1.0);
+            let half = even(center * (1.0 - 0.75 * t.powf(1.2)));
+            Run {
+                strip: base + strip,
+                left: offset + (center as i32 - half),
+                right: offset + (center as i32 + half),
+            }
+        })
+        .collect()
+}
+
+/// Generates one cloud of `kind` with its left edge at `x`. O(cells).
 ///
-/// - Puff: one to three flattened domes on a shared base.
-/// - Bank: three to five domes on a shared base, the main one setting the
-///   spec height.
-/// - Deck: a tall slab whose sides wander as they rise, with a lumpy top
-///   of six to ten small domes standing on it.
+/// - Wisp: one long strip, sometimes with a shorter one above or below,
+///   offset to one side.
+/// - Lens: one stepped lens.
+/// - Bank: a stack of strips whose widths and offsets wander; some strips
+///   are skipped for gaps between layers, and lenses ride on top.
 fn make_cloud(
     rng: &mut Mulberry32,
     kind: CloudKind,
     x: i32,
-    size: f64,
-    band: (i32, i32),
-    deck_rows: (i32, i32),
+    spec: &CoverSpec,
+    sky: (i32, i32),
 ) -> Cloud {
-    let between = |rng: &mut Mulberry32, lo: i64, hi: i64| rng.rand_int(lo, hi) as i32;
+    let (cols, sky_rows) = sky;
+    let between = |rng: &mut Mulberry32, lo: i64, hi: i64| rng.rand_int(lo, hi.max(lo)) as i32;
     let unit = |rng: &mut Mulberry32| rng.next_f64();
-    let (width, height) = match kind {
-        CloudKind::Puff => {
-            let w = between(rng, 10, 24);
-            // Round, not towering: at most about half as tall as wide.
-            let tallest = ((w * 45 / 100) / 2).clamp(2, 4);
-            (w, between(rng, 2, i64::from(tallest)) * 2)
+    let mut runs = Vec::new();
+    let (width, strips) = match kind {
+        CloudKind::Wisp => {
+            let w = (f64::from(between(rng, 24, 110)) * spec.size.sqrt()).round() as i32;
+            runs.push(Run {
+                strip: 0,
+                left: 0,
+                right: w,
+            });
+            let strips = if unit(rng) < 0.5 {
+                let len = (f64::from(w) * (0.3 + 0.4 * unit(rng))) as i32;
+                let start = between(rng, 0, i64::from(w - len));
+                runs.push(Run {
+                    strip: 1,
+                    left: start,
+                    right: start + len,
+                });
+                2
+            } else {
+                1
+            };
+            (w, strips)
+        }
+        CloudKind::Lens => {
+            let w = (f64::from(between(rng, 38, 90)) * spec.size).round() as i32;
+            // Rebuild Prompt heights 6..13 rows: three to six strips.
+            let strips = between(rng, 3, 6).min(w / 10).max(2);
+            runs.extend(lens_runs(w, strips, 0, 0));
+            (w, strips)
         }
         CloudKind::Bank => {
-            let w = (f64::from(between(rng, 38, 90)) * size).round() as i32;
-            // Rebuild Prompt: heights 6..13; strips are two rows.
-            let h = between(rng, 6, 13);
-            (w, h + h % 2)
-        }
-        CloudKind::Deck => {
-            let w = (f64::from(between(rng, 80, 160)) * size).round() as i32;
-            let lo = deck_rows.0.max(10);
-            let h = between(rng, i64::from(lo), i64::from(deck_rows.1.max(lo)));
-            (w, h + h % 2)
+            let (lo, hi) = spec.bank_width;
+            let w = (f64::from(cols) * (lo + (hi - lo) * unit(rng))).round() as i32;
+            let w = w.max(60);
+            let (lo, hi) = spec.bank_height;
+            let rows = f64::from(sky_rows) * (lo + (hi - lo) * unit(rng));
+            // Flat and layered: never taller than a fifth of the width.
+            let strips = ((rows / 2.0).round() as i32).clamp(3, (w / 10).max(3));
+            let fw = f64::from(w);
+            let mut center = fw / 2.0;
+            for strip in 0..strips {
+                let rise = f64::from(strip) / f64::from(strips);
+                // A few gaps between layers, never at the base.
+                if strip > 0 && strip + 1 < strips && unit(rng) < 0.12 {
+                    continue;
+                }
+                let narrowing = 1.0 - 0.55 * rise.powf(1.4);
+                let half = even(fw / 2.0 * narrowing * (0.75 + 0.25 * unit(rng)));
+                center = (center + (unit(rng) - 0.5) * fw * 0.08)
+                    .clamp(f64::from(half), fw - f64::from(half));
+                runs.push(Run {
+                    strip,
+                    left: (center as i32 - half).max(0),
+                    right: (center as i32 + half).min(w),
+                });
+                // Now and then a wispy tail trails off one side.
+                if unit(rng) < 0.2 {
+                    let tail = (fw * (0.1 + 0.2 * unit(rng))) as i32;
+                    let (left, right) = if unit(rng) < 0.5 {
+                        ((center as i32 - half - tail).max(0), center as i32 - half)
+                    } else {
+                        (center as i32 + half, (center as i32 + half + tail).min(w))
+                    };
+                    runs.push(Run { strip, left, right });
+                }
+            }
+            (w, strips)
         }
     };
-    let strips = height / 2;
-    let fw = f64::from(width);
-    let mut slab = Vec::new();
-    let mut domes = Vec::new();
-    match kind {
-        CloudKind::Puff => {
-            // The first dome spans the cloud and sets its height.
-            domes.push(Dome {
-                cx: fw / 2.0,
-                half: fw / 2.0,
-                base: 0,
-                strips,
-            });
-            for _ in 0..between(rng, 0, 2) {
-                let half = fw * (0.2 + 0.15 * unit(rng));
-                let cx = half + unit(rng) * (fw - 2.0 * half).max(0.0);
-                domes.push(Dome::flat(cx, half, 0, strips));
-            }
-        }
-        CloudKind::Bank => {
-            // No slab: the domes share a flat base, and a slab wider than
-            // them reads as a thin ledge. The main dome is wide enough to give the bank the spec's
-            // height (6..13), so it may be a little taller than DOME_ASPECT.
-            let main_half = (f64::from(height) / DOME_ASPECT).min(fw / 2.0);
-            let main_cx = main_half + unit(rng) * (fw - 2.0 * main_half).max(0.0);
-            domes.push(Dome {
-                cx: main_cx,
-                half: main_half,
-                base: 0,
-                strips,
-            });
-            for _ in 0..between(rng, 2, 4) {
-                let half = fw * (0.12 + 0.2 * unit(rng));
-                let cx = half + unit(rng) * (fw - 2.0 * half).max(0.0);
-                domes.push(Dome::flat(cx, half, 0, strips));
-            }
-        }
-        CloudKind::Deck => {
-            let body = ((f64::from(strips) * (0.55 + 0.2 * unit(rng))).round() as i32).max(1);
-            let mut left = between(rng, 0, i64::from(width / 20));
-            let mut right = width - between(rng, 0, i64::from(width / 20));
-            for _ in 0..body {
-                if left >= right {
-                    break;
-                }
-                slab.push((left, right));
-                left = (left + between(rng, -1, 3)).max(0);
-                right = (right - between(rng, -1, 3)).min(width);
-            }
-            let top = slab.len() as i32;
-            let (top_left, top_right) = slab.last().copied().unwrap_or((0, width));
-            let span = f64::from((top_right - top_left).max(2));
-            for _ in 0..between(rng, 6, 10) {
-                let half = span * (0.06 + 0.12 * unit(rng));
-                let cx = f64::from(top_left) + half + unit(rng) * (span - 2.0 * half).max(0.0);
-                let base = (top - 1 - between(rng, 0, 1)).max(0);
-                domes.push(Dome::flat(cx, half, base, strips - base));
-            }
-        }
-    }
-    let mut mask = build_mask(width, height, &slab, &domes);
-    let height = trim_top(&mut mask, width, height);
+    let mut mask = mask_from_runs(width, strips, &runs);
+    let height = trim_top(&mut mask, width, 2 * strips);
     let depth = edge_depths(&mask, width, height);
-    let (lo, hi) = band;
-    let top = between(rng, i64::from(lo), i64::from(hi.max(lo)));
+    let (lo, hi) = (
+        (f64::from(sky_rows) * spec.band.0).round() as i32,
+        (f64::from(sky_rows) * spec.band.1).round() as i32,
+    );
+    let top = between(rng, i64::from(lo), i64::from(hi))
+        .min(sky_rows - height)
+        .max(0);
     Cloud {
         kind,
         x,
@@ -484,6 +513,7 @@ fn make_cloud(
         width,
         height,
         depth,
+        opacity: (kind.opacity() * spec.opacity).min(MAX_OPACITY),
     }
 }
 
@@ -514,17 +544,16 @@ pub struct CloudLights {
 }
 
 /// How far the moon's glow reaches, in moon radii.
-pub const MOON_GLOW_REACH: f64 = 2.2;
+pub const MOON_GLOW_REACH: f64 = 2.5;
 
 /// How much light a cloud cell gets, before quantizing (0 dark, 1 bright).
 ///
 /// `surface` is the cell's distance in rows below the top of its column
-/// and above the bottom. The top two rows of each column catch sky light
-/// and the bottom two are shaded, so every bump gets its own highlight and
-/// undersides read darker (the two-tone look). The moon adds, scaled by its
-/// brightness: a glow that fades with the square of the distance within
-/// [`MOON_GLOW_REACH`] radii (dimmer deep inside thick cloud), and a rim on
-/// edge cells whose neighbor toward the moon is open sky. O(1).
+/// and above the bottom: the top two rows catch sky light and the bottom
+/// two are shaded, so every layer gets its own highlight. The moon adds,
+/// scaled by its brightness: a glow fading with the square of the distance
+/// within [`MOON_GLOW_REACH`] radii, and a rim on edge cells whose neighbor
+/// toward the moon is open sky. O(1).
 pub fn cell_light(
     cloud: &Cloud,
     cx: i32,
@@ -536,7 +565,7 @@ pub fn cell_light(
 ) -> f64 {
     let mut light = ambient;
     if surface.0 < 2 {
-        light += 0.12;
+        light += 0.08;
     }
     if surface.1 < 2 {
         light -= 0.08;
@@ -544,14 +573,8 @@ pub fn cell_light(
     if let Some(moon) = lights.moon {
         let (dx, dy) = (moon.x - screen.0, moon.row - screen.1);
         let distance = (dx * dx + dy * dy).sqrt();
-        let reach = MOON_GLOW_REACH * moon.radius;
-        let fade = (1.0 - distance / reach).max(0.0);
-        let thick = if cloud.depth_at(cx, cy) >= 3 {
-            0.6
-        } else {
-            1.0
-        };
-        light += moon.brightness * 0.6 * fade * fade * thick;
+        let fade = (1.0 - distance / (MOON_GLOW_REACH * moon.radius)).max(0.0);
+        light += moon.brightness * 0.6 * fade * fade;
         if cloud.depth_at(cx, cy) == 1 && distance > 0.0 {
             let step = (dx.signum() as i32, dy.signum() as i32);
             let toward = [(step.0, 0), (0, step.1), step];
@@ -651,17 +674,11 @@ impl CloudField {
         self.view
     }
 
-    fn band(&self) -> (i32, i32) {
-        let (lo, hi) = self.cover.spec().band;
-        let rows = f64::from(self.sky_rows);
-        ((rows * lo).round() as i32, (rows * hi).round() as i32)
-    }
-
     fn pick_kind(&mut self) -> CloudKind {
         let weights = self.cover.spec().weights;
         let total: f64 = weights.iter().sum();
         let mut roll = self.rng.next_f64() * total;
-        for (kind, weight) in [CloudKind::Puff, CloudKind::Bank, CloudKind::Deck]
+        for (kind, weight) in [CloudKind::Wisp, CloudKind::Lens, CloudKind::Bank]
             .into_iter()
             .zip(weights)
         {
@@ -670,26 +687,17 @@ impl CloudField {
             }
             roll -= weight;
         }
-        CloudKind::Bank
+        CloudKind::Lens
     }
 
     fn spawn(&mut self, x: i32) -> Cloud {
         let kind = self.pick_kind();
         let spec = self.cover.spec();
-        let band = self.band();
-        let rows = f64::from(self.sky_rows);
-        let deck_rows = (
-            (rows * spec.deck_height.0).round() as i32,
-            (rows * spec.deck_height.1).round() as i32,
-        );
-        let mut cloud = make_cloud(&mut self.rng, kind, x, spec.size, band, deck_rows);
-        // Keep the whole cloud in the sky above the ground row.
-        cloud.top = cloud.top.min(self.sky_rows - cloud.height).max(0);
-        cloud
+        make_cloud(&mut self.rng, kind, x, &spec, (self.cols, self.sky_rows))
     }
 
-    /// Spreads the preset's clouds evenly over the wrap span, each at a
-    /// random offset within its share. O(clouds × cloud cells).
+    /// Spreads the preset's clouds evenly over the wrap span, each centered
+    /// at a random point within its share. O(clouds × cloud cells).
     fn populate(&mut self) {
         let count = self.cover.cloud_count(self.cols);
         let span = f64::from(self.span_width());
@@ -699,11 +707,12 @@ impl CloudField {
                 let share = span / count as f64;
                 let x = left + (share * (i as f64 + self.rng.next_f64())) as i32;
                 let mut cloud = self.spawn(x);
-                // Center the cloud on its slot rather than starting there.
                 cloud.x -= cloud.width / 2;
                 cloud
             })
             .collect();
+        // Far (higher) clouds first, so nearer, lower ones draw over them.
+        self.clouds.sort_by_key(|cloud| cloud.top);
     }
 
     /// Points the view at the Endless root camera (0 in Normal mode).
@@ -756,8 +765,10 @@ impl CloudField {
     }
 
     /// Draws the clouds into an RGBA strip (see [`CloudField::strip`]),
-    /// lit by `lights`: four tones per palette and preset, edges
-    /// translucent, transparent sky. Later clouds draw over earlier ones.
+    /// lit by `lights`: four tones per palette and preset, every cell
+    /// translucent (at most [`MAX_OPACITY`], and overlaps at most
+    /// [`MAX_STACKED_OPACITY`]), transparent sky. Clouds are composited over
+    /// each other in drawing order with straight alpha.
     /// O(strip cells + cloud cells).
     pub fn draw(&self, palette: &Palette, lights: &CloudLights) -> Vec<u8> {
         let span = self.strip();
@@ -769,8 +780,8 @@ impl CloudField {
             let (tops, bottoms) = column_extents(cloud);
             for cy in 0..cloud.height {
                 for cx in 0..cloud.width {
-                    let depth = cloud.depth_at(cx, cy);
-                    if depth == 0 {
+                    let mut alpha = cloud.alpha_at(cx, cy);
+                    if alpha == 0.0 {
                         continue;
                     }
                     let (wx, row) = (cloud.x + cx, cloud.top + cy);
@@ -783,14 +794,13 @@ impl CloudField {
                     let light = cell_light(cloud, cx, cy, surface, screen, ambient, lights);
                     let tone = ramp[tone_index(light)];
                     let pixel = &mut rgba[cell * 4..cell * 4 + 4];
-                    // Edges are soft only against open sky; over another
-                    // cloud they are solid, so overlaps show no seams.
                     let below = f64::from(pixel[3]) / 255.0;
-                    let alpha = if depth == 1 && below == 0.0 {
-                        EDGE_ALPHA
-                    } else {
-                        1.0
-                    };
+                    // Edges are faint only against open sky; over another
+                    // cloud they take the full interior opacity, so
+                    // overlaps don't draw outlines.
+                    if below > 0.0 {
+                        alpha = cloud.opacity;
+                    }
                     let total = alpha + below * (1.0 - alpha);
                     for (channel, value) in pixel[..3].iter_mut().zip(tone.0) {
                         let mixed = (f64::from(value) * alpha
@@ -798,7 +808,7 @@ impl CloudField {
                             / total.max(1e-9);
                         *channel = mixed.round() as u8;
                     }
-                    pixel[3] = (total * 255.0).round() as u8;
+                    pixel[3] = (total.min(MAX_STACKED_OPACITY) * 255.0).round() as u8;
                 }
             }
         }
@@ -835,6 +845,11 @@ mod tests {
         palette_by_key("classic").unwrap()
     }
 
+    fn sky() -> (i32, i32) {
+        let grid = grid();
+        (grid.cols, grid.ground_row)
+    }
+
     #[test]
     fn presets_cycle_parse_and_scattered_follows_the_spec_count() {
         let mut cover = Cover::Clear;
@@ -855,66 +870,131 @@ mod tests {
         assert_eq!(Cover::Clear.cloud_count(640), 0);
     }
 
+    fn row_widths(cloud: &Cloud) -> Vec<i32> {
+        (0..cloud.height)
+            .map(|cy| (0..cloud.width).filter(|&cx| cloud.covers(cx, cy)).count() as i32)
+            .collect()
+    }
+
     #[test]
-    fn shapes_are_stepped_two_row_strips_within_their_size_ranges() {
+    fn every_shape_is_built_of_two_row_strips() {
         let mut rng = Mulberry32::new(4);
-        for _ in 0..200 {
-            for kind in [CloudKind::Puff, CloudKind::Bank, CloudKind::Deck] {
-                let cloud = make_cloud(&mut rng, kind, 0, 1.0, (5, 40), (10, 16));
-                let (w, h) = (cloud.width, cloud.height);
-                match kind {
-                    CloudKind::Puff => assert!((10..=24).contains(&w) && (4..=8).contains(&h)),
-                    CloudKind::Bank => assert!((38..=90).contains(&w) && (6..=14).contains(&h)),
-                    // A deck body is at least 55% of the requested 10..16 rows.
-                    CloudKind::Deck => assert!((80..=160).contains(&w) && (6..=16).contains(&h)),
-                }
-                assert_eq!(h % 2, 0, "whole two-row strips");
-                // Rows come in identical pairs: the stepped look.
-                for strip in 0..h / 2 {
-                    for x in 0..w {
-                        assert_eq!(cloud.covers(x, 2 * strip), cloud.covers(x, 2 * strip + 1));
+        for cover in COVERS.iter().skip(1) {
+            let spec = cover.spec();
+            for kind in [CloudKind::Wisp, CloudKind::Lens, CloudKind::Bank] {
+                for _ in 0..40 {
+                    let cloud = make_cloud(&mut rng, kind, 0, &spec, sky());
+                    assert_eq!(cloud.height % 2, 0);
+                    for strip in 0..cloud.height / 2 {
+                        for x in 0..cloud.width {
+                            assert_eq!(cloud.covers(x, 2 * strip), cloud.covers(x, 2 * strip + 1));
+                        }
                     }
+                    assert!(cloud.area() > 0);
+                    assert!(
+                        (0..cloud.width).any(|x| cloud.covers(x, 0)),
+                        "reaches its top"
+                    );
                 }
-                assert!(cloud.area() > 0);
-                assert!(
-                    (0..w).any(|x| cloud.covers(x, 0)),
-                    "{kind:?} reaches its top"
-                );
-                assert!((0..w).any(|x| cloud.covers(x, h - 1)), "flat base");
             }
         }
     }
 
     #[test]
-    fn puffs_stay_rounder_than_tall() {
-        let mut rng = Mulberry32::new(11);
-        for _ in 0..200 {
-            let cloud = make_cloud(&mut rng, CloudKind::Puff, 0, 1.0, (5, 40), (10, 16));
-            assert!(
-                cloud.height <= (cloud.width * 45 / 100).max(4),
-                "{} x {}",
-                cloud.width,
-                cloud.height
-            );
+    fn clouds_are_flat_and_wide_like_the_references() {
+        let mut rng = Mulberry32::new(5);
+        let spec = Cover::Broken.spec();
+        for kind in [CloudKind::Wisp, CloudKind::Lens, CloudKind::Bank] {
+            for _ in 0..100 {
+                let cloud = make_cloud(&mut rng, kind, 0, &spec, sky());
+                assert!(
+                    cloud.width >= 4 * cloud.height,
+                    "{kind:?} {} x {}",
+                    cloud.width,
+                    cloud.height
+                );
+            }
+        }
+        // Wisps are thin streaks.
+        for _ in 0..100 {
+            let wisp = make_cloud(&mut rng, CloudKind::Wisp, 0, &spec, sky());
+            assert!(wisp.height <= 4);
         }
     }
 
     #[test]
-    fn banks_have_no_thin_ledge_along_the_base() {
-        let mut rng = Mulberry32::new(12);
-        for _ in 0..200 {
-            let cloud = make_cloud(&mut rng, CloudKind::Bank, 0, 1.0, (5, 40), (10, 16));
-            // The bottom strip sticks out at most a third of the width
-            // beyond the strip above it.
-            let row_width =
-                |row: i32| (0..cloud.width).filter(|&x| cloud.covers(x, row)).count() as i32;
-            let (bottom, above) = (row_width(cloud.height - 1), row_width(cloud.height - 3));
+    fn lenses_are_widest_low_and_taper_to_both_ends() {
+        let mut rng = Mulberry32::new(6);
+        let spec = Cover::Scattered.spec();
+        for _ in 0..100 {
+            let lens = make_cloud(&mut rng, CloudKind::Lens, 0, &spec, sky());
+            let widths = row_widths(&lens);
+            let widest = *widths.iter().max().unwrap();
+            let at = widths.iter().position(|&w| w == widest).unwrap() as i32;
             assert!(
-                bottom - above <= cloud.width / 3,
-                "{bottom} vs {above} of {}",
-                cloud.width
+                at >= lens.height / 2 - 1,
+                "widest in the lower part: {widths:?}"
             );
+            assert!(widths[0] < widest, "the top is narrower: {widths:?}");
+            // Stepped outline: rows only change width between strips.
+            for strip in 0..lens.height / 2 {
+                assert_eq!(widths[2 * strip as usize], widths[2 * strip as usize + 1]);
+            }
         }
+    }
+
+    #[test]
+    fn banks_are_layered_and_narrow_upward() {
+        let mut rng = Mulberry32::new(7);
+        let spec = Cover::Overcast.spec();
+        let mut gaps = 0;
+        for _ in 0..60 {
+            let bank = make_cloud(&mut rng, CloudKind::Bank, 0, &spec, sky());
+            let widths = row_widths(&bank);
+            let bottom = widths[widths.len() - 1];
+            assert!(widths[0] <= bottom, "narrower at the top: {widths:?}");
+            gaps += widths.iter().filter(|&&w| w == 0).count();
+        }
+        assert!(gaps > 0, "some banks have gaps between layers");
+    }
+
+    #[test]
+    fn every_cloud_lets_light_through() {
+        let mut rng = Mulberry32::new(8);
+        for cover in COVERS.iter().skip(1) {
+            let spec = cover.spec();
+            for kind in [CloudKind::Wisp, CloudKind::Lens, CloudKind::Bank] {
+                let cloud = make_cloud(&mut rng, kind, 0, &spec, sky());
+                assert!(cloud.opacity <= MAX_OPACITY && cloud.opacity > 0.2);
+                for cy in 0..cloud.height {
+                    for cx in 0..cloud.width {
+                        assert!(cloud.alpha_at(cx, cy) <= MAX_OPACITY);
+                    }
+                }
+            }
+        }
+        let wisp = make_cloud(
+            &mut rng,
+            CloudKind::Wisp,
+            0,
+            &Cover::Scattered.spec(),
+            sky(),
+        );
+        let bank = make_cloud(&mut rng, CloudKind::Bank, 0, &Cover::Storm.spec(), sky());
+        assert!(
+            wisp.opacity < bank.opacity,
+            "wisps are fainter than storm banks"
+        );
+    }
+
+    #[test]
+    fn drawn_strips_are_never_fully_opaque_even_where_clouds_overlap() {
+        let grid = grid();
+        let field = CloudField::new(2, &grid, Cover::Storm);
+        let rgba = field.draw(classic(), &CloudLights::default());
+        let most = rgba.chunks(4).map(|p| p[3]).max().unwrap();
+        assert!(most < 255, "light bleeds through: {most}");
+        assert!(most > 200, "but storms are thick: {most}");
     }
 
     #[test]
@@ -931,7 +1011,6 @@ mod tests {
         let grid = grid();
         let mut previous = -1.0;
         for cover in COVERS {
-            // Average a few seeds so one lucky sky can't break the order.
             let mean: f64 = (0..4)
                 .map(|seed| CloudField::new(seed, &grid, cover).coverage())
                 .sum::<f64>()
@@ -985,7 +1064,7 @@ mod tests {
         let left = field.view().floor() as i32 - WRAP_MARGIN;
         for cloud in &field.clouds {
             assert!(cloud.x + cloud.width >= left, "nothing left behind");
-            assert!(cloud.x < left + span + 200, "nothing runs far ahead");
+            assert!(cloud.x < left + span + grid.cols, "nothing runs far ahead");
         }
     }
 
@@ -998,7 +1077,7 @@ mod tests {
         assert_ne!(a.clouds, CloudField::new(10, &grid, Cover::Overcast).clouds);
     }
 
-    fn lit_cloud() -> Cloud {
+    fn block_cloud() -> Cloud {
         let mask = vec![true; 20 * 8];
         Cloud {
             kind: CloudKind::Bank,
@@ -1007,12 +1086,13 @@ mod tests {
             width: 20,
             height: 8,
             depth: edge_depths(&mask, 20, 8),
+            opacity: 0.8,
         }
     }
 
     #[test]
     fn a_full_moon_lights_nearby_clouds_and_a_new_moon_does_not() {
-        let cloud = lit_cloud();
+        let cloud = block_cloud();
         let moon = |brightness| CloudLights {
             moon: Some(MoonLight {
                 x: 14.0,
@@ -1029,7 +1109,6 @@ mod tests {
         assert_eq!(MoonLight::brightness_for_phase(0.5), 1.0);
         assert_eq!(MoonLight::brightness_for_phase(0.0), 0.0);
         assert!((MoonLight::brightness_for_phase(0.25) - 0.5).abs() < 1e-12);
-        // Far from the moon there is no glow.
         let far = CloudLights {
             moon: Some(MoonLight {
                 x: 500.0,
@@ -1041,8 +1120,7 @@ mod tests {
 
     #[test]
     fn the_edge_facing_the_moon_gets_a_rim() {
-        let cloud = lit_cloud();
-        // Moon far to the right, beyond the glow, so only the rim differs.
+        let cloud = block_cloud();
         let lights = CloudLights {
             moon: Some(MoonLight {
                 x: 400.0,
@@ -1057,8 +1135,8 @@ mod tests {
     }
 
     #[test]
-    fn undersides_are_darker_than_tops() {
-        let cloud = lit_cloud();
+    fn tops_are_brighter_than_undersides() {
+        let cloud = block_cloud();
         let lights = CloudLights::default();
         let top = cell_light(&cloud, 10, 0, (0, 7), (10.5, 0.5), 0.25, &lights);
         let bottom = cell_light(&cloud, 10, 7, (7, 0), (10.5, 7.5), 0.25, &lights);
@@ -1066,37 +1144,33 @@ mod tests {
     }
 
     #[test]
-    fn drawn_clouds_use_four_palette_tones_with_translucent_edges() {
+    fn drawn_clouds_use_palette_tones_and_leave_open_sky_clear() {
         let grid = grid();
         let field = CloudField::new(5, &grid, Cover::Broken);
         for palette in palettes() {
             let rgba = field.draw(palette, &CloudLights::default());
             assert_eq!(rgba.len(), field.strip().cells() * 4);
             let ramp = tone_ramp(Cover::Broken, palette);
-            let opaque: Vec<[u8; 3]> = rgba
+            let single: Vec<[u8; 3]> = rgba
                 .chunks(4)
-                .filter(|p| p[3] == 255)
+                .filter(|p| p[3] > 0)
                 .map(|p| [p[0], p[1], p[2]])
                 .collect();
-            assert!(!opaque.is_empty(), "{}", palette.key);
-            // Opaque cells covered by a single cloud are exactly ramp tones;
-            // allow blends where clouds overlap.
-            let ramp_cells = opaque
+            assert!(!single.is_empty(), "{}", palette.key);
+            let on_ramp = single
                 .iter()
                 .filter(|c| ramp.iter().any(|t| t.0 == **c))
                 .count();
-            assert!(ramp_cells * 10 > opaque.len() * 9, "{}", palette.key);
-            assert!(rgba.chunks(4).any(|p| p[3] > 0 && p[3] < 255), "soft edges");
+            assert!(on_ramp * 10 > single.len() * 8, "{}", palette.key);
             assert!(rgba.chunks(4).any(|p| p[3] == 0), "open sky stays clear");
         }
     }
 
     #[test]
     fn storm_tones_are_darker_than_fair_weather() {
-        let classic = classic();
         let luminance = |c: Rgb| c.0.iter().map(|&v| u32::from(v)).sum::<u32>();
-        let storm = tone_ramp(Cover::Storm, classic);
-        let fair = tone_ramp(Cover::Puffs, classic);
+        let storm = tone_ramp(Cover::Storm, classic());
+        let fair = tone_ramp(Cover::Puffs, classic());
         assert!(luminance(storm[TONES - 1]) < luminance(fair[TONES - 1]));
         assert!(tone_index(0.0) == 0 && tone_index(1.0) == TONES - 1);
     }

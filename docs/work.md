@@ -62,8 +62,34 @@
     - solid edges where clouds overlap (they had drawn diagonal seams);
     - slightly brighter storm and overcast tones.
   - Overcast still reads as flat-topped decks rather than a full ceiling; it needs the owner's eye.
+- **Redesign (owner feedback, 2026-11-03: "All those clouds are terrible. We need different shapes"; clouds should be "slightly transparent even with thick clouds so the moon light (and later sun light) can bleed through"):**
+  - The agent had tuned against its own renders, not the owner's references. The references in `.ai/` (the Python version, `ref9`, `refimage7`, `reimage8`) all show horizontal, layered, low-contrast, see-through clouds; none show dome-shaped cumulus.
+  - The new shapes:
+    - wisps: long thin streaks;
+    - lenses: the Python version's flat stepped saucers, widest a third of the way up;
+    - banks: stacks of offset strips with gaps and trailing tails.
+    
+    Banks are never taller than a fifth of their width.
+  - Every cloud is translucent: interiors are at most 85% opaque (wisps 45%, lenses 70%, banks 80%, scaled by preset), edges against open sky are faded to 60% of that, and stacked overlaps are capped at 90%. The moon glows through even the heaviest storm.
+  - Measured coverage:
+
+    | Preset | Coverage |
+    | --- | --- |
+    | Puffs | 0.4% |
+    | Scattered | 0.6% |
+    | Broken | 5.6% |
+    | Overcast | 24.3% |
+    | Storm | 42.8% |
+  - Still open: overcast and storm read as streaky stripes, and fair-weather lenses are faint. This waits for owner direction.
 - **Verification (2026-11-03):**
-  - `cargo test`: PASS, 238 tests. New tests:
+  - `cargo test`: PASS, 241 tests after the redesign (238 before it). The redesign adds tests that:
+    - every shape is built of two-row strips;
+    - clouds are flat and wide (width at least 4 times height), and wisps are at most 4 rows;
+    - lenses are widest low and taper to both ends;
+    - banks narrow upward and sometimes have gaps;
+    - no cell exceeds 85% opacity, and wisps are fainter than storm banks;
+    - a drawn storm is never fully opaque, even where clouds overlap.
+  - The first cloud version's tests (before the redesign): New tests:
     - preset cycling, parsing, and the spec count;
     - shapes are paired two-row strips within their size ranges, reach their top, and have flat bases;
     - puffs stay rounder than tall, and banks have no thin ledge;
