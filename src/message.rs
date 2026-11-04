@@ -86,13 +86,16 @@ pub fn parse_message(raw: &str) -> Result<Option<String>, String> {
     Ok(Some(text.to_string()))
 }
 
-/// What the message box shows: the launch message, or briefly a palette's
-/// name. Times are seconds on any monotonic clock.
+/// What the message box shows, highest priority first: a palette's name
+/// briefly after a change, the launch message, then a status line (the
+/// Endless startup quips). Times are seconds on any monotonic clock.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Notice {
     message: Option<String>,
     /// A temporary text and the time it stops showing.
     flash: Option<(String, f64)>,
+    /// Shown only when there is no message and no flash.
+    status: Option<String>,
 }
 
 impl Notice {
@@ -101,6 +104,15 @@ impl Notice {
         Self {
             message,
             flash: None,
+            status: None,
+        }
+    }
+
+    /// Sets or clears the status line. A launch message hides it, so a
+    /// meeting screen keeps its message (agent default, 2026-11-03).
+    pub fn set_status(&mut self, status: Option<&str>) {
+        if self.status.as_deref() != status {
+            self.status = status.map(str::to_string);
         }
     }
 
@@ -114,7 +126,7 @@ impl Notice {
     pub fn text(&self, now: f64) -> Option<&str> {
         match &self.flash {
             Some((text, until)) if now < *until => Some(text),
-            _ => self.message.as_deref(),
+            _ => self.message.as_deref().or(self.status.as_deref()),
         }
     }
 }
@@ -495,6 +507,25 @@ mod tests {
         notice.flash("EGA", 0.0);
         assert_eq!(notice.text(1.0), Some("EGA"));
         assert_eq!(notice.text(PALETTE_NOTICE_SECONDS + 0.1), None);
+    }
+
+    #[test]
+    fn status_shows_only_without_a_message_and_yields_to_a_flash() {
+        let mut quiet = Notice::new(None);
+        quiet.set_status(Some("Polishing the moon"));
+        assert_eq!(quiet.text(0.0), Some("Polishing the moon"));
+        quiet.flash("EGA", 1.0);
+        assert_eq!(quiet.text(1.5), Some("EGA"));
+        assert_eq!(
+            quiet.text(1.0 + PALETTE_NOTICE_SECONDS),
+            Some("Polishing the moon")
+        );
+        quiet.set_status(None);
+        assert_eq!(quiet.text(10.0), None);
+
+        let mut meeting = Notice::new(Some("Standup at 10".into()));
+        meeting.set_status(Some("Herding taxis"));
+        assert_eq!(meeting.text(0.0), Some("Standup at 10"));
     }
 
     #[test]

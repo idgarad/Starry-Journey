@@ -1,5 +1,121 @@
 # Active work
 
+## REBUILD-004: Endless mode
+
+| Branch | Contents | Status |
+| --- | --- | --- |
+| `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
+| `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
+| `feature/endless-street` | Road, trees, and traffic scroll with the road camera; headlights keep lighting trees | Planned |
+| `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
+
+### feature/endless-compositor
+
+- **Report (owner, 2026-11-03):** "the scrolling is terrible", as it was in the Python version before sub-pixel positioning and "some light trick to prevent flickering".
+- **Cause:** layers moved in whole cells (3 device pixels). The far layer at 0.4 cells/s stepped once every 2.5 s, and the four layers stepped at different moments.
+- **Fix (the Rebuild Prompt's compositor):**
+  - **Sub-pixel positions:** each layer is placed at its exact fractional device-pixel offset `(viewX - originX) × cell`. A device pixel takes the two pixels of the layer's sharp device-resolution image that it overlaps, weighted by overlap.
+  - **The light trick:** texels are decoded from sRGB to linear light (the `Rgba8UnormSrgb` texture format decodes) and premultiplied by alpha, then interpolated, then composited far to near with "over". The result is encoded once by the sRGB surface. Interpolating encoded values instead darkens a moving edge whenever it sits between pixels, which reads as flicker.
+- **Deviation (equivalent result):** the spec keeps a sharp device-resolution cache texture per layer. Here the shader computes the same values from the cell-resolution layer texture, because the cache's pixel `x` is just cell `floor(x / cell)`. This saves memory and avoids texture-size limits on wide surfaces (planned multi-monitor support): the cache at 1080p would be 4032 px wide, and over 8192 beyond about 4K wide.
+- **Delivered:**
+  - [src/present.wgsl](../src/present.wgsl):
+    - The background texture holds the Normal/construction frame, or the sky, stars, and moon while Endless scrolls.
+    - Four layer textures are reconstructed as above, followed by the overlay and the message box.
+    - `Params` carries the four layer offsets and a layers-on flag.
+  - [src/endless.rs](../src/endless.rs):
+    - Layer buffers are transparent on sky.
+    - `layer_image` exposes each buffer with a process-unique revision; rebases, palette changes, and new cities all get new revisions.
+    - `source_offset_px` is computed in f64 from the buffer origin, so it stays precise however far the camera goes.
+    - `reconstruct_row` is a CPU mirror of the shader math, used for tests.
+  - [src/main.rs](../src/main.rs):
+    - While scrolling, the cell-resolution frame is only the sky and moon (buildings hide the moon on the GPU now). The street, trees, and traffic go to a transparent overlay.
+    - Layer textures are uploaded only when their revision changes, reusing storage when the size matches. Scrolling itself writes just the 96-byte uniform each frame.
+    - The device requests the adapter's real `max_texture_dimension_2d`.
+  - [src/street.rs](../src/street.rs): `mark_opaque` for overlay cells.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 210 tests. New tests:
+    - whole-pixel offsets reproduce the sharp image exactly;
+    - a grey cell moving across black in quarter-pixel steps keeps its linear-light brightness constant (to 1e-9), while the encoded-space alternative dims by more than 5% between pixels;
+    - coverage at the buffer edges;
+    - layer alpha (0 on sky, 255 on buildings) and revisions after a palette change, a rebase, and a new city;
+    - fractional source offsets;
+    - the scrolling background is sky only, and the overlay is opaque exactly on street cells, with Normal-mode colors.
+  - The shader passes the existing WGSL validation test.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. The GPU output is not compared against the CPU mirror automatically. For the owner: `cargo run -- --endless --deadline 20s`, then watch the far layers glide at `-` (0.25×) and at 4×.
+- **Smooth moon (owner request, 2026-11-03: "we need to do the same for the moon"):**
+  - `moon_at` now also keeps the unrounded `exact_x` and `exact_row`.
+  - [src/moon.rs](../src/moon.rs) `moon_sprite` draws the moon, or the station with its battle, into its own small image: 41 × 41 cells for a plain moon, 161 × 161 on the station lap (the debris reaches about 76 cells out; a test checks a whole destroyed lap fits).
+  - The shader places the sprite at the exact fractional x and y with the same linear-light reconstruction, now bilinear over the four overlapped source pixels.
+  - The sprite is redrawn only on a new lap or phase (every frame on the station lap); otherwise each frame just moves it.
+- **Radio calls (owner idea, 2026-11-03):** on a station lap that ends in destruction, the message box shows "Red-5 Going In" while the red ship flies the trench (5 s), then "Great shot, kid! That was one in a million!" from the climb away until 1 s after the blast (5.5 s). [src/station.rs](../src/station.rs) `radio_line` follows the same schedule as the ship. The calls use the status line, so they take priority over the Endless startup lines; a `--message` hides them (agent default, consistent with the quips). They work in both modes.
+  - Owner feedback: the attack needs to be "at least twice as long", so Red-5 is slowed in the trench. The trench run went from 2.5 s to 5 s (the climb away stays 1.5 s, the fuse 3 s). `--station-fate destroy` now blows up about 15 s after opening, not 12 s, so the run still starts about 5 s in.
+  - Tested: exact start and end times, the ship in the trench during the first call, no calls when the station survives, and the length limit.
+- **One draw order for every mode:** sky and stars, then the moon, then the city, then the overlay (street, trees, traffic), then the message box. The city is the still city in Normal mode and during construction (transparent where nothing is built), or the four layers while Endless scrolls. Buildings hide the moon because they are drawn after it, which replaces the old CPU masking. The still city is recomposed only when construction reveals cells; the overlay only when traffic moves.
+- **More verification (2026-11-03):**
+  - `cargo test`: PASS, 214 tests. New tests:
+    - the exact moon position moves continuously and rounds to the cell position;
+    - the sprite equals the cell-painted moon at whole-cell positions;
+    - the station sprite holds the whole battle;
+    - a sprite gliding diagonally keeps constant linear-light brightness, and the 2D sampler matches the row form;
+    - the still city is opaque exactly on built cells at 0%, 50%, and 100%;
+    - the street overlay covers the horizon.
+    
+    Tests that used to read the single CPU frame now read `Scene::flattened` (sky, still city, overlay).
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: reviewed and approved by the owner ("perfect"), including the radio calls and the 5-second trench run.
+- **Not yet:** the road and trees still stand still (`feature/endless-street`). The stars don't move, by design.
+
+### feature/endless-layers
+
+- **Decisions (owner, 2026-11-03):**
+  - Roadside trees in every palette in Endless mode, as in Normal (the spec has them for Ink on Parchment only). They arrive with `feature/endless-street`.
+  - The moon and the new-moon battle station appear in Endless mode too, unchanged.
+  - Switching modes: `--endless` at launch, or `E` at any time.
+  - Endless "should start like normal mode and once the city is complete then continue on": the city is built cell by cell over 240 s at 1× (or the timer), then scrolls.
+  - While an Endless city is first building, the message box shows silly startup lines ("Calibrating zebra stripes", "Unpacking packaging materials", ...).
+- **Agent defaults (non-blocking, easy to change):**
+  - A quip changes every 4 s of real time, in a seeded shuffled order of 32 lines; all are shown before any repeats. Quips stop when the city is complete.
+  - A `--message` hides the quips, so a meeting screen keeps its message. A palette flash shows over either.
+  - `--endless` may be combined with `--timer`, which times the construction phase (the spec forbids the combination, but the spec has no Endless construction).
+  - `E` rebuilds the city in the other mode with the same seed and keeps construction progress; the Endless camera starts at 0. Normal and Endless cities differ (Endless uses one generator per layer), so the buildings change when switching.
+  - `Space` pauses scrolling and traffic in Endless mode only. The moon keeps real time, and construction continues.
+- **Delivered:**
+  - [src/endless.rs](../src/endless.rs): `EndlessCity` holds four layers, each with its own generator (`seed XOR (0x85ebca6b + L)`, start x -28) and a buffer `2 × cols + 64` wide starting at origin -4, generated through `origin + bufW + 32`.
+    - The camera moves at `2 × speed` cells/s, using at most 1/30 s per frame. Layers follow at 0.2, 0.4, 0.65, and 1.
+    - When a view would leave its buffer, the buffer is rebased to `floor(viewX) - 4`, generation continues ahead, buildings behind `origin - 4` are dropped, and the buffer is redrawn.
+    - `initial_buildings` gives the buildings on screen at camera 0 for the construction phase.
+    - `compose` draws the layers far to near over the sky at whole-cell positions and marks the building cells. It skips rows above `max_h`.
+    - `with_camera` rebuilds at a camera position, so a resize keeps the scroll position.
+  - [src/raster.rs](../src/raster.rs): `RasterOptions` (window state, world origin, buffer width, Endless tint) and `render_options`; `endless_body_color` adds the spec's 10% blend toward each layer's tint target. `CityRaster` has an `origin_x`.
+  - [src/quips.rs](../src/quips.rs): the 32 lines, `quip_order` (a seeded Fisher–Yates), and `quip_at`.
+  - [src/message.rs](../src/message.rs): `Notice` has a status line, shown only when there is no message and no flash.
+  - [src/config.rs](../src/config.rs): `--endless`.
+  - [src/main.rs](../src/main.rs):
+    - An Endless `Scene` reveals the Endless buildings with their windows dark at first, using Endless body colors. On the completing frame it switches to the layers, which then scroll.
+    - The composed layers are cached and recomposed only when a layer moves a whole column. A full compose measured about 10 ms at 1080p in a debug build, and Normal frames cost one copy.
+    - `E`, `Space`, pause, and quips are wired in. The title shows `endless - building N%`, `scrolling Sx`, or `paused`.
+    - Fix: `resize` built its comparison grid without the road rows, so every resize event rebuilt the scene even when the grid was unchanged.
+- **Verification (2026-11-03):**
+  - `cargo test`: PASS, 204 tests. They cover:
+    - the 2-cells/s camera with parallax ratios at 1× and 4×;
+    - the 1/30 s motion clamp, with negative and NaN frames ignored;
+    - whole-column change reporting;
+    - 2 hours at 4×, with buffers always covering the view and building count bounded;
+    - a 20-minute scroll at 4× matching a city built directly at that camera (continuity across rebases);
+    - the construction image equal to the first scrolling frame, pixel for pixel, plus the mask;
+    - per-layer speeds;
+    - palette change without movement;
+    - the 10% layer tint.
+    
+    In the app: an Endless scene starts building with dark windows, doesn't move until complete, then scrolls seamlessly; a resize keeps the camera. Quip tests cover the permutation, the 4 s hold, no repeat before the list is exhausted, the length limit, and bad times. `Notice` priority is tested, and so is `--endless` parsing, including with `--timer`.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. For the owner: `cargo run -- --endless --deadline 30s`, then watch the quips and the hand-off to scrolling; try `Space`, `E`, `P`, and `+`.
+- **Not yet:** layers snap to whole cells (fixed by `feature/endless-compositor`; the owner called this scrolling "terrible"). The road and trees stay still while the layers move (cars still drive), until `feature/endless-street`. There are no clouds yet.
+
 ## REBUILD-003: Normal-mode rendering
 
 | Branch | Contents | Status |
@@ -461,7 +577,7 @@
 
 ## Next candidates
 
-**Next session (owner, 2026-11-03): start Endless mode.** The Rebuild Prompt's plan:
+**Endless mode is in progress (REBUILD-004 above).** The Rebuild Prompt's plan:
 - four independent parallax layers;
 - a sharp device-resolution cache per layer, reconstructed at fractional scroll in linear light;
 - clouds, the road camera, and traffic;

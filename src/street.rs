@@ -157,6 +157,25 @@ fn apply_lit(
     }
 }
 
+/// Sets alpha to opaque for every cell in `paint`, so a transparent overlay
+/// shows exactly the painted cells. Cells outside the buffer are skipped.
+pub fn mark_opaque(paint: &CellPaint, rgba: &mut [u8]) {
+    for &(cell, _) in paint {
+        if let Some(alpha) = rgba.get_mut(cell * 4 + 3) {
+            *alpha = 255;
+        }
+    }
+}
+
+impl StreetLayer {
+    /// Marks every street cell (road and both tree verges) opaque.
+    pub fn mark_opaque(&self, rgba: &mut [u8]) {
+        mark_opaque(&self.back, rgba);
+        mark_opaque(&self.back_trees, rgba);
+        mark_opaque(&self.front, rgba);
+    }
+}
+
 /// Paints cell colors into an RGBA buffer, skipping cells outside it.
 pub fn apply_paint(paint: &CellPaint, rgba: &mut [u8]) {
     for &(cell, color) in paint {

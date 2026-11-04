@@ -26,7 +26,9 @@ pub const USAGE: &str = "\
 Usage: starry-journey [options]
 
 Options:
-  --pixel-size N     Draw each virtual pixel as N screen pixels (1-16), times
+  --endless          Endless mode: the city is built, then scrolls forever in
+                     four parallax layers. Press E to switch modes any time.
+  --pixel-size N    Draw each virtual pixel as N screen pixels (1-16), times
                      the display scaling. Bigger screens show more city and
                      sky. Default: 3.
   --pixel-size spec  Scale virtual pixels with the screen height instead, so
@@ -45,10 +47,11 @@ Options:
                      one phase per 10-minute lap. Default: waxing-crescent.
   --station-fate F   On the new-moon lap a battle station is under attack:
                      chance (30% it is destroyed, default), destroy (blows up
-                     about 12 s after opening on that lap), or survive.
+                     about 15 s after opening on that lap), or survive.
   -h, --help         Show this help.
 
-Keys: P palette, R new city, +/- speed, F fullscreen, Tab next display, Esc quit.";
+Keys: P palette, R new city, +/- speed, E Normal/Endless, Space pause scrolling,
+F fullscreen, Tab next display, Esc quit.";
 
 /// How big a virtual pixel is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +81,9 @@ pub struct LaunchOptions {
     pub station_fate: StationFate,
     /// Text for the message box (`--message`); `None` hides the box.
     pub message: Option<String>,
+    /// Start in Endless mode (`--endless`). Unlike the spec, a timer is
+    /// allowed: it times the construction that precedes scrolling.
+    pub endless: bool,
     /// True if help was requested.
     pub help: bool,
 }
@@ -90,6 +96,7 @@ impl Default for LaunchOptions {
             moon_start_step: START_PHASE_STEP,
             station_fate: StationFate::default(),
             message: None,
+            endless: false,
             help: false,
         }
     }
@@ -138,6 +145,12 @@ where
         };
         match name.as_str() {
             "-h" | "--help" if inline.is_none() => options.help = true,
+            "--endless" if inline.is_none() => {
+                if options.endless {
+                    return Err("--endless was given more than once".to_string());
+                }
+                options.endless = true;
+            }
             "--pixel-size" => {
                 if pixel_size_given {
                     return Err("--pixel-size was given more than once".to_string());
@@ -376,6 +389,19 @@ mod tests {
         assert!(parse(&["--message", "a", "--message", "b"]).is_err());
         let long = "x".repeat(241);
         assert!(parse(&["--message", &long]).unwrap_err().contains("240"));
+    }
+
+    #[test]
+    fn endless_flag_and_timer_may_be_combined() {
+        assert!(!parse(&[]).unwrap().endless);
+        let options = parse(&["--endless", "--timer", "10m"]).unwrap();
+        assert!(options.endless);
+        assert_eq!(
+            options.clock,
+            ConstructionClock::Duration { seconds: 600.0 }
+        );
+        assert!(parse(&["--endless", "--endless"]).is_err());
+        assert!(parse(&["--endless=yes"]).is_err());
     }
 
     #[test]

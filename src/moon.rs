@@ -135,6 +135,10 @@ pub struct MoonState {
     pub lap: u64,
     /// Seconds into the current lap.
     pub lap_seconds: f64,
+    /// Unrounded center column, for smooth sub-cell motion on the GPU.
+    pub exact_x: f64,
+    /// Unrounded center row.
+    pub exact_row: f64,
 }
 
 /// What one cell of the moon disk shows.
@@ -213,7 +217,8 @@ pub fn moon_at(grid: &Grid, seconds: f64, start_step: u64) -> MoonState {
     let step = (start_step + laps.floor() as u64) % PHASE_STEPS;
     let start_x = -MOON_RADIUS;
     let end_x = grid.cols - 1 + MOON_RADIUS;
-    let x = js_round(f64::from(start_x) + f64::from(end_x - start_x) * t) as i32;
+    let exact_x = f64::from(start_x) + f64::from(end_x - start_x) * t;
+    let x = js_round(exact_x) as i32;
     // At moonrise and moonset the whole disk sits below the road's top edge,
     // hidden behind the street.
     let horizon = grid.ground_row + MOON_RADIUS;
@@ -222,13 +227,75 @@ pub fn moon_at(grid: &Grid, seconds: f64, start_step: u64) -> MoonState {
         .min(f64::from(clear_sky))
         .max(f64::from(MOON_RADIUS + 1)) as i32;
     let lift = f64::from(horizon - apex) * (std::f64::consts::PI * t).sin();
-    let row = js_round(f64::from(horizon) - lift) as i32;
+    let exact_row = f64::from(horizon) - lift;
+    let row = js_round(exact_row) as i32;
     MoonState {
         x,
         row,
         phase: step as f64 / PHASE_STEPS as f64,
         lap: laps.floor() as u64,
         lap_seconds: t * PASS_SECONDS,
+        exact_x,
+        exact_row,
+    }
+}
+
+/// Half-size of the moon sprite for a plain moon (the disk plus one cell).
+pub const MOON_SPRITE_REACH: i32 = MOON_RADIUS + 1;
+/// Half-size of the sprite on the station lap: room for the fighters, the
+/// trench run's escape, the shockwave, and debris (at most about 76 cells
+/// out).
+pub const STATION_SPRITE_REACH: i32 = 80;
+
+/// The moon (or the station and its battle) drawn into its own small
+/// image, which the GPU places at the moon's exact, fractional position so
+/// it glides instead of stepping a whole cell at a time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MoonSprite {
+    /// Width and height in cells (square).
+    pub size: usize,
+    /// RGBA, sRGB-encoded; alpha 255 on the moon and effects, 0 elsewhere.
+    pub rgba: Vec<u8>,
+    /// Screen column of the sprite's left edge (fractional).
+    pub left: f64,
+    /// Screen row of the sprite's top edge (fractional).
+    pub top: f64,
+}
+
+/// Draws `moon` as a sprite. Each sprite cell is the same cell
+/// [`sky_cells`] would paint with the moon at an integer center; the sprite
+/// is offset by the exact position instead. O(sprite cells + battle cells).
+pub fn moon_sprite(moon: &MoonState, palette: &Palette, fate: StationFate) -> MoonSprite {
+    let reach = if is_station(moon) {
+        STATION_SPRITE_REACH
+    } else {
+        MOON_SPRITE_REACH
+    };
+    let size = (2 * reach + 1) as usize;
+    let local = Grid {
+        device_width: size as u32,
+        device_height: size as u32,
+        cell: 1,
+        cols: size as i32,
+        rows: size as i32,
+        ground_row: size as i32,
+        max_h: size as i32,
+    };
+    let centered = MoonState {
+        x: reach,
+        row: reach,
+        ..*moon
+    };
+    let mut rgba = vec![0; size * size * 4];
+    for (cell, color) in sky_cells(&local, &centered, palette, fate) {
+        rgba[cell * 4..cell * 4 + 3].copy_from_slice(&color.0);
+        rgba[cell * 4 + 3] = 255;
+    }
+    MoonSprite {
+        size,
+        rgba,
+        left: moon.exact_x - f64::from(reach),
+        top: moon.exact_row - f64::from(reach),
     }
 }
 
@@ -601,6 +668,76 @@ mod tests {
             moon_cells(&grid, &full, classic),
             "ordinary moons have no battle"
         );
+    }
+
+    #[test]
+    fn exact_position_moves_continuously_and_rounds_to_the_cell_position() {
+        let grid = grid();
+        let a = moon_at(&grid, 100.0, START_PHASE_STEP);
+        let b = moon_at(&grid, 100.05, START_PHASE_STEP);
+        assert_eq!(a.x, js_round(a.exact_x) as i32);
+        assert_eq!(a.row, js_round(a.exact_row) as i32);
+        let dx = b.exact_x - a.exact_x;
+        assert!(
+            dx > 0.0 && dx < 0.1,
+            "a twentieth of a second is a fraction of a cell: {dx}"
+        );
+    }
+
+    #[test]
+    fn sprite_matches_the_cell_painted_moon_and_sits_at_the_exact_position() {
+        let grid = grid();
+        let classic = palette_by_key("classic").unwrap();
+        let mut moon = moon_at(&grid, 120.0, 4); // a full moon, mid-sky
+                                                 // Put the exact position on whole cells so it can be compared.
+        moon.exact_x = f64::from(moon.x);
+        moon.exact_row = f64::from(moon.row);
+        let sprite = moon_sprite(&moon, classic, StationFate::Survive);
+        assert_eq!(sprite.size, (2 * MOON_SPRITE_REACH + 1) as usize);
+        assert_eq!(sprite.left, f64::from(moon.x - MOON_SPRITE_REACH));
+        assert_eq!(sprite.top, f64::from(moon.row - MOON_SPRITE_REACH));
+        let painted = sky_cells(&grid, &moon, classic, StationFate::Survive);
+        assert!(!painted.is_empty());
+        for (cell, color) in painted {
+            let (x, row) = (cell as i32 % grid.cols, cell as i32 / grid.cols);
+            let sx = (x - (moon.x - MOON_SPRITE_REACH)) as usize;
+            let sy = (row - (moon.row - MOON_SPRITE_REACH)) as usize;
+            let at = (sy * sprite.size + sx) * 4;
+            assert_eq!(sprite.rgba[at..at + 3], color.0);
+            assert_eq!(sprite.rgba[at + 3], 255);
+        }
+        let opaque = sprite.rgba.chunks(4).filter(|p| p[3] == 255).count();
+        assert_eq!(
+            opaque,
+            count(FULL, &[MoonPixel::Lit, MoonPixel::Sea, MoonPixel::Dark])
+        );
+    }
+
+    #[test]
+    fn station_sprite_has_room_for_the_whole_battle() {
+        let grid = grid();
+        let classic = palette_by_key("classic").unwrap();
+        let mut moon = moon_at(&grid, 0.0, 0);
+        assert!(is_station(&moon));
+        let sprite = moon_sprite(&moon, classic, StationFate::Destroy);
+        assert_eq!(sprite.size, (2 * STATION_SPRITE_REACH + 1) as usize);
+        // Every battle cell over the lap, including the explosion's debris,
+        // stays inside the sprite (none is clipped away).
+        let reach = STATION_SPRITE_REACH;
+        for tenth in 0..(PASS_SECONDS as i32 * 10) {
+            moon.lap_seconds = f64::from(tenth) / 10.0;
+            let effects = station_effects(
+                moon.lap,
+                moon.lap_seconds,
+                MOON_RADIUS,
+                StationFate::Destroy,
+                PASS_SECONDS,
+                classic,
+            );
+            for (dx, dy, _) in effects.cells {
+                assert!(dx.abs() <= reach && dy.abs() <= reach, "({dx}, {dy})");
+            }
+        }
     }
 
     #[test]

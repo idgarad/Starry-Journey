@@ -13,7 +13,9 @@
 
 use crate::model::building::Building;
 use crate::model::grid::Grid;
-use crate::model::palette::{Palette, Rgb, BODY_FADE_MULTIPLIER, DEPTH_FADES};
+use crate::model::palette::{
+    Palette, Rgb, BODY_FADE_MULTIPLIER, DEPTH_FADES, ENDLESS_LAYER_TINT_BLEND,
+};
 use crate::model::rng::{ambient_seed, js_round, Mulberry32};
 use crate::model::windows::shade_from_level;
 
@@ -112,6 +114,41 @@ pub fn body_color(building: &Building, palette: &Palette) -> Rgb {
     mix(color, palette.bg, fade)
 }
 
+/// An Endless building's body color: [`body_color`], then blended 10%
+/// toward its layer's tint target (Rebuild Prompt).
+pub fn endless_body_color(building: &Building, palette: &Palette) -> Rgb {
+    let target = palette.layer_tint_target(usize::from(building.layer.min(3)));
+    mix(
+        body_color(building, palette),
+        target,
+        ENDLESS_LAYER_TINT_BLEND,
+    )
+}
+
+/// How [`CityRaster::render_options`] draws a city.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RasterOptions {
+    /// Which window state to paint.
+    pub lighting: WindowLighting,
+    /// World x of buffer column 0.
+    pub origin_x: i32,
+    /// Buffer width in columns; `None` for the grid's columns.
+    pub width: Option<usize>,
+    /// Use Endless body colors ([`endless_body_color`]).
+    pub endless_tint: bool,
+}
+
+impl Default for RasterOptions {
+    fn default() -> Self {
+        Self {
+            lighting: WindowLighting::Current,
+            origin_x: 0,
+            width: None,
+            endless_tint: false,
+        }
+    }
+}
+
 /// Landmark light color: the palette's fixed decor color, or the
 /// decoration's hue at the palette's decor lightness.
 pub fn decoration_color(hue: f64, palette: &Palette) -> Rgb {
@@ -132,6 +169,8 @@ pub struct CityRaster {
     pub width: usize,
     /// Rows.
     pub height: usize,
+    /// World x of column 0 (0 for a screen-sized Normal raster).
+    pub origin_x: i32,
     /// RGBA bytes, row-major, top row first, alpha always 255.
     pub rgba: Vec<u8>,
     /// Building index per cell, or [`OWNER_SKY`].
@@ -143,9 +182,10 @@ pub struct CityRaster {
 }
 
 impl CityRaster {
-    /// Buffer index for a column and row, or `None` outside the buffer.
-    /// Negative coordinates never wrap.
+    /// Buffer index for a world column and row, or `None` outside the
+    /// buffer. Negative coordinates never wrap.
     pub fn index(&self, x: i32, row: i32) -> Option<usize> {
+        let x = x - self.origin_x;
         let inside =
             x >= 0 && row >= 0 && (x as usize) < self.width && (row as usize) < self.height;
         inside.then(|| row as usize * self.width + x as usize)
@@ -172,12 +212,30 @@ impl CityRaster {
         palette: &Palette,
         lighting: WindowLighting,
     ) -> Self {
-        let width = grid.cols.max(1) as usize;
+        let options = RasterOptions {
+            lighting,
+            ..RasterOptions::default()
+        };
+        Self::render_options(grid, buildings, stars, palette, options)
+    }
+
+    /// Like [`CityRaster::render`], with full control over the window state,
+    /// the buffer's world origin and width, and Endless body colors.
+    /// O(buffer cells + building area + windows).
+    pub fn render_options(
+        grid: &Grid,
+        buildings: &[Building],
+        stars: &[Star],
+        palette: &Palette,
+        options: RasterOptions,
+    ) -> Self {
+        let width = options.width.unwrap_or(grid.cols.max(1) as usize).max(1);
         let height = grid.rows.max(1) as usize;
         let cells = width * height;
         let mut raster = Self {
             width,
             height,
+            origin_x: options.origin_x,
             rgba: Vec::with_capacity(cells * 4),
             owner: vec![OWNER_SKY; cells],
             window_index: vec![WINDOW_BODY; cells],
@@ -192,7 +250,7 @@ impl CityRaster {
             raster.paint(star.x, star.row, mix(palette.star, palette.bg, star.fade));
         }
         raster.resolve_ownership(grid, buildings);
-        raster.paint_buildings(grid, buildings, palette, lighting);
+        raster.paint_buildings(grid, buildings, palette, options);
         raster
     }
 
@@ -257,9 +315,15 @@ impl CityRaster {
         grid: &Grid,
         buildings: &[Building],
         palette: &Palette,
-        lighting: WindowLighting,
+        options: RasterOptions,
     ) {
-        let bodies: Vec<Rgb> = buildings.iter().map(|b| body_color(b, palette)).collect();
+        let lighting = options.lighting;
+        let tint = if options.endless_tint {
+            endless_body_color
+        } else {
+            body_color
+        };
+        let bodies: Vec<Rgb> = buildings.iter().map(|b| tint(b, palette)).collect();
         let beacon_rows: Vec<Option<(i32, i32)>> = buildings
             .iter()
             .map(|b| b.mast.map(|m| (m.x, grid.row_for_height(m.h1 - 1))))
@@ -272,7 +336,10 @@ impl CityRaster {
             let body = bodies[owner];
             let color = match self.window_index[i] {
                 WINDOW_MAST => {
-                    let cell = ((i % self.width) as i32, (i / self.width) as i32);
+                    let cell = (
+                        (i % self.width) as i32 + self.origin_x,
+                        (i / self.width) as i32,
+                    );
                     if beacon_rows[owner] == Some(cell) {
                         palette.beacon
                     } else {
