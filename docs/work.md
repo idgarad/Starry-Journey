@@ -93,6 +93,47 @@
   - `cargo clippy --all-targets`: clean.
   - The agent reviewed CPU renders that mirror the shader: a crescent behind overcast, and a full moon behind a storm.
 - **Builds now go to `target/agent`:** the owner had the app running, which locked `target/debug`.
+- **Reference-matched redesign (owner, 2026-11-04):** the owner supplied two references: outlined pixel-art cumulus ("more of a look like this"), and billowing distant cumulus "for far distant clouds". Clouds are now two layers, each with its own depth.
+  - **Near clouds (first reference):**
+    - rounded lobes on a flat base (the biggest near the middle), a filled base, and a short 2-5 cell tail;
+    - a one-cell outline, a shadow band along the bottom quarter, and a highlight just under the top outline;
+    - creases on the upper arc of a lobe where it overlaps one behind it;
+    - about 3-4 times wider than tall;
+    - outlines facing a moon of at least half brightness become highlights (a silver lining).
+  - **Far clouds (second reference):**
+    - towers of rounded puffs (one to three peaks), standing on the horizon behind the city, with no outline;
+    - each puff is shaded like a sphere lit from the moon's direction (Lambert), with sky light on upward faces and darker lower puffs;
+    - a lumpy horizon bank for broken, overcast, and storm skies, mostly dark and lit only along its upper rims;
+    - far wind is 0.12 cells/s, and Endless parallax 0.04 of the camera (near: 0.35 and 0.1).
+  - Draw order: sky, moon, far clouds, near clouds, city, street. The smooth moon glow applies to both layers (a shared `moonlit` function in the shader).
+  - Deviation: outlines step one cell at a time, like the reference, not in the spec's two-cell strips.
+  - The far layer uses its own texture (binding 13) and uniform slot, and its own seed (the cloud seed XOR a salt).
+  - **Tuning by looking (agent, CPU renders mirroring the shader):**
+    - Problems seen: concentric crease arcs on every lobe; tails showing as long base lines; towers reading as rocky hills; a storm bank like a pile of shaded balls; flat-topped bank lumps.
+    - Fixes:
+      - creases limited to upper arcs over a lobe behind;
+      - 2-5 cell tails;
+      - bigger tower puffs with more tonal range;
+      - a dark, rim-lit bank;
+      - bank lumps stop before they reach the top of their box.
+    - Near-cloud creases may still be busier than the reference; this is for the owner to judge.
+  - **Bug found by a test:** `f64::signum(0.0)` is `1.0` in Rust, so a moon straight above a cell lit the wrong outline side. A three-way sign is used instead.
+  - `cargo test`: PASS, 240 tests. The cloud tests were rewritten for the new shapes. They check:
+    - flat bottoms, lobed tops, and proportions;
+    - outline, shadow, body, and highlight roles, and that creases exist;
+    - far clouds stand on the horizon, their side facing the moon is brighter, and a full moon lights them more than a new one;
+    - coverage rises with the preset in both layers, and storms cover more than half the sky in total;
+    - the opacity caps;
+    - wind and parallax per layer;
+    - an hour of wrapping in both layers;
+    - determinism;
+    - layer tones, and storms darker than fair weather;
+    - the glow and the crescent lean;
+    - the silver lining;
+    - the strip offset.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 - **Verification (2026-11-03):**
   - `cargo test`: PASS, 241 tests after the redesign (238 before it). The redesign adds tests that:
     - every shape is built of two-row strips;

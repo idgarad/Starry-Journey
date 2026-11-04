@@ -5,8 +5,9 @@
 // Draw order (Rebuild Prompt, "Final draw order"), in linear light:
 // 1. background: the sky and stars;
 // 2. the moon (or battle station), at its exact fractional position;
-// 2b. the clouds, lit on the CPU, slid with the wind and (in Endless) a
-//    tenth of the camera, in front of the moon and behind the city;
+// 2b. the far clouds (towers and a horizon bank), then the near clouds,
+//    lit on the CPU, slid with their wind and (in Endless) a fraction of
+//    the camera, in front of the moon and behind the city;
 // 3. the city: in Normal mode and during construction, the still city
 //    (transparent where nothing is built yet); while Endless scrolls, the
 //    four layers, far to near, at fractional positions;
@@ -52,6 +53,9 @@ struct Params {
     moon_glow: vec4<f32>,
     // The glow's color in linear light (the palette's star color).
     glow_color: vec4<f32>,
+    // Far clouds: x device pixels from their strip's left edge to the
+    // screen's left edge; z: 1 when there are far clouds.
+    far_clouds: vec4<f32>,
 }
 
 // Vehicle slots in the atlas; the atlas holds every beam sprite (rows
@@ -72,6 +76,7 @@ const VEHICLE_ROWS: i32 = 2;
 @group(0) @binding(10) var street_front: texture_2d<f32>;
 @group(0) @binding(11) var vehicle_atlas: texture_2d<f32>;
 @group(0) @binding(12) var cloud_strip: texture_2d<f32>;
+@group(0) @binding(13) var far_cloud_strip: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -151,6 +156,18 @@ fn vehicle_sample(slot: u32, body: bool, position: vec2<f32>) -> vec4<f32> {
     return mix(top, bottom, t.y);
 }
 
+// Moonlight glowing through a cloud: a smooth falloff in linear light
+// (clouds::moon_glow), weighted by the cloud's opacity `alpha`, so it
+// lights clouds but never open sky and never steps into rings.
+fn moonlit(color: vec3<f32>, alpha: f32, position: vec2<f32>) -> vec3<f32> {
+    if (params.moon_glow.w <= 0.0) {
+        return color;
+    }
+    let distance = length(position - params.moon_glow.xy);
+    let fade = max(0.0, 1.0 - distance / params.moon_glow.z);
+    return color + params.glow_color.rgb * params.moon_glow.w * fade * fade * alpha;
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -168,17 +185,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (params.moon.z > 0.5) {
         color = over(sharp_sample(moon_sprite, params.moon.xy, position.xy), color);
     }
+    // Far clouds, then near clouds, each with the moon's glow on them.
+    if (params.far_clouds.z > 0.5) {
+        let far = sharp_sample(far_cloud_strip, vec2<f32>(params.far_clouds.x, 0.0), position.xy);
+        color = moonlit(over(far, color), far.a, position.xy);
+    }
     if (params.clouds.z > 0.5) {
         let cloud = sharp_sample(cloud_strip, vec2<f32>(params.clouds.x, 0.0), position.xy);
-        color = over(cloud, color);
-        // Moonlight glowing through the clouds: a smooth falloff in linear
-        // light (clouds::moon_glow), weighted by the cloud's opacity, so it
-        // lights clouds but never open sky and never steps into rings.
-        if (params.moon_glow.w > 0.0) {
-            let distance = length(position.xy - params.moon_glow.xy);
-            let fade = max(0.0, 1.0 - distance / params.moon_glow.z);
-            color += params.glow_color.rgb * params.moon_glow.w * fade * fade * cloud.a;
-        }
+        color = moonlit(over(cloud, color), cloud.a, position.xy);
     }
     if (params.cell.z > 0.5) {
         color = over(premultiplied(still_city, texel.x, texel.y), color);
