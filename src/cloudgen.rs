@@ -57,8 +57,10 @@ pub const HEAP_SPACING: f64 = 110.0;
 /// then 600 s, still too fast).
 pub const LIFETIME_CALM: f64 = 1800.0;
 /// Typical seconds a heap lives in a boiling storm (first version: 20 s,
-/// then 100 s).
-pub const LIFETIME_STORM: f64 = 300.0;
+/// then 100 s, then 300 s; owner, 2026-11-04, watching a storm at 4x:
+/// "fade still too fast"). The boil (see `churn_offset`) keeps storms
+/// lively.
+pub const LIFETIME_STORM: f64 = 900.0;
 // Checked when building: at least three times the second version's lives.
 const _: () = assert!(LIFETIME_CALM >= 3.0 * 600.0 && LIFETIME_STORM >= 3.0 * 100.0);
 /// Rows of cumulus from overhead to the horizon.

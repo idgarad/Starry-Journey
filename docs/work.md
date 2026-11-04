@@ -392,6 +392,14 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent.
+- **Slower storm fades (owner, 2026-11-04):** "yep fade still too fast at x4".
+  - `cloudgen::LIFETIME_STORM` is 900 s (was 300 s). Calm stays 1800 s. Covers in between interpolate by churn.
+  - Measured in a storm, mass 10%-90%: fade-in and fade-out both take a median 140 s (was 47 s), and the quickest 10% about 86 s (was 29 s). At 4x that is about 35 s and 21 s of real time.
+  - The storm boil is unchanged.
+  - `cargo test`: PASS, 258 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
