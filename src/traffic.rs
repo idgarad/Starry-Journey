@@ -9,12 +9,17 @@
 //! times the speed setting. Vehicles enter from off-screen, never overlap
 //! in a lane (a faster vehicle drops back behind a slower one), and are
 //! replaced with fresh ones after leaving the screen.
+//!
+//! Positions are world columns. In Normal mode the view stays at 0, so
+//! world and screen columns agree; in Endless mode [`Traffic::set_view`]
+//! follows the road camera, vehicles drive relative to the road, and they
+//! enter and leave relative to the moving view.
 
 use crate::model::grid::Grid;
 use crate::model::palette::{Palette, Rgb};
 use crate::model::rng::{ambient_seed, js_round, Mulberry32};
 use crate::raster::mix;
-use crate::street::CellPaint;
+use crate::street::{CellPaint, Span};
 
 /// Seed salt for the traffic stream (kept apart from the star stream that
 /// also derives from the ambient seed).
@@ -146,6 +151,8 @@ impl Vehicle {
 pub struct Traffic {
     rng: Mulberry32,
     cols: i32,
+    /// World column at the screen's left edge (the road camera).
+    view_x: f64,
     /// Vehicles currently on (or approaching) the road.
     pub vehicles: Vec<Vehicle>,
 }
@@ -157,6 +164,7 @@ impl Traffic {
         let mut traffic = Self {
             rng: Mulberry32::new(ambient_seed(scene_seed) ^ TRAFFIC_SALT),
             cols: cols.max(1),
+            view_x: 0.0,
             vehicles: Vec::new(),
         };
         let count = vehicle_count(cols);
@@ -174,6 +182,19 @@ impl Traffic {
         traffic
     }
 
+    /// Moves the view (the road camera) to world column `view_x`. Vehicles
+    /// keep their world positions; entries and exits follow the view.
+    pub fn set_view(&mut self, view_x: f64) {
+        if view_x.is_finite() {
+            self.view_x = view_x;
+        }
+    }
+
+    /// The world column at the screen's left edge.
+    pub fn view_x(&self) -> f64 {
+        self.view_x
+    }
+
     /// A fresh vehicle waiting off-screen at the lane's entry, staggered by
     /// up to half a screen so arrivals are spread out.
     fn spawn(&mut self, lane: Lane) -> Vehicle {
@@ -185,8 +206,8 @@ impl Traffic {
         let color = rng.rand_int(0, 255) as usize;
         let stagger = rng.next_f64() * f64::from(self.cols) / 2.0;
         let x = match lane {
-            Lane::Upper => f64::from(self.cols) + 1.0 + stagger,
-            Lane::Lower => -f64::from(length) - 1.0 - stagger,
+            Lane::Upper => self.view_x + f64::from(self.cols) + 1.0 + stagger,
+            Lane::Lower => self.view_x - f64::from(length) - 1.0 - stagger,
         };
         Vehicle {
             lane,
@@ -210,8 +231,8 @@ impl Traffic {
         for index in 0..self.vehicles.len() {
             let vehicle = &self.vehicles[index];
             let gone = match vehicle.lane {
-                Lane::Upper => vehicle.x + f64::from(vehicle.length) < -1.0,
-                Lane::Lower => vehicle.x > f64::from(self.cols) + 1.0,
+                Lane::Upper => vehicle.x + f64::from(vehicle.length) < self.view_x - 1.0,
+                Lane::Lower => vehicle.x > self.view_x + f64::from(self.cols) + 1.0,
             };
             if gone {
                 let lane = vehicle.lane;
@@ -292,49 +313,134 @@ impl Traffic {
     /// Paints headlight beams, then vehicles, onto `paint` (cells inside the
     /// grid only). Beams are drawn first so vehicles stay on top of them.
     pub fn paint(&self, grid: &Grid, palette: &Palette, paint: &mut CellPaint) {
-        let mut push = |x: i32, row: i32, color: Rgb| {
-            if (0..grid.cols).contains(&x) && (0..grid.rows).contains(&row) {
-                paint.push((row as usize * grid.cols as usize + x as usize, color));
+        self.paint_span(grid, Span::screen(grid), palette, paint);
+    }
+
+    /// Like [`Traffic::paint`], into a buffer covering the world strip
+    /// `span` (cells outside it are skipped).
+    pub fn paint_span(&self, grid: &Grid, span: Span, palette: &Palette, paint: &mut CellPaint) {
+        let mut push = |(x, row, color): (i32, i32, Rgb)| {
+            if let Some(cell) = span.index(x, row) {
+                paint.push((cell, color));
             }
         };
         for vehicle in &self.vehicles {
             let top = grid.ground_row + vehicle.lane.top_offset();
-            let bottom = top + 1;
-            let ahead = vehicle.lane.direction() as i32;
-            for (step, strength) in BEAM.iter().enumerate() {
-                let x = vehicle.front() + ahead * (step as i32 + 1);
-                let lit = mix(palette.road, palette.headlight, *strength);
-                push(x, bottom, lit);
-                if step >= BEAM_SPREAD_FROM {
-                    push(x, top, mix(palette.road, palette.headlight, strength * 0.6));
-                }
-            }
+            beam_cells(vehicle, top, palette)
+                .into_iter()
+                .for_each(&mut push);
         }
         for vehicle in &self.vehicles {
             let top = grid.ground_row + vehicle.lane.top_offset();
-            let bottom = top + 1;
-            let body = palette.vehicles[vehicle.color % palette.vehicles.len()];
-            let left = js_round(vehicle.x) as i32;
-            for x in left..left + vehicle.length {
-                push(x, bottom, body);
-            }
-            // Upper row: a cabin inset from both ends for cars, the full
-            // trailer except the front cell for trucks.
-            let (front, rear) = (vehicle.front(), vehicle.rear());
-            for x in left..left + vehicle.length {
-                let cabin = if vehicle.truck {
-                    x != front
-                } else {
-                    x != front && x != rear
-                };
-                if cabin {
-                    push(x, top, body);
-                }
-            }
-            push(front, bottom, palette.headlight);
-            push(rear, bottom, palette.taillight);
+            body_cells(vehicle, top, palette)
+                .into_iter()
+                .for_each(&mut push);
         }
     }
+
+    /// Each vehicle as a small sprite for smooth, sub-cell motion on the
+    /// GPU: its beam and its body in separate images (all beams are drawn
+    /// before any body, so a follower's beam never covers the car ahead),
+    /// placed at the vehicle's unrounded position. O(vehicles).
+    pub fn sprites(&self, grid: &Grid, palette: &Palette) -> Vec<VehicleSprite> {
+        self.vehicles
+            .iter()
+            .map(|vehicle| VehicleSprite::new(vehicle, grid, palette))
+            .collect()
+    }
+}
+
+/// Columns in a vehicle sprite: the longest truck plus its beam.
+pub const SPRITE_WIDTH: usize = TRUCK_LENGTH.1 as usize + BEAM.len();
+/// Rows in a vehicle sprite.
+pub const SPRITE_ROWS: usize = 2;
+
+/// One vehicle drawn into its own small image (see [`Traffic::sprites`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct VehicleSprite {
+    /// Headlight beam, `SPRITE_WIDTH x SPRITE_ROWS` RGBA (alpha 0 or 255).
+    pub beam: Vec<[u8; 4]>,
+    /// Body, cabin, headlight, and taillight, same layout.
+    pub body: Vec<[u8; 4]>,
+    /// World column of the sprite's left edge (fractional).
+    pub left: f64,
+    /// Grid row of the sprite's top row.
+    pub top_row: i32,
+}
+
+impl VehicleSprite {
+    fn new(vehicle: &Vehicle, grid: &Grid, palette: &Palette) -> Self {
+        // A leftward vehicle's beam is to its left, so its body starts after
+        // room for the beam.
+        let pad = match vehicle.lane {
+            Lane::Upper => BEAM.len() as i32,
+            Lane::Lower => 0,
+        };
+        let local = Vehicle {
+            x: f64::from(pad),
+            ..vehicle.clone()
+        };
+        let image = |cells: Vec<(i32, i32, Rgb)>| {
+            let mut rgba = vec![[0u8; 4]; SPRITE_WIDTH * SPRITE_ROWS];
+            for (x, row, color) in cells {
+                if (0..SPRITE_WIDTH as i32).contains(&x) && (0..SPRITE_ROWS as i32).contains(&row) {
+                    let [r, g, b] = color.0;
+                    rgba[row as usize * SPRITE_WIDTH + x as usize] = [r, g, b, 255];
+                }
+            }
+            rgba
+        };
+        Self {
+            beam: image(beam_cells(&local, 0, palette)),
+            body: image(body_cells(&local, 0, palette)),
+            left: vehicle.x - f64::from(pad),
+            top_row: grid.ground_row + vehicle.lane.top_offset(),
+        }
+    }
+}
+
+/// A vehicle's headlight beam cells `(x, row, color)` with its top row at
+/// `top`: four cells ahead on the lower row, fading, the far two also on
+/// the upper row.
+fn beam_cells(vehicle: &Vehicle, top: i32, palette: &Palette) -> Vec<(i32, i32, Rgb)> {
+    let bottom = top + 1;
+    let ahead = vehicle.lane.direction() as i32;
+    let mut cells = Vec::new();
+    for (step, strength) in BEAM.iter().enumerate() {
+        let x = vehicle.front() + ahead * (step as i32 + 1);
+        cells.push((x, bottom, mix(palette.road, palette.headlight, *strength)));
+        if step >= BEAM_SPREAD_FROM {
+            cells.push((x, top, mix(palette.road, palette.headlight, strength * 0.6)));
+        }
+    }
+    cells
+}
+
+/// A vehicle's body cells `(x, row, color)` with its top row at `top`.
+fn body_cells(vehicle: &Vehicle, top: i32, palette: &Palette) -> Vec<(i32, i32, Rgb)> {
+    let bottom = top + 1;
+    let body = palette.vehicles[vehicle.color % palette.vehicles.len()];
+    let left = js_round(vehicle.x) as i32;
+    let mut cells = Vec::new();
+    for x in left..left + vehicle.length {
+        cells.push((x, bottom, body));
+    }
+    // Upper row: a cabin inset from both ends for cars, the full trailer
+    // except the front cell for trucks.
+    let (front, rear) = (vehicle.front(), vehicle.rear());
+    for x in left..left + vehicle.length {
+        let cabin = if vehicle.truck {
+            x != front
+        } else {
+            x != front && x != rear
+        };
+        if cabin {
+            cells.push((x, top, body));
+        }
+    }
+    cells.push((front, bottom, palette.headlight));
+    cells.push((rear, bottom, palette.taillight));
+    cells
 }
 
 /// Vehicles for a road `cols` wide: `clamp(round(cols / 100), 2, 6)`.
@@ -351,6 +457,79 @@ mod tests {
 
     fn grid() -> Grid {
         Grid::with_scaling(1920, 1080, true, CellScaling::Fixed(3))
+    }
+
+    #[test]
+    fn sprites_at_whole_cells_draw_exactly_what_the_cell_painter_draws() {
+        let grid = grid();
+        let classic = palette_by_key("classic").unwrap();
+        let mut traffic = Traffic::new(21, grid.cols);
+        traffic.vehicles = vec![
+            Vehicle {
+                lane: Lane::Upper,
+                x: 100.0,
+                length: 5,
+                truck: false,
+                speed: 10.0,
+                color: 1,
+            },
+            Vehicle {
+                lane: Lane::Lower,
+                x: 300.0,
+                length: 9,
+                truck: true,
+                speed: 12.0,
+                color: 2,
+            },
+        ];
+        for (index, sprite) in traffic.sprites(&grid, classic).iter().enumerate() {
+            let alone = Traffic {
+                vehicles: vec![traffic.vehicles[index].clone()],
+                ..traffic.clone()
+            };
+            let mut painted = CellPaint::new();
+            alone.paint(&grid, classic, &mut painted);
+            // The painter draws beams first, then the body over them.
+            let mut expected = std::collections::HashMap::new();
+            for (cell, color) in painted {
+                expected.insert(cell, color);
+            }
+            let mut drawn = std::collections::HashMap::new();
+            for layer in [&sprite.beam, &sprite.body] {
+                for (i, pixel) in layer.iter().enumerate() {
+                    if pixel[3] == 255 {
+                        let x = sprite.left as i32 + (i % SPRITE_WIDTH) as i32;
+                        let row = sprite.top_row + (i / SPRITE_WIDTH) as i32;
+                        let cell = (row * grid.cols + x) as usize;
+                        drawn.insert(cell, Rgb([pixel[0], pixel[1], pixel[2]]));
+                    }
+                }
+            }
+            assert_eq!(drawn, expected, "vehicle {index}");
+        }
+    }
+
+    #[test]
+    fn sprites_sit_at_the_unrounded_position() {
+        let grid = grid();
+        let classic = palette_by_key("classic").unwrap();
+        let mut traffic = Traffic::new(22, grid.cols);
+        traffic.vehicles.truncate(2);
+        traffic.vehicles[0].lane = Lane::Upper;
+        traffic.vehicles[0].x = 50.37;
+        traffic.vehicles[1].lane = Lane::Lower;
+        traffic.vehicles[1].x = 80.62;
+        let sprites = traffic.sprites(&grid, classic);
+        assert!((sprites[0].left - (50.37 - BEAM.len() as f64)).abs() < 1e-12);
+        assert!((sprites[1].left - 80.62).abs() < 1e-12);
+        assert_eq!(sprites[0].top_row, grid.ground_row + 1);
+        assert_eq!(sprites[1].top_row, grid.ground_row + 4);
+        for sprite in &sprites {
+            assert_eq!(sprite.beam.len(), SPRITE_WIDTH * SPRITE_ROWS);
+            assert!(sprite.body.iter().any(|p| p[..3] == classic.headlight.0));
+            assert!(sprite.beam.iter().any(|p| p[3] == 255));
+        }
+        assert!(SPRITE_WIDTH >= TRUCK_LENGTH.1 as usize + BEAM.len());
     }
 
     fn run(traffic: &mut Traffic, seconds: f64) {
@@ -398,6 +577,45 @@ mod tests {
                 Lane::Lower => assert!(moved >= 0.0),
             }
         }
+    }
+
+    #[test]
+    fn traffic_keeps_flowing_past_a_moving_view() {
+        // The Endless road camera at 4x: 8 cells per second to the right.
+        let cols = 640;
+        let mut traffic = Traffic::new(13, cols);
+        let mut view = 0.0;
+        let mut on_screen_frames = 0;
+        for _ in 0..(10 * 60 * 60) {
+            view += 8.0 / 60.0;
+            traffic.set_view(view);
+            traffic.step(1.0 / 60.0, 4.0);
+            assert_eq!(traffic.vehicles.len(), 6);
+            let visible = traffic
+                .vehicles
+                .iter()
+                .any(|v| v.x + f64::from(v.length) > view && v.x < view + f64::from(cols));
+            on_screen_frames += usize::from(visible);
+            for vehicle in &traffic.vehicles {
+                // Waiting vehicles stay within a screen and a half of the
+                // view; none is left behind for good.
+                assert!(vehicle.x > view - 1.5 * f64::from(cols), "{}", vehicle.x);
+                assert!(vehicle.x < view + 2.5 * f64::from(cols), "{}", vehicle.x);
+            }
+        }
+        assert!(
+            on_screen_frames > 10 * 60 * 60 * 9 / 10,
+            "{on_screen_frames}"
+        );
+        // A new vehicle enters just off-screen relative to the view.
+        let mut fresh = Traffic::new(14, cols);
+        fresh.set_view(1000.0);
+        let spawned = fresh.spawn(Lane::Upper);
+        assert!(spawned.x > 1000.0 + f64::from(cols));
+        let spawned = fresh.spawn(Lane::Lower);
+        assert!(spawned.x + f64::from(spawned.length) < 1000.0);
+        fresh.set_view(f64::NAN);
+        assert_eq!(fresh.view_x(), 1000.0, "a bad view is ignored");
     }
 
     #[test]

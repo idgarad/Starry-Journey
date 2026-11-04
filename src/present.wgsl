@@ -8,8 +8,12 @@
 // 3. the city: in Normal mode and during construction, the still city
 //    (transparent where nothing is built yet); while Endless scrolls, the
 //    four layers, far to near, at fractional positions;
-// 4. the overlay: street, trees, and traffic;
-// 5. the message box.
+// 4. the street's back layer (road and background trees), in world
+//    columns, slid with the road camera like the nearest layer;
+// 5. the vehicles, each at its own fractional position: every headlight
+//    beam first, then every body, so a beam never covers the car ahead;
+// 6. the street's front layer (foreground trees);
+// 7. the message box.
 // Buildings hide the moon because they are drawn after it.
 //
 // Moving images are reconstructed as the spec describes: treat the image as
@@ -23,7 +27,9 @@
 
 struct Params {
     // x: device pixels per cell; y: 1 when the Endless layers are drawn;
-    // z: 1 when the still city is drawn; w unused (16-byte alignment).
+    // z: 1 when the still city is drawn; w: device pixels from the street
+    // overlay's left edge to the screen's left edge (fractional; 0 in
+    // Normal mode).
     cell: vec4<f32>,
     // Message box x, y, width, height in device pixels; width 0 hides it.
     message: vec4<f32>,
@@ -33,7 +39,15 @@ struct Params {
     // Moon: x, y device pixels from the sprite's top-left to the screen's
     // top-left (fractional); z: 1 when the moon is drawn; w unused.
     moon: vec4<f32>,
+    // Per vehicle slot: x, y device pixels from the sprite's top-left to
+    // the screen's top-left; z: 1 when the slot holds a vehicle.
+    vehicles: array<vec4<f32>, 6>,
 }
+
+// Vehicle slots in the atlas; the atlas holds every beam sprite (rows
+// 2 * slot) above every body sprite (rows 12 + 2 * slot).
+const VEHICLE_SLOTS: u32 = 6u;
+const VEHICLE_ROWS: i32 = 2;
 
 @group(0) @binding(0) var background: texture_2d<f32>;
 @group(0) @binding(1) var<uniform> params: Params;
@@ -45,6 +59,8 @@ struct Params {
 @group(0) @binding(7) var layer3: texture_2d<f32>;
 @group(0) @binding(8) var moon_sprite: texture_2d<f32>;
 @group(0) @binding(9) var still_city: texture_2d<f32>;
+@group(0) @binding(10) var street_front: texture_2d<f32>;
+@group(0) @binding(11) var vehicle_atlas: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -93,6 +109,37 @@ fn sharp_sample(tex: texture_2d<f32>, offset: vec2<f32>, position: vec2<f32>) ->
     return mix(top, bottom, t.y);
 }
 
+// One vehicle sprite texel, premultiplied; transparent outside the slot.
+fn vehicle_texel(x: i32, row: i32, base_row: i32) -> vec4<f32> {
+    let width = i32(textureDimensions(vehicle_atlas).x);
+    if (x < 0 || x >= width || row < 0 || row >= VEHICLE_ROWS) {
+        return vec4<f32>(0.0);
+    }
+    return premultiplied(vehicle_atlas, x, base_row + row);
+}
+
+// A vehicle sprite (its beam or its body) at its fractional position,
+// reconstructed like sharp_sample but confined to its atlas slot.
+fn vehicle_sample(slot: u32, body: bool, position: vec2<f32>) -> vec4<f32> {
+    let placement = params.vehicles[slot];
+    if (placement.z < 0.5) {
+        return vec4<f32>(0.0);
+    }
+    var base_row = i32(slot) * VEHICLE_ROWS;
+    if (body) {
+        base_row += i32(VEHICLE_SLOTS) * VEHICLE_ROWS;
+    }
+    let cell = params.cell.x;
+    let u = floor(position) + placement.xy;
+    let first = floor(u);
+    let t = u - first;
+    let c0 = vec2<i32>(floor(first / cell));
+    let c1 = vec2<i32>(floor((first + 1.0) / cell));
+    let top = mix(vehicle_texel(c0.x, c0.y, base_row), vehicle_texel(c1.x, c0.y, base_row), t.x);
+    let bottom = mix(vehicle_texel(c0.x, c1.y, base_row), vehicle_texel(c1.x, c1.y, base_row), t.x);
+    return mix(top, bottom, t.y);
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -120,7 +167,15 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         color = over(sharp_sample(layer2, vec2<f32>(params.layers[2].x, 0.0), p), color);
         color = over(sharp_sample(layer3, vec2<f32>(params.layers[3].x, 0.0), p), color);
     }
-    color = over(premultiplied(overlay, texel.x, texel.y), color);
+    let street_offset = vec2<f32>(params.cell.w, 0.0);
+    color = over(sharp_sample(overlay, street_offset, position.xy), color);
+    for (var slot = 0u; slot < VEHICLE_SLOTS; slot++) {
+        color = over(vehicle_sample(slot, false, position.xy), color);
+    }
+    for (var slot = 0u; slot < VEHICLE_SLOTS; slot++) {
+        color = over(vehicle_sample(slot, true, position.xy), color);
+    }
+    color = over(sharp_sample(street_front, street_offset, position.xy), color);
 
     // The message box is premultiplied sRGB, blended in sRGB like a browser.
     let local = vec2<i32>(floor(position.xy - params.message.xy));
