@@ -8,6 +8,7 @@
 //! and GPU presentation.
 
 pub mod clock;
+pub mod clouds;
 pub mod config;
 pub mod endless;
 pub mod message;

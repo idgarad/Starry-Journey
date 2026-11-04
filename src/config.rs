@@ -9,6 +9,7 @@
 //! reported as an error message; the binary exits with code 2.
 
 use crate::clock::{parse_duration, ConstructionClock};
+use crate::clouds::Cover;
 use crate::message::parse_message;
 use crate::model::grid::CellScaling;
 use crate::model::rng::js_round;
@@ -26,6 +27,8 @@ pub const USAGE: &str = "\
 Usage: starry-journey [options]
 
 Options:
+  --clouds C         Cloud cover: clear, puffs, scattered (default), broken,
+                     overcast, or storm. Press C to cycle it.
   --endless          Endless mode: the city is built, then scrolls forever in
                      four parallax layers. Press E to switch modes any time.
   --pixel-size N    Draw each virtual pixel as N screen pixels (1-16), times
@@ -50,7 +53,7 @@ Options:
                      about 15 s after opening on that lap), or survive.
   -h, --help         Show this help.
 
-Keys: P palette, R new city, +/- speed, E Normal/Endless, Space pause scrolling,
+Keys: P palette, C clouds, R new city, +/- speed, E Normal/Endless, Space pause,
 F fullscreen, Tab next display, Esc quit.";
 
 /// How big a virtual pixel is.
@@ -84,6 +87,8 @@ pub struct LaunchOptions {
     /// Start in Endless mode (`--endless`). Unlike the spec, a timer is
     /// allowed: it times the construction that precedes scrolling.
     pub endless: bool,
+    /// Cloud cover preset (`--clouds`).
+    pub clouds: Cover,
     /// True if help was requested.
     pub help: bool,
 }
@@ -97,6 +102,7 @@ impl Default for LaunchOptions {
             station_fate: StationFate::default(),
             message: None,
             endless: false,
+            clouds: Cover::default(),
             help: false,
         }
     }
@@ -137,6 +143,7 @@ where
     let mut moon_given = false;
     let mut fate_given = false;
     let mut message_given = false;
+    let mut clouds_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -202,6 +209,17 @@ where
                         ))
                     }
                 };
+            }
+            "--clouds" => {
+                if clouds_given {
+                    return Err("--clouds was given more than once".to_string());
+                }
+                clouds_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--clouds needs a cover, for example --clouds storm")?;
+                options.clouds =
+                    Cover::parse(&value).map_err(|message| format!("--clouds {message}"))?;
             }
             "--message" => {
                 if message_given {
@@ -402,6 +420,21 @@ mod tests {
         );
         assert!(parse(&["--endless", "--endless"]).is_err());
         assert!(parse(&["--endless=yes"]).is_err());
+    }
+
+    #[test]
+    fn clouds_option_picks_a_cover() {
+        assert_eq!(parse(&[]).unwrap().clouds, Cover::Scattered);
+        assert_eq!(parse(&["--clouds", "storm"]).unwrap().clouds, Cover::Storm);
+        assert_eq!(
+            parse(&["--clouds=Overcast"]).unwrap().clouds,
+            Cover::Overcast
+        );
+        assert!(parse(&["--clouds", "drizzle"])
+            .unwrap_err()
+            .starts_with("--clouds"));
+        assert!(parse(&["--clouds"]).is_err());
+        assert!(parse(&["--clouds", "clear", "--clouds", "storm"]).is_err());
     }
 
     #[test]

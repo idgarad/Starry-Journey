@@ -15,6 +15,7 @@ use std::{
 };
 
 use starry_journey::clock::{format_remaining, ConstructionClock};
+use starry_journey::clouds::{CloudField, CloudLights, Cover, MoonLight};
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
 use starry_journey::endless::EndlessCity;
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
@@ -23,7 +24,7 @@ use starry_journey::model::city::generate_normal_city;
 use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
 use starry_journey::moon::{
-    is_station, moon_at, moon_sprite, MoonState, MOON_SPRITE_REACH, PASS_SECONDS,
+    is_station, moon_at, moon_sprite, MoonState, MOON_DIAMETER, MOON_SPRITE_REACH, PASS_SECONDS,
     STATION_SPRITE_REACH,
 };
 use starry_journey::quips::quip_at;
@@ -168,6 +169,11 @@ impl ApplicationHandler for App {
                         KeyCode::KeyP => {
                             if let Some(renderer) = &mut self.renderer {
                                 renderer.next_palette();
+                            }
+                        }
+                        KeyCode::KeyC => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.next_cover();
                             }
                         }
                         KeyCode::KeyE => {
@@ -650,6 +656,15 @@ struct Renderer {
     station_fate: StationFate,
     /// Endless scrolling and traffic are paused (`Space`).
     paused: bool,
+    /// The clouds, rebuilt with the scene (same seed and grid).
+    clouds: CloudField,
+    /// The cloud cover preset (`--clouds`, cycled with `C`).
+    cover: Cover,
+    /// The cloud strip image, lit by the moon.
+    cloud_texture: wgpu::Texture,
+    /// The light the clouds were last drawn with, so they are redrawn only
+    /// when it visibly changes: moon cell position and phase.
+    cloud_light_key: Option<(i32, i32, u64)>,
     options: LaunchOptions,
     scale_factor: f64,
 }
@@ -711,9 +726,9 @@ impl Renderer {
             label: Some("City presentation shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
         });
-        // Binding 1 is the uniform buffer; 0 and 2..=11 are textures (see
+        // Binding 1 is the uniform buffer; 0 and 2..=12 are textures (see
         // present.wgsl).
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..12)
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..13)
             .map(|binding| wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -793,6 +808,8 @@ impl Renderer {
         let overlay_texture = create_city_texture(&device, &scene.grid);
         let front_texture = create_city_texture(&device, &scene.grid);
         let vehicle_texture = create_vehicle_texture(&device);
+        let cloud_texture = create_layer_texture(&device, 1, 1);
+        let grid_for_clouds = scene.grid;
         let still_texture = create_city_texture(&device, &scene.grid);
         let moon_texture = create_layer_texture(&device, 1, 1);
         let layer_textures = [0, 1, 2, 3].map(|_| create_layer_texture(&device, 1, 1));
@@ -808,6 +825,7 @@ impl Renderer {
                 still: &still_texture,
                 front: &front_texture,
                 vehicles: &vehicle_texture,
+                clouds: &cloud_texture,
             },
             &params,
         );
@@ -845,6 +863,10 @@ impl Renderer {
             moon_start_step: options.moon_start_step,
             station_fate: options.station_fate,
             paused: false,
+            clouds: CloudField::new(seed, &grid_for_clouds, options.clouds),
+            cover: options.clouds,
+            cloud_texture,
+            cloud_light_key: None,
             options,
             scale_factor,
         };
@@ -895,6 +917,7 @@ impl Renderer {
             );
             self.moon_state = None;
             self.update_moon(Instant::now());
+            self.rebuild_clouds();
             self.scene.compose();
             self.upload();
         }
@@ -916,6 +939,7 @@ impl Renderer {
         self.paused = false;
         self.moon_state = None;
         self.update_moon(Instant::now());
+        self.rebuild_clouds();
         self.scene.compose();
         self.upload();
     }
@@ -930,8 +954,69 @@ impl Renderer {
             .flash(palette.label, self.seconds(Instant::now()));
         self.moon_state = None;
         self.update_moon(Instant::now());
+        self.redraw_clouds();
         self.scene.compose();
         self.upload();
+    }
+
+    /// Cycles the cloud cover (`C`) and names it in the message box.
+    fn next_cover(&mut self) {
+        self.cover = self.cover.next();
+        self.clouds.set_cover(self.cover);
+        self.notice
+            .flash(self.cover.label(), self.seconds(Instant::now()));
+        self.redraw_clouds();
+        self.write_params();
+    }
+
+    /// New clouds for the current scene (same seed and grid).
+    fn rebuild_clouds(&mut self) {
+        self.clouds = CloudField::new(self.scene.seed, &self.scene.grid, self.cover);
+        self.redraw_clouds();
+    }
+
+    /// The moon as a light for the clouds; the battle-station lap is a new
+    /// moon, which gives no light.
+    fn cloud_lights(&self) -> CloudLights {
+        CloudLights {
+            moon: self.moon_state.map(|moon| MoonLight {
+                x: moon.exact_x,
+                row: moon.exact_row,
+                radius: f64::from(MOON_DIAMETER) / 2.0,
+                brightness: MoonLight::brightness_for_phase(moon.phase),
+            }),
+        }
+    }
+
+    /// Drifts the clouds for one frame and redraws them when they move a
+    /// whole cell, a cloud is replaced, or the moonlight changes.
+    fn update_clouds(&mut self, dt: f64) {
+        let camera = if self.scene.is_scrolling() {
+            self.scene.endless_camera().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let moved = self.clouds.advance(dt, self.speed, camera);
+        let key = self.moon_state.map(|m| (m.x, m.row, m.phase.to_bits()));
+        if moved || key != self.cloud_light_key {
+            self.redraw_clouds();
+        }
+    }
+
+    /// Draws the cloud strip with the current light and uploads it.
+    fn redraw_clouds(&mut self) {
+        self.cloud_light_key = self.moon_state.map(|m| (m.x, m.row, m.phase.to_bits()));
+        let rgba = self
+            .clouds
+            .draw(palette_at(self.palette_index), &self.cloud_lights());
+        let strip = self.clouds.strip();
+        let (width, height) = (strip.width.max(1) as u32, strip.rows.max(1) as u32);
+        let size = self.cloud_texture.size();
+        if size.width != width || size.height != height {
+            self.cloud_texture = create_layer_texture(&self.device, width, height);
+            self.rebind();
+        }
+        self.write_grid_texture(&self.cloud_texture, &rgba);
     }
 
     /// Switches between Normal and Endless mode (`E`, a Starry Journey
@@ -952,6 +1037,7 @@ impl Renderer {
         self.paused = false;
         self.moon_state = None;
         self.update_moon(Instant::now());
+        self.rebuild_clouds();
         self.scene.compose();
         self.upload();
     }
@@ -1001,6 +1087,8 @@ impl Renderer {
             self.upload_overlay();
         }
         self.upload_layers();
+        self.write_params();
+        self.update_clouds(motion_dt);
         self.write_params();
         self.update_status(elapsed);
         self.update_message();
@@ -1102,6 +1190,7 @@ impl Renderer {
                 still: &self.still_texture,
                 front: &self.front_texture,
                 vehicles: &self.vehicle_texture,
+                clouds: &self.cloud_texture,
             },
             &self.params,
         );
@@ -1209,6 +1298,17 @@ impl Renderer {
                 None => params.extend([0.0; 4]),
             }
         }
+        let clouds_on = if self.clouds.clouds.is_empty() {
+            0.0
+        } else {
+            1.0
+        };
+        params.extend([
+            self.clouds.strip_offset_px(self.scene.grid.cell) as f32,
+            0.0,
+            clouds_on,
+            0.0,
+        ]);
         let bytes: Vec<u8> = params
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -1489,7 +1589,7 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (7 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 = (8 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 
@@ -1532,6 +1632,7 @@ struct BindTextures<'a> {
     still: &'a wgpu::Texture,
     front: &'a wgpu::Texture,
     vehicles: &'a wgpu::Texture,
+    clouds: &'a wgpu::Texture,
 }
 
 fn create_bind_group(
@@ -1555,6 +1656,7 @@ fn create_bind_group(
         (9, view(textures.still)),
         (10, view(textures.front)),
         (11, view(textures.vehicles)),
+        (12, view(textures.clouds)),
     ];
     let mut entries: Vec<wgpu::BindGroupEntry> = views
         .iter()

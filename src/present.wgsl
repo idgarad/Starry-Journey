@@ -5,6 +5,8 @@
 // Draw order (Rebuild Prompt, "Final draw order"), in linear light:
 // 1. background: the sky and stars;
 // 2. the moon (or battle station), at its exact fractional position;
+// 2b. the clouds, lit on the CPU, slid with the wind and (in Endless) a
+//    tenth of the camera, in front of the moon and behind the city;
 // 3. the city: in Normal mode and during construction, the still city
 //    (transparent where nothing is built yet); while Endless scrolls, the
 //    four layers, far to near, at fractional positions;
@@ -42,6 +44,9 @@ struct Params {
     // Per vehicle slot: x, y device pixels from the sprite's top-left to
     // the screen's top-left; z: 1 when the slot holds a vehicle.
     vehicles: array<vec4<f32>, 6>,
+    // Clouds: x device pixels from the strip's left edge to the screen's
+    // left edge (fractional); z: 1 when there are clouds.
+    clouds: vec4<f32>,
 }
 
 // Vehicle slots in the atlas; the atlas holds every beam sprite (rows
@@ -61,6 +66,7 @@ const VEHICLE_ROWS: i32 = 2;
 @group(0) @binding(9) var still_city: texture_2d<f32>;
 @group(0) @binding(10) var street_front: texture_2d<f32>;
 @group(0) @binding(11) var vehicle_atlas: texture_2d<f32>;
+@group(0) @binding(12) var cloud_strip: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -156,6 +162,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 
     if (params.moon.z > 0.5) {
         color = over(sharp_sample(moon_sprite, params.moon.xy, position.xy), color);
+    }
+    if (params.clouds.z > 0.5) {
+        color = over(sharp_sample(cloud_strip, vec2<f32>(params.clouds.x, 0.0), position.xy), color);
     }
     if (params.cell.z > 0.5) {
         color = over(premultiplied(still_city, texel.x, texel.y), color);
