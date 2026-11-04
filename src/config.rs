@@ -14,6 +14,7 @@ use crate::message::parse_message;
 use crate::model::grid::CellScaling;
 use crate::model::rng::js_round;
 use crate::moon::{parse_moon_phase, START_PHASE_STEP};
+use crate::snapshot::DEFAULT_SNAPSHOT_DIR;
 use crate::station::StationFate;
 
 /// Allowed fixed `--pixel-size` values, in logical (unscaled) pixels.
@@ -21,6 +22,12 @@ pub const PIXEL_SIZE_RANGE: (u32, u32) = (1, 16);
 /// Default virtual pixel size, chosen by the owner after measuring on both
 /// of their systems (2026-11-03).
 pub const DEFAULT_PIXEL_SIZE: u32 = 3;
+/// Snapshot size when `--size` is not given: the 1080p test screen.
+pub const DEFAULT_SNAPSHOT_SIZE: (u32, u32) = (1920, 1080);
+/// Snapshot sizes allowed by `--size`, per side.
+pub const SNAPSHOT_SIZE_RANGE: (u32, u32) = (16, 8192);
+/// The most moments one `--snapshot` run may save.
+pub const MAX_SNAPSHOTS: usize = 200;
 
 /// Command-line help text.
 pub const USAGE: &str = "\
@@ -51,6 +58,16 @@ Options:
   --station-fate F   On the new-moon lap a battle station is under attack:
                      chance (30% it is destroyed, default), destroy (blows up
                      about 15 s after opening on that lap), or survive.
+  --seed N           Build city number N (0-4294967295) instead of a random
+                     one. The same seed gives the same city and clouds.
+  --snapshot T,...   Open no window: run the app in simulated time and save
+                     a PNG of each moment T (durations as for --timer, or
+                     0), for example --snapshot 0,30s,12m. For checking
+                     visual work; the run waits for every cloud keyframe so
+                     the same seed gives the same pictures.
+  --size WxH         Snapshot size in pixels (default 1920x1080).
+  --snapshot-dir D   Folder for snapshot runs (default target/snapshots);
+                     each run gets its own YYYYMMDD-HHMMSS folder.
   -h, --help         Show this help.
 
 Keys: P palette, C clouds, R new city, +/- speed, E Normal/Endless, Space pause,
@@ -89,6 +106,15 @@ pub struct LaunchOptions {
     pub endless: bool,
     /// Cloud cover preset (`--clouds`).
     pub clouds: Cover,
+    /// The city seed (`--seed`); `None` picks a random one.
+    pub seed: Option<u32>,
+    /// Snapshot mode (`--snapshot`): the moments to save, in seconds,
+    /// ascending; `None` opens the window as usual.
+    pub snapshot: Option<Vec<f64>>,
+    /// Snapshot size in pixels (`--size`).
+    pub size: (u32, u32),
+    /// Folder for snapshot runs (`--snapshot-dir`).
+    pub snapshot_dir: String,
     /// True if help was requested.
     pub help: bool,
 }
@@ -103,6 +129,10 @@ impl Default for LaunchOptions {
             message: None,
             endless: false,
             clouds: Cover::default(),
+            seed: None,
+            snapshot: None,
+            size: DEFAULT_SNAPSHOT_SIZE,
+            snapshot_dir: DEFAULT_SNAPSHOT_DIR.to_string(),
             help: false,
         }
     }
@@ -144,6 +174,8 @@ where
     let mut fate_given = false;
     let mut message_given = false;
     let mut clouds_given = false;
+    let mut size_given = false;
+    let mut dir_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -231,10 +263,101 @@ where
                     .ok_or("--message needs text, for example --message \"Back soon\"")?;
                 options.message = parse_message(&value)?;
             }
+            "--seed" => {
+                if options.seed.is_some() {
+                    return Err("--seed was given more than once".to_string());
+                }
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--seed needs a number, for example --seed 42")?;
+                options.seed = Some(value.trim().parse::<u32>().map_err(|_| {
+                    format!("--seed must be a whole number from 0 to 4294967295, got '{value}'")
+                })?);
+            }
+            "--snapshot" => {
+                if options.snapshot.is_some() {
+                    return Err("--snapshot was given more than once".to_string());
+                }
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--snapshot needs moments, for example --snapshot 0,30s,12m")?;
+                options.snapshot = Some(parse_snapshot_times(&value)?);
+            }
+            "--size" => {
+                if size_given {
+                    return Err("--size was given more than once".to_string());
+                }
+                size_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--size needs a size, for example --size 1920x1080")?;
+                options.size = parse_size(&value)?;
+            }
+            "--snapshot-dir" => {
+                if dir_given {
+                    return Err("--snapshot-dir was given more than once".to_string());
+                }
+                dir_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--snapshot-dir needs a folder")?;
+                if value.trim().is_empty() {
+                    return Err("--snapshot-dir needs a folder".to_string());
+                }
+                options.snapshot_dir = value;
+            }
             _ => return Err(format!("unknown option '{arg}'")),
         }
     }
+    if options.snapshot.is_none() && (size_given || dir_given) {
+        return Err("--size and --snapshot-dir only apply with --snapshot".to_string());
+    }
     Ok(options)
+}
+
+/// Parses `--snapshot` moments: comma-separated durations (as for
+/// `--timer`) or `0`, returned in seconds, sorted, without repeats.
+fn parse_snapshot_times(value: &str) -> Result<Vec<f64>, String> {
+    let mut times = Vec::new();
+    for part in value.split(',') {
+        let part = part.trim();
+        let seconds = if part == "0" {
+            0.0
+        } else {
+            parse_duration(part).map_err(|message| format!("--snapshot: {message}"))?
+        };
+        times.push(seconds);
+    }
+    times.sort_by(f64::total_cmp);
+    times.dedup();
+    if times.len() > MAX_SNAPSHOTS {
+        return Err(format!(
+            "--snapshot takes at most {MAX_SNAPSHOTS} moments, got {}",
+            times.len()
+        ));
+    }
+    Ok(times)
+}
+
+/// Parses `--size WxH`, each side within [`SNAPSHOT_SIZE_RANGE`].
+fn parse_size(value: &str) -> Result<(u32, u32), String> {
+    let (lo, hi) = SNAPSHOT_SIZE_RANGE;
+    let invalid =
+        || format!("--size must be WIDTHxHEIGHT with each side {lo} to {hi}, got '{value}'");
+    let (w, h) = value
+        .trim()
+        .to_ascii_lowercase()
+        .split_once('x')
+        .map(|(w, h)| (w.to_string(), h.to_string()))
+        .ok_or_else(invalid)?;
+    let side = |text: &str| {
+        text.trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (lo..=hi).contains(n))
+            .ok_or_else(invalid)
+    };
+    Ok((side(&w)?, side(&h)?))
 }
 
 fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
@@ -258,6 +381,52 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_options_parse_moments_size_and_seed() {
+        let options = parse(&[
+            "--snapshot",
+            "12m,0,30s,30s",
+            "--size",
+            "640x360",
+            "--seed",
+            "42",
+        ])
+        .unwrap();
+        assert_eq!(options.snapshot, Some(vec![0.0, 30.0, 720.0]));
+        assert_eq!(options.size, (640, 360));
+        assert_eq!(options.seed, Some(42));
+        assert_eq!(options.snapshot_dir, DEFAULT_SNAPSHOT_DIR);
+        let default = parse(&[]).unwrap();
+        assert_eq!(default.snapshot, None);
+        assert_eq!(default.seed, None);
+        assert_eq!(default.size, DEFAULT_SNAPSHOT_SIZE);
+        let dir = parse(&["--snapshot=1m", "--snapshot-dir", "frames"]).unwrap();
+        assert_eq!(dir.snapshot_dir, "frames");
+    }
+
+    #[test]
+    fn snapshot_options_reject_bad_values() {
+        for bad in [
+            &["--snapshot"][..],
+            &["--snapshot", "soon"],
+            &["--snapshot", "1m,,2m"],
+            &["--snapshot", "1m", "--snapshot", "2m"],
+            &["--size", "640x360"],
+            &["--snapshot-dir", "x"],
+            &["--snapshot", "1m", "--size", "640"],
+            &["--snapshot", "1m", "--size", "8x8"],
+            &["--snapshot", "1m", "--size", "9000x100"],
+            &["--snapshot", "1m", "--snapshot-dir", " "],
+            &["--seed", "-1"],
+            &["--seed", "4294967296"],
+            &["--seed", "1", "--seed", "2"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+        let many: Vec<String> = (1..=201).map(|s| format!("{s}s")).collect();
+        assert!(parse(&["--snapshot", &many.join(",")]).is_err());
+    }
 
     fn parse(args: &[&str]) -> Result<LaunchOptions, String> {
         parse_args(args.iter().map(|arg| arg.to_string()))

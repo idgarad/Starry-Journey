@@ -400,6 +400,20 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent.
+- **Snapshot mode (owner, 2026-11-04):** "should we be integrating gridhand into our testing to help you see?" The owner chose a built-in snapshot mode first. gridhand needs the app open on screen and takes focus.
+  - `--snapshot T,...` opens no window. It builds the renderer on an offscreen `Rgba8UnormSrgb` texture (the sRGB format the window surface prefers) and runs the app on simulated time at 30 frames per second.
+  - At each moment it draws through the real shader, reads the frame back, and saves it as a PNG in `target/snapshots/<YYYYMMDD-HHMMSS>/` (`--snapshot-dir` overrides the folder, `--size WxH` the size).
+  - `--seed N` picks the city, in snapshots and in the window.
+  - Deterministic: clouds run in lockstep. Keyframe intervals ignore render times, and `SkyClouds::advance` blocks only for a keyframe the frame uses (a first or urgent sky, or the next one once a fade ends), so later keyframes keep rendering in parallel. Two runs of a 2-minute storm gave byte-identical PNGs.
+  - `Renderer` has an optional surface and a `now()` that reads simulated time in snapshot mode. Every real-clock read in the renderer goes through it.
+  - The PNG writer (`src/snapshot.rs`) is about 60 lines with no dependency: stored deflate blocks, CRC-32 and Adler-32 checked against known values.
+  - Timing: 3 moments in the first minute at 960x540 took 5.5 s. A 12-minute Endless storm at 1920x1080 took 5 m 45 s, bound by rendering about 330 storm keyframes on the busiest layer.
+  - Not covered by automated tests: the offscreen GPU path itself, which needs a graphics adapter. It was run by hand as above.
+  - Seen in the first storm snapshot: faint light rims on some storm clouds, possibly two boiling keyframes showing through each other mid-fade. Not investigated (the owner closed clouds for now).
+  - Tests: option parsing (moments, size, seed, folder, and bad values), PNG structure and checksums, run folder names, and lockstep runs giving the same keyframes.
+  - `cargo test`: PASS, 267 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

@@ -347,6 +347,9 @@ pub struct SkyClouds {
     /// Seconds of cloud life (runs with the speed setting, stops on pause).
     clock: f64,
     layers: [LayerState; CLOUD_LAYERS],
+    /// Snapshot mode: keyframe intervals ignore render times, so a run is
+    /// the same on any machine (the caller waits for each keyframe).
+    lockstep: bool,
 }
 
 impl SkyClouds {
@@ -367,6 +370,7 @@ impl SkyClouds {
             worker: CloudWorker::spawn(),
             next_generation: 0,
             clock: 0.0,
+            lockstep: false,
             layers: std::array::from_fn(|_| LayerState {
                 urgent: true,
                 ..LayerState::default()
@@ -400,9 +404,41 @@ impl SkyClouds {
         }
     }
 
+    /// Lockstep (snapshot mode): keyframe intervals stop stretching with
+    /// render times, and [`SkyClouds::advance`] blocks for any keyframe
+    /// the frame uses, so the same seed gives the same keyframes anywhere.
+    pub fn set_lockstep(&mut self, lockstep: bool) {
+        self.lockstep = lockstep;
+    }
+
+    /// Lockstep: whether some layer needs its requested keyframe in this
+    /// frame (a first or urgent sky, or the next keyframe once the current
+    /// fade has ended) and it is not among `arrivals` yet.
+    fn needs_keyframe(&self, arrivals: &[StripImage]) -> bool {
+        self.layers.iter().enumerate().any(|(band, layer)| {
+            let arrived = arrivals
+                .iter()
+                .any(|image| image.band == band && image.generation == layer.generation);
+            let needed = layer.front_image().is_none()
+                || layer.urgent
+                || (layer.queued.is_none() && layer.fade(self.clock) >= 1.0);
+            layer.pending && !arrived && needed
+        })
+    }
+
     /// Seconds of cloud life so far.
     pub fn clock(&self) -> f64 {
         self.clock
+    }
+
+    /// The render time layer `band`'s intervals stretch to: its last
+    /// render's, or 0 in lockstep.
+    fn render_seconds(&self, band: usize) -> f64 {
+        if self.lockstep {
+            0.0
+        } else {
+            self.layers[band].render_seconds
+        }
     }
 
     /// Layer `band`'s cloud-world column at the screen's left edge.
@@ -485,7 +521,20 @@ impl SkyClouds {
         self.clock += step * speed.max(0.0);
         let clock = self.clock;
         let mut changed = Vec::new();
-        for image in self.worker.finished() {
+        let mut arrivals = self.worker.finished();
+        if self.lockstep {
+            // Block only for keyframes this frame uses; later ones keep
+            // rendering in parallel. Keyframes take effect only at fade
+            // ends (or at once for a first or urgent sky), so the result
+            // does not depend on when they arrive.
+            while self.needs_keyframe(&arrivals) {
+                match self.worker.results.recv() {
+                    Ok(image) => arrivals.push(image),
+                    Err(_) => break,
+                }
+            }
+        }
+        for image in arrivals {
             let band = image.band.min(CLOUD_LAYERS - 1);
             let layer = &mut self.layers[band];
             if image.generation == layer.generation {
@@ -504,8 +553,7 @@ impl SkyClouds {
             }
         }
         for band in 0..CLOUD_LAYERS {
-            let interval =
-                effective_interval(self.cover, band, self.layers[band].render_seconds, speed);
+            let interval = effective_interval(self.cover, band, self.render_seconds(band), speed);
             let layer = &mut self.layers[band];
             layer.wind += LAYER_WIND[band] * speed.max(0.0) * step;
             if camera.is_finite() {
@@ -548,26 +596,35 @@ impl SkyClouds {
     /// takes it as in [`SkyClouds::advance`] (tests). Returns false if the
     /// worker stopped.
     pub fn wait(&mut self) -> bool {
+        self.wait_changed().is_some()
+    }
+
+    /// Like [`SkyClouds::wait`], returning the `(layer, slot)` pairs whose
+    /// strips changed, or `None` if the worker stopped.
+    fn wait_changed(&mut self) -> Option<Vec<(usize, usize)>> {
+        let mut changed = Vec::new();
         while self.layers.iter().any(|layer| layer.pending) {
             let Ok(image) = self.worker.results.recv() else {
-                return false;
+                return None;
             };
+            let band = image.band.min(CLOUD_LAYERS - 1);
             let clock = self.clock;
-            let layer = &mut self.layers[image.band.min(CLOUD_LAYERS - 1)];
+            let layer = &mut self.layers[band];
             if image.generation == layer.generation {
                 layer.pending = false;
             }
+            layer.render_seconds = image.render_seconds;
             if image.generation < layer.wanted {
                 continue;
             }
             if layer.front_image().is_none() || layer.urgent {
                 layer.urgent = false;
-                layer.rotate(image, clock, QUICK_FADE);
+                changed.push((band, layer.rotate(image, clock, QUICK_FADE)));
             } else {
                 layer.queued = Some(image);
             }
         }
-        true
+        Some(changed)
     }
 }
 
@@ -722,6 +779,31 @@ mod tests {
             (sky.clock() - 10.0).abs() < 1e-9,
             "the cloud clock runs with the speed"
         );
+    }
+
+    #[test]
+    fn lockstep_runs_give_the_same_keyframes() {
+        let vga = palette_by_key("vga").unwrap();
+        let run = || {
+            let mut sky = SkyClouds::new(5, 40, 30, Cover::Storm, vga);
+            sky.set_lockstep(true);
+            let mut times = Vec::new();
+            for _ in 0..(12 * 30) {
+                // No waiting here: lockstep waits inside advance.
+                sky.advance(1.0 / 30.0, 1.0, 0.0, None);
+                // The first sky arrives on the frame after it is asked for.
+                let Some(image) = sky.slot_image(3, sky.front_slot(3)) else {
+                    continue;
+                };
+                if times.last() != Some(&image.time) {
+                    times.push(image.time);
+                }
+            }
+            times
+        };
+        let (a, b) = (run(), run());
+        assert!(a.len() >= 3, "{a:?}");
+        assert_eq!(a, b);
     }
 
     #[test]

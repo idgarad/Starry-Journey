@@ -19,6 +19,7 @@ pub mod quips;
 pub mod raster;
 pub mod reveal;
 pub mod skyclouds;
+pub mod snapshot;
 pub mod station;
 pub mod street;
 pub mod traffic;
