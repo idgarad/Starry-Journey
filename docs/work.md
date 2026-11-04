@@ -117,6 +117,16 @@
       - a dark, rim-lit bank;
       - bank lumps stop before they reach the top of their box.
     - Near-cloud creases may still be busier than the reference; this is for the owner to judge.
+- **Far clouds only in storms, hanging from the top (owner, 2026-11-04):** "those background clouds are only needed when there is going to be a storm and they should be higher... The top of the background clouds should likely be aligned to the top of the scene."
+  - Only the storm preset has far clouds. Broken and overcast lost their towers and bank.
+  - Far clouds are built standing on a base and then flipped (`flip_vertical`), so they hang from row 0: heavy lobes reaching down, and a lumpy ceiling bank along the top.
+  - The lowest puffs are now centered on the base and cut flat by it, so each mass attaches along a wide flat edge rather than a single point (a test caught the pinched attachment).
+  - Shading: cells near the ceiling are deep inside the mass and darker. The bank is lit only along its lower rims.
+  - Tests: far clouds appear only in storms, sit at row 0, and are widest where they attach. Three tests that had used far clouds in overcast or broken skies now use storms.
+  - `cargo test`: PASS, 240 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - Open for the owner: near storm clouds share the upper band and cover much of the ceiling, and a few short dark slabs show along the top edge where bank pieces meet.
   - **Bug found by a test:** `f64::signum(0.0)` is `1.0` in Rust, so a moon straight above a cell lit the wrong outline side. A three-way sign is used instead.
   - `cargo test`: PASS, 240 tests. The cloud tests were rewritten for the new shapes. They check:
     - flat bottoms, lobed tops, and proportions;

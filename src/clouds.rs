@@ -10,12 +10,13 @@
 //!   crisp one-cell outline, a shadow band along the bottom, a highlight
 //!   under the top outline, crease lines where a lower lobe overlaps one
 //!   behind it, and sometimes a short tail. They drift across the sky.
-//! - **Far clouds** follow the owner's distant-cloud reference: towers of
-//!   many small round puffs rising from the horizon behind the city, and a
-//!   lumpy bank along the horizon in front of them, with no outline. Each
-//!   puff is shaded like a small sphere lit from the moon's direction, so
-//!   the side facing the light is bright and the far side falls into
-//!   shadow. They drift slower than everything else.
+//! - **Far clouds** follow the owner's distant-cloud reference: billowing
+//!   masses of many small round puffs, with no outline. They appear only in
+//!   storms, hanging from the top of the scene (owner, 2026-11-04): heavy
+//!   lobes reaching down and a lumpy ceiling bank along the top. Each puff
+//!   is shaded like a small sphere lit from the moon's direction, so the
+//!   side facing the light is bright and the far side falls into shadow.
+//!   They drift slower than everything else.
 //!
 //! **Coverage.** A [`Cover`] preset (clear, puffs, scattered, broken,
 //! overcast, storm) sets how many clouds each layer gets, how big, and how
@@ -61,7 +62,7 @@ const FAR_SALT: u32 = 0x51f1_5eed;
 pub enum Depth {
     /// Outlined cumulus drifting across the sky.
     Near,
-    /// Billowing towers and a bank on the horizon behind the city.
+    /// Storm clouds hanging from the top of the scene.
     Far,
 }
 
@@ -117,9 +118,9 @@ pub const COVERS: [Cover; 6] = [
 pub enum CloudKind {
     /// Near: outlined cumulus (small ones are puffs).
     Cumulus,
-    /// Far: a billowing tower of puffs.
+    /// Far (storms): a billowing mass of puffs hanging from the top.
     Tower,
-    /// Far: a lumpy bank along the horizon.
+    /// Far (storms): a lumpy ceiling bank along the top.
     Bank,
 }
 
@@ -174,16 +175,12 @@ impl Cover {
             Cover::Scattered => CoverSpec {
                 cols_per_cloud: 130.0,
                 min_clouds: 3,
-                towers: 1.5,
                 ..base
             },
             Cover::Broken => CoverSpec {
                 cols_per_cloud: 60.0,
                 min_clouds: 6,
                 width: (30, 95),
-                towers: 3.0,
-                tower_height: (0.25, 0.45),
-                bank_height: 0.08,
                 ..base
             },
             Cover::Overcast => CoverSpec {
@@ -192,11 +189,10 @@ impl Cover {
                 width: (60, 150),
                 band: (0.0, 0.42),
                 near_tones: [0.06, 0.18, 0.28, 0.4],
-                towers: 4.0,
-                tower_height: (0.3, 0.55),
-                bank_height: 0.18,
                 far_tones: [0.04, 0.11, 0.19, 0.29],
                 opacity: 0.85,
+                // No far clouds: they come only with storms.
+                ..base
             },
             Cover::Storm => CoverSpec {
                 cols_per_cloud: 30.0,
@@ -520,7 +516,9 @@ fn make_tower(rng: &mut Mulberry32, width: i32, height: i32) -> (Vec<Bubble>, Ve
             let half = fw * wide / 2.0 * (1.0 - 0.7 * t.powf(1.5));
             let r = (fh * (0.08 + 0.06 * unit(rng)) * (1.0 - 0.35 * t)).max(2.0);
             let cx = fw * at + (unit(rng) * 2.0 - 1.0) * half;
-            let cy = fh - r - t * (fh * tall - 2.0 * r);
+            // The lowest puffs are centered on the base and cut flat by it,
+            // so the cloud attaches along a wide flat edge.
+            let cy = fh - t * (fh * tall - r);
             bubbles.push(Bubble {
                 cx: cx.clamp(r, fw - r),
                 cy: cy.max(r),
@@ -546,7 +544,7 @@ fn make_bank(rng: &mut Mulberry32, width: i32, height: i32) -> (Vec<Bubble>, Vec
         let r = (fh * (0.12 + 0.18 * unit(rng))).max(2.0);
         let lift = fh * (0.2 + 0.8 * unit(rng));
         // A column of puffs from the base up to this lump's height.
-        let mut y = fh - r;
+        let mut y = fh;
         // Stop before a puff would poke out of the top and be cut flat.
         while y > fh - lift && y - r > 0.0 {
             bubbles.push(Bubble {
@@ -562,6 +560,30 @@ fn make_bank(rng: &mut Mulberry32, width: i32, height: i32) -> (Vec<Bubble>, Vec
     let mut front = vec![OUTSIDE; (width * height) as usize];
     paint_bubbles(&mut front, width, height, &bubbles, 1.0, height - 1);
     (bubbles, front)
+}
+
+/// Turns a cloud upside down: rows reversed and puff centers mirrored, so
+/// a shape built standing on a base hangs from its top edge instead.
+/// O(cells).
+fn flip_vertical(
+    bubbles: Vec<Bubble>,
+    front: Vec<i32>,
+    width: i32,
+    height: i32,
+) -> (Vec<Bubble>, Vec<i32>) {
+    let w = width as usize;
+    let flipped_front = (0..height as usize)
+        .rev()
+        .flat_map(|row| front[row * w..(row + 1) * w].to_vec())
+        .collect();
+    let flipped = bubbles
+        .into_iter()
+        .map(|b| Bubble {
+            cy: f64::from(height) - b.cy,
+            ..b
+        })
+        .collect();
+    (flipped, flipped_front)
 }
 
 /// Drops empty rows above a cloud. Returns the new height. O(cells).
@@ -707,17 +729,17 @@ pub fn far_light(cloud: &Cloud, cx: i32, cy: i32, screen: (f64, f64), lights: &C
         (f64::from(cy) + 0.5 - b.cy) / b.r,
     );
     let nz = (1.0 - dx * dx - dy * dy).max(0.0).sqrt();
-    // A horizon bank is a dark lumpy wall, lit only along its upper rims.
+    // A storm bank is a dark lumpy ceiling, lit only along its lower rims.
     let bank = cloud.kind == CloudKind::Bank;
     if bank {
-        let rim = (-dy - 0.3).max(0.0) / 0.7;
+        let rim = (dy - 0.3).max(0.0) / 0.7;
         let mut light = 0.08 + 0.15 * rim;
         if let Some(moon) = lights.moon {
             light += 0.35 * moon.brightness * rim;
         }
         return light.clamp(0.0, 1.0);
     }
-    let mut light = 0.15 + 0.2 * (-dy).max(0.0);
+    let mut light = 0.15 + 0.1 * (-dy).max(0.0);
     if let Some(moon) = lights.moon {
         let (lx, ly) = (moon.x - screen.0, moon.row - screen.1);
         let length = (lx * lx + ly * ly).sqrt().max(1e-9);
@@ -726,8 +748,9 @@ pub fn far_light(cloud: &Cloud, cx: i32, cy: i32, screen: (f64, f64), lights: &C
         let lambert = (dx * lx + dy * ly + nz * lz).max(0.0);
         light += 0.7 * moon.brightness * lambert;
     }
-    // Puffs low in the cloud are shaded by those above.
-    let depth = f64::from(cy) / f64::from(cloud.height.max(1));
+    // Far clouds hang from the top: cells near the ceiling are deep inside
+    // the mass and shaded; the lumpy underside catches the light.
+    let depth = 1.0 - f64::from(cy) / f64::from(cloud.height.max(1));
     (light * (1.0 - 0.35 * depth)).clamp(0.0, 1.0)
 }
 
@@ -870,11 +893,13 @@ impl CloudField {
                     make_tower(rng, width, height)
                 };
                 let height = trim_top(&mut front, width, height);
+                // Storm clouds hang from the top of the scene (owner,
+                // 2026-11-04): built standing up, then turned upside down.
+                let (bubbles, front) = flip_vertical(bubbles, front, width, height);
                 Cloud {
                     kind,
                     x,
-                    // Far clouds stand on the horizon, behind the city.
-                    top: self.sky_rows - height,
+                    top: 0,
                     width,
                     height,
                     bubbles,
@@ -1177,14 +1202,21 @@ mod tests {
     }
 
     #[test]
-    fn far_clouds_stand_on_the_horizon_and_have_no_outline() {
+    fn far_clouds_only_come_with_storms_and_hang_from_the_top() {
         let grid = grid();
+        for cover in COVERS {
+            let field = CloudField::far(3, &grid, cover);
+            assert_eq!(!field.clouds.is_empty(), cover == Cover::Storm, "{cover:?}");
+        }
         let field = CloudField::far(3, &grid, Cover::Storm);
-        assert!(!field.clouds.is_empty());
         assert!(field.clouds.iter().any(|c| c.kind == CloudKind::Bank));
         assert!(field.clouds.iter().any(|c| c.kind == CloudKind::Tower));
         for cloud in &field.clouds {
-            assert_eq!(cloud.top + cloud.height, grid.ground_row, "on the horizon");
+            assert_eq!(cloud.top, 0, "aligned to the top of the scene");
+            assert!(cloud.height < grid.ground_row);
+            // Attached along the top: the first row is the widest part.
+            let row_width = |y: i32| (0..cloud.width).filter(|&x| cloud.covers(x, y)).count();
+            assert!(row_width(0) >= row_width(cloud.height - 1));
         }
         // Lit by the moon from the upper left, a far cloud's left side is
         // brighter than its right: shading, not an outline.
@@ -1207,8 +1239,12 @@ mod tests {
     #[test]
     fn a_full_moon_lights_far_clouds_more_than_a_new_moon() {
         let grid = grid();
-        let field = CloudField::far(4, &grid, Cover::Broken);
-        let tower = &field.clouds[0];
+        let field = CloudField::far(4, &grid, Cover::Storm);
+        let tower = field
+            .clouds
+            .iter()
+            .find(|c| c.kind == CloudKind::Tower)
+            .unwrap();
         let total = |phase: f64| -> f64 {
             let lights = CloudLights {
                 moon: Some(MoonLight::for_phase(100.0, 40.0, 19.5, phase)),
@@ -1302,7 +1338,7 @@ mod tests {
         let grid = grid();
         for mut field in [
             CloudField::new(3, &grid, Cover::Broken),
-            CloudField::far(3, &grid, Cover::Overcast),
+            CloudField::far(3, &grid, Cover::Storm),
         ] {
             let count = field.clouds.len();
             let first = field.clouds.clone();
@@ -1327,8 +1363,8 @@ mod tests {
             CloudField::new(9, &grid, Cover::Overcast).clouds
         );
         assert_ne!(
-            CloudField::far(9, &grid, Cover::Overcast).clouds,
-            CloudField::far(10, &grid, Cover::Overcast).clouds
+            CloudField::far(9, &grid, Cover::Storm).clouds,
+            CloudField::far(10, &grid, Cover::Storm).clouds
         );
     }
 
@@ -1336,13 +1372,13 @@ mod tests {
     fn drawn_clouds_use_their_layer_tones_and_leave_open_sky_clear() {
         let grid = grid();
         for palette in palettes() {
-            for field in [
-                CloudField::new(5, &grid, Cover::Broken),
-                CloudField::far(5, &grid, Cover::Broken),
+            for (field, cover) in [
+                (CloudField::new(5, &grid, Cover::Broken), Cover::Broken),
+                (CloudField::far(5, &grid, Cover::Storm), Cover::Storm),
             ] {
                 let rgba = field.draw(palette, &CloudLights::default());
                 assert_eq!(rgba.len(), field.strip().cells() * 4);
-                let ramp = tone_ramp(field.depth(), Cover::Broken, palette);
+                let ramp = tone_ramp(field.depth(), cover, palette);
                 let drawn: Vec<[u8; 3]> = rgba
                     .chunks(4)
                     .filter(|p| p[3] > 0)
