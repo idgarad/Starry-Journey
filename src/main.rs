@@ -15,11 +15,10 @@ use std::{
 };
 
 use starry_journey::clock::{format_remaining, ConstructionClock};
-use starry_journey::clouds::{
-    CloudField, CloudLights, Cover, MoonLight, MOON_GLOW_REACH, MOON_GLOW_STRENGTH,
-};
+use starry_journey::cloudgen::Light;
+use starry_journey::clouds::Cover;
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
-use starry_journey::endless::{decode_srgb, EndlessCity};
+use starry_journey::endless::EndlessCity;
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
@@ -32,6 +31,7 @@ use starry_journey::moon::{
 use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
+use starry_journey::skyclouds::SkyClouds;
 use starry_journey::station::{radio_line, StationFate};
 use starry_journey::street::{mark_opaque, Span, StreetLayer};
 use starry_journey::traffic::{Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH};
@@ -663,18 +663,11 @@ struct Renderer {
     /// Endless scrolling and traffic are paused (`Space`).
     paused: bool,
     /// The clouds, rebuilt with the scene (same seed and grid).
-    clouds: CloudField,
-    /// The far clouds: towers and a horizon bank behind the city.
-    far_clouds: CloudField,
+    sky_clouds: SkyClouds,
     /// The cloud cover preset (`--clouds`, cycled with `C`).
     cover: Cover,
     /// The cloud strip image, lit by the moon.
     cloud_texture: wgpu::Texture,
-    /// The far cloud strip image.
-    far_cloud_texture: wgpu::Texture,
-    /// The light the clouds were last drawn with, so they are redrawn only
-    /// when it visibly changes: moon cell position and phase.
-    cloud_light_key: Option<(i32, i32, u64)>,
     options: LaunchOptions,
     scale_factor: f64,
 }
@@ -736,9 +729,9 @@ impl Renderer {
             label: Some("City presentation shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
         });
-        // Binding 1 is the uniform buffer; 0 and 2..=13 are textures (see
+        // Binding 1 is the uniform buffer; 0 and 2..=12 are textures (see
         // present.wgsl).
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..14)
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..13)
             .map(|binding| wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -819,7 +812,6 @@ impl Renderer {
         let front_texture = create_city_texture(&device, &scene.grid);
         let vehicle_texture = create_vehicle_texture(&device);
         let cloud_texture = create_layer_texture(&device, 1, 1);
-        let far_cloud_texture = create_layer_texture(&device, 1, 1);
         let grid_for_clouds = scene.grid;
         let still_texture = create_city_texture(&device, &scene.grid);
         let moon_texture = create_layer_texture(&device, 1, 1);
@@ -837,7 +829,6 @@ impl Renderer {
                 front: &front_texture,
                 vehicles: &vehicle_texture,
                 clouds: &cloud_texture,
-                far_clouds: &far_cloud_texture,
             },
             &params,
         );
@@ -876,12 +867,15 @@ impl Renderer {
             moon_start_step: options.moon_start_step,
             station_fate: options.station_fate,
             paused: false,
-            clouds: CloudField::new(seed, &grid_for_clouds, options.clouds),
-            far_clouds: CloudField::far(seed, &grid_for_clouds, options.clouds),
+            sky_clouds: SkyClouds::new(
+                seed,
+                grid_for_clouds.cols,
+                grid_for_clouds.ground_row,
+                options.clouds,
+                palette_at(palette_index),
+            ),
             cover: options.clouds,
             cloud_texture,
-            far_cloud_texture,
-            cloud_light_key: None,
             options,
             scale_factor,
         };
@@ -969,92 +963,71 @@ impl Renderer {
             .flash(palette.label, self.seconds(Instant::now()));
         self.moon_state = None;
         self.update_moon(Instant::now());
-        self.redraw_clouds();
+        self.sky_clouds.set_palette(palette);
         self.scene.compose();
         self.upload();
     }
 
-    /// Cycles the cloud cover (`C`) and names it in the message box.
+    /// Cycles the cloud cover (`C`) and names it in the message box. The
+    /// old clouds stay until the new ones are ready.
     fn next_cover(&mut self) {
         self.cover = self.cover.next();
-        self.clouds.set_cover(self.cover);
-        self.far_clouds.set_cover(self.cover);
+        self.sky_clouds.set_cover(self.cover);
         self.notice
             .flash(self.cover.label(), self.seconds(Instant::now()));
-        self.redraw_clouds();
-        self.write_params();
     }
 
     /// New clouds for the current scene (same seed and grid).
     fn rebuild_clouds(&mut self) {
-        self.clouds = CloudField::new(self.scene.seed, &self.scene.grid, self.cover);
-        self.far_clouds = CloudField::far(self.scene.seed, &self.scene.grid, self.cover);
-        self.redraw_clouds();
+        self.sky_clouds = SkyClouds::new(
+            self.scene.seed,
+            self.scene.grid.cols,
+            self.scene.grid.ground_row,
+            self.cover,
+            palette_at(self.palette_index),
+        );
     }
 
-    /// The moon as a light for the clouds; the battle-station lap is a new
-    /// moon, which gives no light.
-    fn cloud_lights(&self) -> CloudLights {
-        CloudLights {
-            moon: self.moon_now.map(|moon| {
-                MoonLight::for_phase(
-                    moon.exact_x,
-                    moon.exact_row,
-                    f64::from(MOON_DIAMETER) / 2.0,
-                    moon.phase,
-                )
-            }),
-        }
+    /// The moon as a light for the clouds, at its live position and scaled
+    /// by its phase. The battle-station lap is a new moon: no light.
+    fn cloud_light(&self) -> Option<Light> {
+        let moon = self.moon_now?;
+        let strength = 1.0 - (moon.phase.rem_euclid(1.0) - 0.5).abs() * 2.0;
+        (strength > 0.0).then(|| Light {
+            x: moon.exact_x + 0.5,
+            y: moon.exact_row + 0.5,
+            radius: f64::from(MOON_DIAMETER) / 2.0,
+            strength,
+        })
     }
 
-    /// Drifts the clouds for one frame and redraws them when they move a
-    /// whole cell, a cloud is replaced, or the moonlight changes.
+    /// Drifts the clouds for one frame, and uploads a new cloud strip when
+    /// the background renderer finishes one.
     fn update_clouds(&mut self, dt: f64) {
         let camera = if self.scene.is_scrolling() {
             self.scene.endless_camera().unwrap_or(0.0)
         } else {
             0.0
         };
-        let near_moved = self.clouds.advance(dt, self.speed, camera);
-        let far_moved = self.far_clouds.advance(dt, self.speed, camera);
-        let moved = near_moved || far_moved;
-        let key = self.moon_now.map(|m| (m.x, m.row, m.phase.to_bits()));
-        if moved || key != self.cloud_light_key {
-            self.redraw_clouds();
+        let light = self.cloud_light();
+        if self.sky_clouds.advance(dt, self.speed, camera, light) {
+            self.upload_clouds();
         }
     }
 
-    /// Draws both cloud strips with the current light and uploads them.
-    fn redraw_clouds(&mut self) {
-        self.cloud_light_key = self.moon_now.map(|m| (m.x, m.row, m.phase.to_bits()));
-        let palette = palette_at(self.palette_index);
-        let lights = self.cloud_lights();
-        let mut recreated = false;
-        for far in [false, true] {
-            let field = if far { &self.far_clouds } else { &self.clouds };
-            let rgba = field.draw(palette, &lights);
-            let strip = field.strip();
-            let (width, height) = (strip.width.max(1) as u32, strip.rows.max(1) as u32);
-            let texture = if far {
-                &mut self.far_cloud_texture
-            } else {
-                &mut self.cloud_texture
-            };
-            let size = texture.size();
-            if size.width != width || size.height != height {
-                *texture = create_layer_texture(&self.device, width, height);
-                recreated = true;
-            }
-            let texture = if far {
-                &self.far_cloud_texture
-            } else {
-                &self.cloud_texture
-            };
-            self.write_grid_texture(texture, &rgba);
-        }
-        if recreated {
+    /// Uploads the cloud strip, resizing its texture when needed.
+    fn upload_clouds(&mut self) {
+        let Some(image) = self.sky_clouds.image() else {
+            return;
+        };
+        let (width, height) = (image.width as u32, image.rows as u32);
+        let size = self.cloud_texture.size();
+        if size.width != width || size.height != height {
+            self.cloud_texture = create_layer_texture(&self.device, width, height);
             self.rebind();
         }
+        let image = self.sky_clouds.image().expect("checked above");
+        self.write_grid_texture(&self.cloud_texture, &image.rgba);
     }
 
     /// Switches between Normal and Endless mode (`E`, a Starry Journey
@@ -1229,7 +1202,6 @@ impl Renderer {
                 front: &self.front_texture,
                 vehicles: &self.vehicle_texture,
                 clouds: &self.cloud_texture,
-                far_clouds: &self.far_cloud_texture,
             },
             &self.params,
         );
@@ -1337,42 +1309,15 @@ impl Renderer {
                 None => params.extend([0.0; 4]),
             }
         }
-        let clouds_on = if self.clouds.clouds.is_empty() {
-            0.0
-        } else {
+        let clouds_on = if self.sky_clouds.image().is_some() {
             1.0
+        } else {
+            0.0
         };
         params.extend([
-            self.clouds.strip_offset_px(self.scene.grid.cell) as f32,
+            self.sky_clouds.strip_offset_px(self.scene.grid.cell) as f32,
             0.0,
             clouds_on,
-            0.0,
-        ]);
-        // The moon's glow on the clouds, at the moon's live position.
-        match self.cloud_lights().moon {
-            Some(moon) => {
-                let (gx, gy) = moon.glow_center();
-                params.extend([
-                    ((gx + 0.5) * cell64) as f32,
-                    ((gy + 0.5) * cell64) as f32,
-                    (MOON_GLOW_REACH * moon.radius * cell64) as f32,
-                    (MOON_GLOW_STRENGTH * moon.brightness) as f32,
-                ]);
-            }
-            None => params.extend([0.0; 4]),
-        }
-        let star = palette_at(self.palette_index).star.0;
-        let linear = |v: u8| decode_srgb(f64::from(v) / 255.0) as f32;
-        params.extend([linear(star[0]), linear(star[1]), linear(star[2]), 0.0]);
-        let far_on = if self.far_clouds.clouds.is_empty() {
-            0.0
-        } else {
-            1.0
-        };
-        params.extend([
-            self.far_clouds.strip_offset_px(self.scene.grid.cell) as f32,
-            0.0,
-            far_on,
             0.0,
         ]);
         let bytes: Vec<u8> = params
@@ -1656,7 +1601,7 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (11 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 = (8 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 
@@ -1700,7 +1645,6 @@ struct BindTextures<'a> {
     front: &'a wgpu::Texture,
     vehicles: &'a wgpu::Texture,
     clouds: &'a wgpu::Texture,
-    far_clouds: &'a wgpu::Texture,
 }
 
 fn create_bind_group(
@@ -1725,7 +1669,6 @@ fn create_bind_group(
         (10, view(textures.front)),
         (11, view(textures.vehicles)),
         (12, view(textures.clouds)),
-        (13, view(textures.far_clouds)),
     ];
     let mut entries: Vec<wgpu::BindGroupEntry> = views
         .iter()

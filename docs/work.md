@@ -258,7 +258,46 @@
   - `cargo test`: PASS, 253 tests (about 31 s in debug, mostly the generator).
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
-- **Next:** the owner reviews the preview. Then:
+- **Integrated into the app (owner, 2026-11-04):** "perfect looking so far. Lets integrate those and see how they look in an endless run. The question is the moon light interaction."
+  - [src/skyclouds.rs](../src/skyclouds.rs): `render_strip` composites every layer and sub-layer far to near in linear light, into a straight-alpha sRGB strip with transparent sky. The combined opacity is capped at 94%, so the moon always shows faintly; a test caught 20 overlapping sub-layers stacking to fully opaque.
+  - **`CloudWorker`, a background thread:**
+    - it always renders the newest request and skips older ones;
+    - it is not joined on drop, so a resize or restart never waits for a strip nobody will see.
+  - **`SkyClouds`:**
+    - the view is the wind (0.35 cells/s × speed, at most 1/30 s per frame) plus 0.1 of the Endless camera;
+    - the strip is the screen plus 96 cells on each side, slid by the GPU;
+    - a fresh strip is requested when the view is 1.5 margins in, when the cover or palette changes (the old strip shows until the new one is ready), or when the moon has moved 4 cells or changed phase.
+  - **Moonlight, as issue #1 asks:**
+    - the moon is drawn behind the clouds and shows through `exp(-k × density)`;
+    - clouds are lit by the self-shadowing march toward the moon's live position, scaled by its phase;
+    - the station lap is a new moon, so it gives no light;
+    - edge light comes only through thin cloud.
+
+    The GPU moon glow was removed, because it also brightened dense cloud, against the issue.
+  - **Removed:**
+    - the old sprite clouds (`CloudField`, near and far layers) and their 17 tests;
+    - the far-cloud texture binding;
+    - the glow uniforms and the shader's `moonlit` function.
+
+    `src/clouds.rs` now holds only the `Cover` presets.
+  - Cost: in a debug build a strip takes about 3 s on the worker thread (about 0.6 s in release), and frames never wait on it. The first clouds appear a few seconds after launch in a debug build.
+  - Tests:
+    - a clear strip is transparent;
+    - strips have translucent cloud and open sky, capped at 94%;
+    - neighbouring strips agree where they overlap, since the field is world-anchored;
+    - every palette renders;
+    - the worker delivers the newest request in order;
+    - `SkyClouds` drifts with wind and camera, swaps strips, and handles a cover change;
+    - a moon move of 4 cells relights, and a 1-cell move does not.
+  - `cargo test`: PASS, 243 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (the owner is using the machine).
+- **Still open:**
+  - parallax by depth (the whole cloud strip moves as one, though distant heaps could drift slower);
+  - reduced motion;
+  - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
+- **Earlier next steps:**
   - wire the generator into the app;
   - render the strips incrementally, so drifting only computes new columns;
   - apply the shader glow by transmission;
