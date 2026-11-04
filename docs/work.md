@@ -13,7 +13,7 @@
 | `feature/normal-street` | Road and roadside trees in Normal mode; tree colors for every palette | Merged |
 | `feature/moon` | 39-cell moon crossing in 10 minutes; phase fixed per lap, 8-phase cycle; `--moon-phase`; battle station with fighters, trench run, and `--station-fate` | Merged |
 | `feature/night-traffic` | Cars and trucks after completion; headlights with road beams and tree lighting (top lane lights top trees, bottom lane bottom trees) | Merged |
-| `feature/message-box` | `--message` box over the scene; palette name shown for 2 s on `P`, then the message returns | In review |
+| `feature/message-box` | `--message` box over the scene; palette name shown for 2 s on `P`, then the message returns | Merged |
 | `feature/normal-ambience` | Window flicker after completion, beacon blinking, landmark color cycling, star twinkles, shooting stars | Planned |
 
 ### feature/message-box
@@ -37,7 +37,7 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - Box images rendered off-screen (ArtDeco, Ink on Parchment) were inspected by the agent: text is crisp, wrapping is centered, "Café" with a combining accent is placed correctly, and tags show literally.
-  - GUI: not run by the agent (the owner is using the machine). For the owner to review: `cargo run -- --message "This meeting will start shortly"`, then press `P`.
+  - GUI: reviewed and approved by the owner ("looks good").
 - **Not yet:** in-app editing, scrolling for tall content, Amber phosphor message styling (display-effects step), and text shaping for complex scripts.
 
 ### feature/night-traffic
