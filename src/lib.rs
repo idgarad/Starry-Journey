@@ -9,6 +9,7 @@
 
 pub mod clock;
 pub mod config;
+pub mod message;
 pub mod model;
 pub mod moon;
 pub mod raster;
