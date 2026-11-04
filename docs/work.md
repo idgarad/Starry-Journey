@@ -327,6 +327,18 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent.
+- **Slower cloud lives (owner, 2026-11-04):** "The fade in and out needs to be very slow. slow it at least 80%."
+  - Heap lifetimes are 5 times longer: `cloudgen::LIFETIME_CALM` is 600 s (was 120 s) and `LIFETIME_STORM` is 100 s (was 20 s), still scaled by a seeded 0.7..1.3. A heap grows over the first 20% of its life and dissolves over the last 30%, so a calm fade in takes about 2 minutes.
+  - The calm edge drift and rise are about 80% slower: churn is now squared, giving `0.0008 + 0.01 × churn²` drift and `0.0006 + 0.09 × churn²` rise. A storm (churn 1) boils as before.
+  - A compile-time check keeps the lifetimes at least 5 times the first version's.
+  - The cover or palette quick fade (1.5 s) is unchanged.
+  - Tests:
+    - the fade test samples 72 × 25 s;
+    - a new test checks that a scattered sky changes under 10% of its cloudy cells in 10 s (measured about 6%; edges still creep about a cell every few seconds).
+  - `cargo test`: PASS, 251 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

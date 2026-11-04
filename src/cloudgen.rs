@@ -51,6 +51,14 @@ pub const MAX_OPACITY: f64 = 0.92;
 /// Columns between cumulus slots overhead: about one heap per slot at full
 /// cover. Slots shrink with distance toward the horizon.
 pub const HEAP_SPACING: f64 = 110.0;
+/// Seconds a heap lives (grows in, matures, dissolves) in calm weather.
+/// Owner, 2026-11-04: the fade in and out must be very slow, at least 80%
+/// slower than the first version's 120 s.
+pub const LIFETIME_CALM: f64 = 600.0;
+/// Seconds a heap lives in a boiling storm (first version: 20 s).
+pub const LIFETIME_STORM: f64 = 100.0;
+// Checked when building: at least five times the first version's lives.
+const _: () = assert!(LIFETIME_CALM >= 5.0 * 120.0 && LIFETIME_STORM >= 5.0 * 20.0);
 /// Rows of cumulus from overhead to the horizon.
 pub const HEAP_DEPTHS: i32 = 10;
 /// How much faster a heap's balls fall off below its base line: bases are
@@ -286,10 +294,12 @@ impl LayerField {
     /// units: a slow sideways drift always, and in storms a quick rise that
     /// makes the tops boil.
     fn churn_offset(&self) -> (f64, f64) {
-        let churn = self.weather.churn;
+        // Calm skies barely stir (owner: fades must be very slow); the
+        // square keeps a storm's full boil while calming everything else.
+        let churn = self.weather.churn * self.weather.churn;
         (
-            self.time * (0.004 + 0.01 * churn),
-            -self.time * (0.003 + 0.09 * churn),
+            self.time * (0.0008 + 0.01 * churn),
+            -self.time * (0.0006 + 0.09 * churn),
         )
     }
 
@@ -414,10 +424,11 @@ impl LayerField {
             let r = |n: i32| hash(k, salt + n, self.seed);
             // Each heap grows over 0.3 of coverage past its own threshold.
             // A life cycle: each heap grows in, matures, and dissolves over
-            // its own seeded lifetime (about 2 minutes calm, 20 s in a
+            // its own seeded lifetime (about 10 minutes calm, 100 s in a
             // storm), then another takes its slot. Coverage is lifted a
             // little so the sky stays as cloudy on average.
-            let lifetime = (120.0 - 100.0 * self.weather.churn) * (0.7 + 0.6 * r(7));
+            let lifetime = (LIFETIME_CALM - (LIFETIME_CALM - LIFETIME_STORM) * self.weather.churn)
+                * (0.7 + 0.6 * r(7));
             let phase = (self.time / lifetime + r(8)).rem_euclid(1.0);
             let life = smoothstep(0.0, 0.2, phase) * smoothstep(1.0, 0.7, phase);
             if life <= 0.0 {
@@ -1011,8 +1022,8 @@ mod tests {
 
     #[test]
     fn heaps_fade_in_and_out_over_their_lives() {
-        // Somewhere a cell is clear, then cloudy, then clear again, over a
-        // few minutes of calm weather.
+        // Somewhere a cell is clear, then cloudy, then clear again, over
+        // half an hour of calm weather.
         let field = sky_fields(Cover::Broken, ROWS, 5)[1];
         let mut found = false;
         'cells: for x in (0..400).step_by(7) {
@@ -1022,7 +1033,7 @@ mod tests {
                         .at_time(t)
                         .density(f64::from(x) + 0.5, f64::from(y) + 0.5)
                 };
-                let series: Vec<f64> = (0..60).map(|i| at(f64::from(i) * 5.0)).collect();
+                let series: Vec<f64> = (0..72).map(|i| at(f64::from(i) * 25.0)).collect();
                 let first_cloud = series.iter().position(|&d| d > 0.5);
                 if let Some(start) = first_cloud {
                     let clear_before = series[..start].contains(&0.0);
@@ -1035,6 +1046,38 @@ mod tests {
             }
         }
         assert!(found, "clouds come and go");
+    }
+
+    #[test]
+    fn heaps_live_at_least_five_times_longer_than_the_first_version() {
+        // The first version lived 120 s calm and 20 s in a storm; the owner
+        // asked for the fades to be at least 80% slower (the lifetimes are
+        // checked at build time next to their constants).
+        // Over 10 s a calm sky changes only at its edges: heaps spend about
+        // 100 s growing in or dissolving, so edges creep a cell every few
+        // seconds (measured: about 6% of cloud cells flip in 10 s).
+        let field = sky_fields(Cover::Scattered, ROWS, 2)[1];
+        let (a, b) = (field.at_time(100.0), field.at_time(110.0));
+        let cells: Vec<(f64, f64)> = (0..300)
+            .flat_map(|x| {
+                (60..260)
+                    .step_by(6)
+                    .map(move |y| (f64::from(x) + 0.5, f64::from(y) + 0.5))
+            })
+            .collect();
+        let cloudy = cells
+            .iter()
+            .filter(|&&(x, y)| a.density(x, y) > 0.0)
+            .count()
+            .max(1);
+        let changed = cells
+            .iter()
+            .filter(|&&(x, y)| (a.density(x, y) > 0.0) != (b.density(x, y) > 0.0))
+            .count();
+        assert!(
+            changed * 10 < cloudy,
+            "{changed} of {cloudy} cells changed in 10 s"
+        );
     }
 
     #[test]
