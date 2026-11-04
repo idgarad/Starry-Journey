@@ -4,8 +4,8 @@
 
 | Branch | Contents | Status |
 | --- | --- | --- |
-| `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | In review |
-| `feature/endless-compositor` | Layers placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); street and traffic on an overlay | In review (branched from `feature/endless-layers`) |
+| `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
+| `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera; headlights keep lighting trees | Planned |
 | `feature/endless-clouds` | Stepped cloud banks drifting behind the buildings | Planned |
 
@@ -65,7 +65,7 @@
     Tests that used to read the single CPU frame now read `Scene::flattened` (sky, still city, overlay).
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
-  - GUI: not run by the agent. Normal mode now also goes through the new draw order, so it is worth a look too.
+  - GUI: reviewed and approved by the owner ("perfect"), including the radio calls and the 5-second trench run.
 - **Not yet:** the road and trees still stand still (`feature/endless-street`). The stars don't move, by design.
 
 ### feature/endless-layers
