@@ -50,6 +50,14 @@ To preview a whole generated city as text:
 cargo run --bin city -- 160 60 1    # columns, rows, seed
 ```
 
+To preview the procedural clouds as an image (BMP, opens in Windows Photos):
+
+```powershell
+cargo run --release --bin clouds -- all 1 vga   # preset (or all), seed, palette, [moon phase 0-7]
+```
+
+It writes `target/cloud-preview/<preset>-<seed>-<palette>.bmp` and prints the path.
+
 ### Options
 
 | Option | Effect |

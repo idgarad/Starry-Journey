@@ -172,6 +172,65 @@
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent. For the owner: `cargo run -- --clouds broken`, then press `C` to cycle; also try `--endless`.
 
+### Procedural clouds (in progress on `feature/clouds`)
+
+- **Decision (owner, 2026-11-04):** "I think our model is fundamentally flawed... we need to go procedural on them, just like how we build the city." Choices:
+  - a density field;
+  - no outlines anywhere (soft dithered edges, shaded only by light);
+  - a preview tool first, with shapes signed off before they are wired into the app.
+- **GitHub issue #1** (filed from the Python version, "procedural cloud coverage with moonlight transmission") shaped the design:
+  - continuous noise density rather than only sprites;
+  - coverage separate from thickness;
+  - moon and stars behind the clouds, with `T = exp(-k × density)`;
+  - restrained edge light with no halo through opaque cloud;
+  - no popping between coverage levels.
+
+  Issue #2 (keeping building types in sync with the Python version) is unrelated and not started.
+- **Conflict noted:** the owner earlier wanted thick clouds slightly transparent; the issue wants dense cloud to hide the moon. Opacity is capped at 92% as a compromise.
+- **[src/cloudgen.rs](../src/cloudgen.rs)** (pure; not yet used by the app):
+  - Seeded value noise and fractal noise (with a billow variant).
+  - Three layers like the city's:
+    - high: streaky sheets;
+    - mid: cumulus;
+    - low: dark scud.
+  - High and low layers are continuous noise fields over world coordinates, faded across their band. The coverage threshold grows clouds smoothly.
+  - **Mid cumulus are metaball heaps** in seeded world slots (110 columns apart), like roadside trees. Each heap has 5-11 soft balls whose densities add into a lumpy silhouette, with big balls low in the middle, a hard pixel-flat base, and billow noise on the edges. Each slot has its own coverage threshold, and its heap grows smoothly as coverage passes it, so there is no popping.
+  - `weather(cover)` gives each layer's coverage and thickness. Opacity is `1 - exp(-thickness × density)`, at most 0.92.
+  - `light_at` does self-shadowing: it marches 8 steps of 2 cells toward the moon, and light falls off as `exp(-0.5 × density passed)`. Edge light near the moon is weighted by transmission, so opaque cloud never glows.
+  - A 4x4 Bayer dither handles edges below 30% opacity.
+  - `tone_ramp` gives five tones per layer, darker for overcast and storm.
+- **[src/bin/clouds.rs](../src/bin/clouds.rs):** `cargo run --release --bin clouds -- [preset|all] [seed] [palette] [phase 0-7]` writes `target/cloud-preview/<preset>-<seed>-<palette>.bmp` at 1080p with 3 px cells: sky, stars, the moon, then the layers back to front in linear light. All five presets render in under a second. It needs no new dependency.
+- **How the design got here (agent, reviewing preview renders):**
+  1. A pure field for every layer drew the mid layer as a mountain range.
+  2. Softer profiles and grouping made walls with V-shaped valleys.
+  3. Slot heaps with domes made smooth loaves.
+  4. Lobed domes made gumdrops and specks.
+  5. Metaballs made recognizable cumulus.
+
+  Fields remain the right tool for sheets.
+- **Verification (2026-11-04):**
+  - `cargo test`: PASS, 251 tests. The 11 generator tests check:
+    - noise is seeded, continuous, and in range;
+    - coverage rises with the preset and clear is empty;
+    - sweeping the coverage dial never shrinks or jumps by more than 8%;
+    - the field is continuous along the world and doesn't repeat;
+    - every heap has a pixel-flat base (most of its columns end on the same row);
+    - thick cloud hides the moon and thin cloud lets it through, and opacity never reaches solid;
+    - the side facing the moon is brighter;
+    - no halo through opaque cloud;
+    - the dither pattern;
+    - layers stay in their bands, and a storm fills over 60% of the upper sky;
+    - tones.
+  - Test changes during development: the flat-base test moved from a single shared base row to "flat within each heap", because heaps sit at their own heights. The storm coverage check now measures the upper 60% of the sky, where clouds live, because the lower part is behind the skyline.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+- **Next:** the owner reviews the preview. Then:
+  - wire the generator into the app;
+  - render the strips incrementally, so drifting only computes new columns;
+  - apply the shader glow by transmission;
+  - respect pause and reduced motion;
+  - retire `src/clouds.rs`'s sprite shapes.
+
 ### feature/endless-street
 
 - **Goal:** the road, trees, and traffic move with the scrolling city. The spec: "Trees share the road camera, not vehicle speed."
