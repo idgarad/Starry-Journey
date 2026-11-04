@@ -31,7 +31,7 @@ use starry_journey::moon::{
 use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
-use starry_journey::skyclouds::SkyClouds;
+use starry_journey::skyclouds::{SkyClouds, SLOTS as CLOUD_SLOTS};
 use starry_journey::station::{radio_line, StationFate};
 use starry_journey::street::{mark_opaque, Span, StreetLayer};
 use starry_journey::traffic::{Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH};
@@ -1010,45 +1010,46 @@ impl Renderer {
             0.0
         };
         let light = self.cloud_light();
-        let arrived = self.sky_clouds.advance(dt, self.speed, camera, light);
-        for (band, &new) in arrived.iter().enumerate() {
-            if new {
-                self.upload_cloud_layer(band);
-            }
+        let changed = self.sky_clouds.advance(dt, self.speed, camera, light);
+        for (band, slot) in changed {
+            self.upload_cloud_slot(band, slot);
         }
     }
 
-    /// Uploads one cloud layer's strip into its band of the shared cloud
-    /// texture (four strips stacked, far at the top). A resized texture
-    /// gets every layer re-uploaded.
-    fn upload_cloud_layer(&mut self, band: usize) {
+    /// Uploads one cloud keyframe into its place in the shared cloud texture
+    /// (layers far to near, two slots each: the keyframe fading in and the
+    /// one fading out). A resized texture gets every slot re-uploaded.
+    fn upload_cloud_slot(&mut self, band: usize, slot: usize) {
         let (width, rows) = (
             self.sky_clouds.strip_width() as u32,
             self.sky_clouds.strip_rows() as u32,
         );
-        let height = rows * CLOUD_LAYERS as u32;
+        let height = rows * (CLOUD_LAYERS * CLOUD_SLOTS) as u32;
         let size = self.cloud_texture.size();
-        let bands: Vec<usize> = if size.width != width || size.height != height {
+        let targets: Vec<(usize, usize)> = if size.width != width || size.height != height {
             self.cloud_texture = create_layer_texture(&self.device, width, height);
             self.rebind();
-            (0..CLOUD_LAYERS).collect()
+            (0..CLOUD_LAYERS)
+                .flat_map(|b| (0..CLOUD_SLOTS).map(move |s| (b, s)))
+                .collect()
         } else {
-            vec![band]
+            vec![(band, slot)]
         };
-        for band in bands {
-            let Some(image) = self.sky_clouds.image(band) else {
+        for (band, slot) in targets {
+            let Some(image) = self.sky_clouds.slot_image(band, slot) else {
                 continue;
             };
             if image.width as u32 != width || image.rows as u32 != rows {
                 continue; // a strip for an older sky size
             }
+            let strip = (band * CLOUD_SLOTS + slot) as u32;
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.cloud_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d {
                         x: 0,
-                        y: band as u32 * rows,
+                        y: strip * rows,
                         z: 0,
                     },
                     aspect: wgpu::TextureAspect::All,
@@ -1347,16 +1348,26 @@ impl Renderer {
                 None => params.extend([0.0; 4]),
             }
         }
-        // Cloud layers: four offsets, then four on/off switches.
+        // Cloud layers: the front keyframe's offset, the back one's, the
+        // fade between them, and which slot is in front (+2 if the back one
+        // exists; -1 if there is nothing yet).
         let cell = self.scene.grid.cell;
-        params.extend(
-            (0..CLOUD_LAYERS).map(|band| self.sky_clouds.strip_offset_px(band, cell) as f32),
-        );
-        params.extend((0..CLOUD_LAYERS).map(|band| {
-            if self.sky_clouds.image(band).is_some() {
-                1.0
+        let sky = &self.sky_clouds;
+        let front = |band: usize| sky.front_slot(band);
+        let back = |band: usize| 1 - sky.front_slot(band);
+        params.extend((0..CLOUD_LAYERS).map(|b| sky.strip_offset_px(b, front(b), cell) as f32));
+        params.extend((0..CLOUD_LAYERS).map(|b| sky.strip_offset_px(b, back(b), cell) as f32));
+        params.extend((0..CLOUD_LAYERS).map(|b| sky.fade(b) as f32));
+        params.extend((0..CLOUD_LAYERS).map(|b| {
+            if sky.slot_image(b, front(b)).is_none() {
+                -1.0
             } else {
-                0.0
+                let back_on = if sky.slot_image(b, back(b)).is_some() {
+                    2.0
+                } else {
+                    0.0
+                };
+                front(b) as f32 + back_on
             }
         }));
         let bytes: Vec<u8> = params
@@ -1640,7 +1651,7 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (9 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 = (11 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 

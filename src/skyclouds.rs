@@ -1,30 +1,36 @@
-//! The procedural clouds ([`crate::cloudgen`]) in the running app, in four
-//! layers by distance (owner decision, 2026-11-04: "give clouds their own 4
-//! layers so we can have a bit more 'energy' in the cloud mix").
+//! The procedural clouds ([`crate::cloudgen`]) in the running app: four
+//! layers by distance, each changing over time through cross-faded
+//! keyframes (owner decisions, 2026-11-04: "give clouds their own 4 layers
+//! so we can have a bit more 'energy'", and clouds that "fade in and out of
+//! existence" and "boil" in storms).
 //!
-//! Each layer drifts with its own wind and follows its own share of the
-//! Endless camera, nearer layers faster, so the layers slide past one
-//! another. Each has its own strip of cloud world, wider than the screen
-//! by [`MARGIN`] cells on each side, rendered on a **background thread**;
-//! the GPU slides every strip by its layer's fractional offset. A layer
-//! asks for a fresh strip when its view nears the end of the margin, when
-//! the moonlight moves enough to matter, or when the cover or palette
-//! changes. The worker renders the newest request for each layer and drops
-//! older ones, so the frame rate never waits on it.
+//! **Layers.** Each drifts with its own wind and follows its own share of
+//! the Endless camera, nearer layers faster, so they slide past one
+//! another.
+//!
+//! **Keyframes.** Clouds live: heaps grow and dissolve and billows drift
+//! and rise ([`crate::cloudgen::LayerField::at_time`]). Rendering every
+//! frame is far too slow, so a **background thread** renders each layer at
+//! moments a keyframe interval apart (about 8 s calm, 2.5 s in a storm;
+//! the far layer half as often again), always one keyframe ahead. The GPU
+//! cross-fades from the previous keyframe to the next as the cloud clock
+//! runs between them: a heap that forms in between fades in, edges morph,
+//! and every keyframe is lit with the moon where it is now. A cover or
+//! palette change fades over [`QUICK_FADE`] seconds. Each strip is wider
+//! than the screen by [`MARGIN`] cells on each side; the GPU slides it by
+//! its layer's fractional offset. The frame rate never waits on the worker.
 //!
 //! **Moonlight** (GitHub issue #1): the moon is drawn behind the clouds and
 //! each cloud cell lets `exp(-k × density)` of it through; clouds are lit by
-//! a self-shadowing march toward the moon's real position, scaled by its
-//! phase; edge light near the moon comes only through thin cloud. A layer
-//! is relit when the moon has moved [`RELIGHT_CELLS`] cells or changed
-//! phase.
+//! a self-shadowing march toward the moon's position, scaled by its phase;
+//! edge light near the moon comes only through thin cloud.
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::JoinHandle;
 
 use crate::cloudgen::{
-    dithered_alpha, layer_parts, light_at, sky_fields, tone_index, tone_ramp, Light, CLOUD_LAYERS,
-    LAYERS,
+    dithered_alpha, layer_parts, light_at, sky_fields, tone_index, tone_ramp, weather, Light,
+    CLOUD_LAYERS, LAYERS,
 };
 use crate::clouds::Cover;
 use crate::endless::decode_srgb;
@@ -37,13 +43,28 @@ pub const LAYER_WIND: [f64; CLOUD_LAYERS] = [0.15, 0.25, 0.35, 0.5];
 pub const LAYER_PARALLAX: [f64; CLOUD_LAYERS] = [0.03, 0.06, 0.1, 0.16];
 /// Extra cloud-world columns rendered on each side of the screen.
 pub const MARGIN: i32 = 96;
-/// How far (cells) the moon moves before the clouds are relit.
-pub const RELIGHT_CELLS: f64 = 4.0;
 /// Longest simulated motion step per frame, in seconds.
 pub const MAX_MOTION_STEP: f64 = 1.0 / 30.0;
 /// The most opaque stacked clouds can be within a layer, so the moon always
 /// shows faintly (owner, 2026-11-03).
 pub const MAX_STACKED_OPACITY: f64 = 0.94;
+/// Seconds a cover or palette change takes to fade in.
+pub const QUICK_FADE: f64 = 1.5;
+/// Strips kept on the GPU per layer: the one fading out and the one in.
+pub const SLOTS: usize = 2;
+
+/// Seconds of cloud time between keyframes for layer `band` under `cover`:
+/// 8 s calm down to 2.5 s in a boiling storm; the far layer changes half
+/// as often again.
+pub fn keyframe_interval(cover: Cover, band: usize) -> f64 {
+    let churn = weather(cover)[1].churn;
+    let base = 8.0 - 5.5 * churn;
+    if band == 0 {
+        base * 1.5
+    } else {
+        base
+    }
+}
 
 /// Everything needed to render one layer's strip.
 #[derive(Debug, Clone, Copy)]
@@ -65,6 +86,8 @@ pub struct StripRequest {
     /// request was made: the moon's position is in screen space.
     pub view: f64,
     pub light: Option<Light>,
+    /// The cloud time this keyframe shows.
+    pub time: f64,
 }
 
 /// A rendered strip: straight-alpha, sRGB-encoded RGBA, row-major.
@@ -75,6 +98,8 @@ pub struct StripImage {
     pub origin: i32,
     pub width: usize,
     pub rows: usize,
+    /// The cloud time it shows.
+    pub time: f64,
     pub rgba: Vec<u8>,
 }
 
@@ -88,14 +113,15 @@ fn encode(c: f64) -> u8 {
     (v * 255.0).round() as u8
 }
 
-/// Renders one layer's strip: its parts far to near, each cell lit by
-/// [`light_at`], snapped to its sky layer's tones, hazed by distance,
-/// dithered at the edges, and composited in linear light. Sky is
+/// Renders one layer's strip at its cloud time: its parts far to near, each
+/// cell lit by [`light_at`], snapped to its sky layer's tones, hazed by
+/// distance, dithered at the edges, and composited in linear light. Sky is
 /// transparent. O(cells × parts × march steps).
 pub fn render_strip(request: &StripRequest) -> StripImage {
     let rows = request.sky_rows.max(1) as usize;
     let width = request.width.max(1);
-    let fields = sky_fields(request.cover, request.sky_rows, request.seed);
+    let fields = sky_fields(request.cover, request.sky_rows, request.seed)
+        .map(|field| field.at_time(request.time));
     let sky = request
         .palette
         .bg
@@ -154,6 +180,7 @@ pub fn render_strip(request: &StripRequest) -> StripImage {
         origin: request.origin,
         width,
         rows,
+        time: request.time,
         rgba,
     }
 }
@@ -227,28 +254,63 @@ impl Drop for CloudWorker {
     }
 }
 
-/// One layer's motion and strips.
+/// One layer's motion, keyframes, and fade.
 #[derive(Debug, Clone, Default)]
 struct LayerState {
     /// Wind travel so far, in cells.
     wind: f64,
     /// Cloud-world column at the screen's left edge.
     view: f64,
+    /// The two GPU slots: the keyframe fading in and the one fading out.
+    slots: [Option<StripImage>; SLOTS],
+    /// Which slot holds the keyframe fading in.
+    front: usize,
+    /// A finished keyframe waiting for the current fade to end.
+    queued: Option<StripImage>,
+    /// The cloud time the current fade started, and how long it lasts.
+    fade_start: f64,
+    fade_length: f64,
     /// The newest generation requested for this layer.
     generation: u64,
-    /// The generation a strip must at least have to be shown.
+    /// The generation a strip must at least have to be used.
     wanted: u64,
     /// A request is outstanding.
     pending: bool,
-    /// Something changed (cover, palette): request a fresh strip.
-    stale: bool,
-    /// The light the newest request used.
-    requested_light: Option<Light>,
-    /// The strip on screen.
-    current: Option<StripImage>,
+    /// Something changed (cover, palette): fetch a keyframe for now.
+    urgent: bool,
 }
 
-/// The app's clouds: four layers, their motion, and their strips.
+impl LayerState {
+    /// How far the current fade has run, 0 to 1.
+    fn fade(&self, clock: f64) -> f64 {
+        if self.fade_length <= 0.0 {
+            return 1.0;
+        }
+        ((clock - self.fade_start) / self.fade_length).clamp(0.0, 1.0)
+    }
+
+    /// The keyframe fading in.
+    fn front_image(&self) -> Option<&StripImage> {
+        self.slots[self.front].as_ref()
+    }
+
+    /// Starts fading `image` in over `length` seconds from `clock`. Returns
+    /// the slot it went into.
+    fn rotate(&mut self, image: StripImage, clock: f64, length: f64) -> usize {
+        let slot = if self.slots[self.front].is_some() {
+            1 - self.front
+        } else {
+            self.front
+        };
+        self.slots[slot] = Some(image);
+        self.front = slot;
+        self.fade_start = clock;
+        self.fade_length = length.max(1e-3);
+        slot
+    }
+}
+
+/// The app's clouds: four layers, their motion, and their keyframes.
 pub struct SkyClouds {
     seed: u32,
     cover: Cover,
@@ -258,6 +320,8 @@ pub struct SkyClouds {
     worker: CloudWorker,
     /// Requests are numbered across all layers.
     next_generation: u64,
+    /// Seconds of cloud life (runs with the speed setting, stops on pause).
+    clock: f64,
     layers: [LayerState; CLOUD_LAYERS],
 }
 
@@ -278,8 +342,9 @@ impl SkyClouds {
             sky_rows: sky_rows.max(1),
             worker: CloudWorker::spawn(),
             next_generation: 0,
+            clock: 0.0,
             layers: std::array::from_fn(|_| LayerState {
-                stale: true,
+                urgent: true,
                 ..LayerState::default()
             }),
         }
@@ -290,26 +355,30 @@ impl SkyClouds {
         self.cover
     }
 
-    /// Switches the coverage preset (the old strips stay until the new ones
-    /// are ready).
+    /// Switches the coverage preset; the new sky fades in over
+    /// [`QUICK_FADE`] seconds once it is ready.
     pub fn set_cover(&mut self, cover: Cover) {
         self.cover = cover;
         self.invalidate();
     }
 
-    /// Switches the palette.
+    /// Switches the palette, fading like a cover change.
     pub fn set_palette(&mut self, palette: &'static Palette) {
         self.palette = palette;
         self.invalidate();
     }
 
-    /// Asks every layer for a fresh strip, and stops showing older ones
-    /// once each arrives.
     fn invalidate(&mut self) {
         for layer in &mut self.layers {
-            layer.stale = true;
+            layer.urgent = true;
+            layer.queued = None;
             layer.wanted = self.next_generation + 1;
         }
+    }
+
+    /// Seconds of cloud life so far.
+    pub fn clock(&self) -> f64 {
+        self.clock
     }
 
     /// Layer `band`'s cloud-world column at the screen's left edge.
@@ -317,16 +386,27 @@ impl SkyClouds {
         self.layers[band].view
     }
 
-    /// Layer `band`'s strip on screen, if any.
-    pub fn image(&self, band: usize) -> Option<&StripImage> {
-        self.layers[band].current.as_ref()
+    /// The strip in GPU slot `slot` of layer `band`, if any.
+    pub fn slot_image(&self, band: usize, slot: usize) -> Option<&StripImage> {
+        self.layers[band].slots[slot].as_ref()
     }
 
-    /// Device pixels from layer `band`'s strip's left edge to the screen's
-    /// left edge.
-    pub fn strip_offset_px(&self, band: usize, cell: u32) -> f64 {
+    /// The slot of layer `band` fading in.
+    pub fn front_slot(&self, band: usize) -> usize {
+        self.layers[band].front
+    }
+
+    /// How far layer `band`'s current fade has run, 0 to 1: the weight of
+    /// the front slot over the other one.
+    pub fn fade(&self, band: usize) -> f64 {
+        self.layers[band].fade(self.clock)
+    }
+
+    /// Device pixels from the left edge of layer `band`'s strip in `slot`
+    /// to the screen's left edge.
+    pub fn strip_offset_px(&self, band: usize, slot: usize, cell: u32) -> f64 {
         let layer = &self.layers[band];
-        layer.current.as_ref().map_or(0.0, |image| {
+        layer.slots[slot].as_ref().map_or(0.0, |image| {
             (layer.view - f64::from(image.origin)) * f64::from(cell)
         })
     }
@@ -341,96 +421,124 @@ impl SkyClouds {
         self.sky_rows as usize
     }
 
-    fn light_moved(old: Option<Light>, new: Option<Light>) -> bool {
-        match (old, new) {
-            (None, None) => false,
-            (Some(a), Some(b)) => {
-                let moved = ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
-                moved >= RELIGHT_CELLS || (a.strength - b.strength).abs() > 1e-9
-            }
-            _ => true,
-        }
+    fn request(&mut self, band: usize, time: f64, light: Option<Light>) {
+        self.next_generation += 1;
+        let layer = &mut self.layers[band];
+        layer.generation = self.next_generation;
+        layer.pending = true;
+        self.worker.request(StripRequest {
+            generation: layer.generation,
+            band,
+            seed: self.seed,
+            cover: self.cover,
+            palette: self.palette,
+            sky_rows: self.sky_rows,
+            origin: layer.view.floor() as i32 - MARGIN,
+            width: (self.cols + 2 * MARGIN) as usize,
+            view: layer.view,
+            light,
+            time,
+        });
     }
 
     /// Moves every layer one frame (its wind for at most
     /// [`MAX_MOTION_STEP`] seconds, plus its share of the Endless `camera`),
-    /// asks for fresh strips where needed, and takes finished ones. Returns
-    /// which layers got a new strip (they need uploading).
+    /// runs the cloud clock, starts fades as keyframes become due, and asks
+    /// for the next keyframes. Returns the `(layer, slot)` pairs whose
+    /// strips changed (they need uploading).
     pub fn advance(
         &mut self,
         dt: f64,
         speed: f64,
         camera: f64,
         light: Option<Light>,
-    ) -> [bool; CLOUD_LAYERS] {
+    ) -> Vec<(usize, usize)> {
         let step = if dt.is_finite() {
             dt.clamp(0.0, MAX_MOTION_STEP)
         } else {
             0.0
         };
-        let mut arrived = [false; CLOUD_LAYERS];
+        self.clock += step * speed.max(0.0);
+        let clock = self.clock;
+        let mut changed = Vec::new();
         for image in self.worker.finished() {
             let band = image.band.min(CLOUD_LAYERS - 1);
             let layer = &mut self.layers[band];
             if image.generation == layer.generation {
                 layer.pending = false;
             }
-            let newer = layer
-                .current
-                .as_ref()
-                .is_none_or(|c| c.generation < image.generation);
-            if image.generation >= layer.wanted && newer {
-                layer.current = Some(image);
-                arrived[band] = true;
+            if image.generation < layer.wanted {
+                continue;
+            }
+            if layer.front_image().is_none() || layer.urgent {
+                // First sky, or a cover or palette change: fade in now.
+                layer.urgent = false;
+                changed.push((band, layer.rotate(image, clock, QUICK_FADE)));
+            } else {
+                layer.queued = Some(image);
             }
         }
         for band in 0..CLOUD_LAYERS {
+            let interval = keyframe_interval(self.cover, band);
             let layer = &mut self.layers[band];
             layer.wind += LAYER_WIND[band] * speed.max(0.0) * step;
             if camera.is_finite() {
                 layer.view = layer.wind + LAYER_PARALLAX[band] * camera;
             }
-            let running_out = layer.current.as_ref().is_none_or(|image| {
+            // When the current fade is done, the queued keyframe fades in
+            // over the time until it is due.
+            if layer.fade(clock) >= 1.0 {
+                if let Some(next) = layer.queued.take() {
+                    let length = (next.time - clock).max(QUICK_FADE.min(interval));
+                    changed.push((band, layer.rotate(next, clock, length)));
+                }
+            }
+            let running_out = layer.front_image().is_none_or(|image| {
                 let into = layer.view - f64::from(image.origin);
                 into < 0.0 || into > f64::from(MARGIN) * 1.5
             });
-            let relight = Self::light_moved(layer.requested_light, light);
-            if !layer.pending && (layer.stale || running_out || relight) {
-                self.next_generation += 1;
-                layer.generation = self.next_generation;
-                self.worker.request(StripRequest {
-                    generation: layer.generation,
-                    band,
-                    seed: self.seed,
-                    cover: self.cover,
-                    palette: self.palette,
-                    sky_rows: self.sky_rows,
-                    origin: layer.view.floor() as i32 - MARGIN,
-                    width: (self.cols + 2 * MARGIN) as usize,
-                    view: layer.view,
-                    light,
-                });
-                layer.pending = true;
-                layer.stale = false;
-                layer.requested_light = light;
+            if layer.pending {
+                continue;
+            }
+            if layer.urgent || layer.front_image().is_none() {
+                self.request(band, clock, light);
+            } else if layer.queued.is_none() {
+                // Always one keyframe ahead: the next is due an interval
+                // after the one now fading in (sooner if the strip is about
+                // to run out).
+                let front_time = layer.front_image().map_or(clock, |image| image.time);
+                let due = if running_out {
+                    clock
+                } else {
+                    front_time.max(clock) + interval
+                };
+                self.request(band, due, light);
             }
         }
-        arrived
+        changed
     }
 
-    /// Blocks until every layer's newest requested strip arrives (tests).
-    /// Returns false if the worker stopped.
+    /// Blocks until every layer's newest requested strip arrives, then
+    /// takes it as in [`SkyClouds::advance`] (tests). Returns false if the
+    /// worker stopped.
     pub fn wait(&mut self) -> bool {
         while self.layers.iter().any(|layer| layer.pending) {
             let Ok(image) = self.worker.results.recv() else {
                 return false;
             };
+            let clock = self.clock;
             let layer = &mut self.layers[image.band.min(CLOUD_LAYERS - 1)];
             if image.generation == layer.generation {
                 layer.pending = false;
             }
-            if image.generation >= layer.wanted {
-                layer.current = Some(image);
+            if image.generation < layer.wanted {
+                continue;
+            }
+            if layer.front_image().is_none() || layer.urgent {
+                layer.urgent = false;
+                layer.rotate(image, clock, QUICK_FADE);
+            } else {
+                layer.queued = Some(image);
             }
         }
         true
@@ -459,6 +567,7 @@ mod tests {
                 radius: 19.5,
                 strength: 1.0,
             }),
+            time: 0.0,
         }
     }
 
@@ -485,8 +594,6 @@ mod tests {
 
     #[test]
     fn neighbouring_strips_agree_where_they_overlap() {
-        // The field is world-anchored: a strip starting 10 columns later
-        // shows the same clouds, shifted (same view, so same lighting).
         for band in [0, 3] {
             let mut a = request(Cover::Broken, band, 0, 80);
             let mut b = request(Cover::Broken, band, 10, 80);
@@ -501,6 +608,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn keyframes_at_different_times_differ() {
+        let a = render_strip(&request(Cover::Storm, 3, 0, 120));
+        let b = render_strip(&StripRequest {
+            time: 20.0,
+            ..request(Cover::Storm, 3, 0, 120)
+        });
+        assert_ne!(a.rgba, b.rgba, "storm clouds change in 20 s");
+        assert_eq!(b.time, 20.0);
     }
 
     #[test]
@@ -533,24 +651,30 @@ mod tests {
     }
 
     #[test]
+    fn storms_keyframe_faster_and_the_far_layer_slower() {
+        assert!(keyframe_interval(Cover::Storm, 3) < keyframe_interval(Cover::Scattered, 3));
+        assert!(keyframe_interval(Cover::Broken, 0) > keyframe_interval(Cover::Broken, 3));
+        assert!((keyframe_interval(Cover::Clear, 2) - 8.0).abs() < 1e-12);
+        assert!((keyframe_interval(Cover::Storm, 2) - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
     fn layers_drift_at_their_own_speeds_and_nearer_is_faster() {
         let vga = palette_by_key("vga").unwrap();
         let mut sky = SkyClouds::new(3, 40, 30, Cover::Broken, vga);
         sky.advance(0.0, 1.0, 0.0, None);
         assert!(sky.wait());
         for band in 0..CLOUD_LAYERS {
-            let image = sky.image(band).unwrap();
+            let image = sky.slot_image(band, sky.front_slot(band)).unwrap();
             assert_eq!(image.width, sky.strip_width());
             assert_eq!(image.origin, -MARGIN);
         }
-        // 10 s of wind at 1x.
         for _ in 0..300 {
             sky.advance(1.0 / 30.0, 1.0, 0.0, None);
         }
         for (band, wind) in LAYER_WIND.iter().enumerate() {
             assert!((sky.view(band) - 10.0 * wind).abs() < 1e-9, "{band}");
         }
-        // The Endless camera: each layer follows its own share.
         sky.advance(0.0, 1.0, 100.0, None);
         for band in 0..CLOUD_LAYERS {
             let expected = 10.0 * LAYER_WIND[band] + 100.0 * LAYER_PARALLAX[band];
@@ -558,36 +682,73 @@ mod tests {
         }
         assert!(LAYER_WIND.windows(2).all(|w| w[0] < w[1]));
         assert!(LAYER_PARALLAX.windows(2).all(|w| w[0] < w[1]));
-        // A cover change refreshes every layer.
-        sky.set_cover(Cover::Clear);
-        sky.advance(0.0, 1.0, 100.0, None);
-        assert!(sky.wait());
-        for band in 0..CLOUD_LAYERS {
-            assert!(sky.image(band).unwrap().rgba.chunks(4).all(|p| p[3] == 0));
-        }
+        assert!(
+            (sky.clock() - 10.0).abs() < 1e-9,
+            "the cloud clock runs with the speed"
+        );
     }
 
     #[test]
-    fn moonlight_moving_a_few_cells_relights_every_layer() {
+    fn keyframes_cross_fade_one_into_the_next() {
+        let vga = palette_by_key("vga").unwrap();
+        let mut sky = SkyClouds::new(3, 40, 30, Cover::Storm, vga);
+        // The first sky fades in.
+        sky.advance(0.0, 1.0, 0.0, None);
+        assert!(sky.wait());
+        let first = sky.front_slot(0);
+        assert_eq!(sky.fade(0), 0.0);
+        // Run the clock; keyframes for later times arrive and rotate in.
+        let mut times = vec![sky.slot_image(3, sky.front_slot(3)).unwrap().time];
+        for _ in 0..(20 * 30) {
+            let changed = sky.advance(1.0 / 30.0, 1.0, 0.0, None);
+            for (band, slot) in changed {
+                assert!(slot < SLOTS);
+                if band == 3 {
+                    times.push(sky.slot_image(3, slot).unwrap().time);
+                }
+            }
+            for band in 0..CLOUD_LAYERS {
+                let fade = sky.fade(band);
+                assert!((0.0..=1.0).contains(&fade));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            times.len() >= 3,
+            "several keyframes in 20 s of storm: {times:?}"
+        );
+        assert!(
+            times.windows(2).all(|w| w[1] > w[0]),
+            "keyframes move forward: {times:?}"
+        );
+        // Both slots got used.
+        assert!(sky.slot_image(0, first).is_some());
+    }
+
+    #[test]
+    fn a_cover_change_fades_in_quickly_and_pausing_stops_the_clock() {
         let vga = palette_by_key("vga").unwrap();
         let mut sky = SkyClouds::new(3, 40, 30, Cover::Broken, vga);
-        let moon = |x: f64| Light {
-            x,
-            y: 10.0,
-            radius: 19.5,
-            strength: 1.0,
-        };
-        sky.advance(0.0, 1.0, 0.0, Some(moon(20.0)));
+        sky.advance(0.0, 1.0, 0.0, None);
         assert!(sky.wait());
-        let before = sky.next_generation;
-        sky.advance(0.0, 1.0, 0.0, Some(moon(21.0)));
-        assert_eq!(sky.next_generation, before, "a small move waits");
-        sky.advance(0.0, 1.0, 0.0, Some(moon(20.0 + RELIGHT_CELLS)));
-        assert_eq!(
-            sky.next_generation,
-            before + CLOUD_LAYERS as u64,
-            "a bigger move relights all"
-        );
+        sky.set_cover(Cover::Clear);
+        sky.advance(0.0, 1.0, 0.0, None);
         assert!(sky.wait());
+        for band in 0..CLOUD_LAYERS {
+            let image = sky.slot_image(band, sky.front_slot(band)).unwrap();
+            assert!(
+                image.rgba.chunks(4).all(|p| p[3] == 0),
+                "the clear sky is fading in"
+            );
+        }
+        let clock = sky.clock();
+        for _ in 0..60 {
+            sky.advance(0.0, 1.0, 0.0, None); // paused: no time passes
+        }
+        assert_eq!(sky.clock(), clock);
+        for _ in 0..(QUICK_FADE * 30.0) as usize + 2 {
+            sky.advance(1.0 / 30.0, 1.0, 0.0, None);
+        }
+        assert_eq!(sky.fade(2), 1.0, "the quick fade finished");
     }
 }

@@ -216,15 +216,27 @@ pub struct LayerWeather {
     pub coverage: f64,
     /// Optical depth: opacity is `1 - exp(-thickness × density)`.
     pub thickness: f64,
+    /// How fast clouds live and change, 0 (calm) to 1 (a boiling storm):
+    /// heap lifetimes shorten and billows rise faster.
+    pub churn: f64,
 }
 
 /// The weather for each layer, high to low, for a preset. Coverage and
 /// thickness are separate dials, so a preset can be many thin clouds or a
 /// few dense ones; values between presets blend smoothly.
 pub fn weather(cover: Cover) -> [LayerWeather; 3] {
+    let churn = match cover {
+        Cover::Clear => 0.0,
+        Cover::Puffs => 0.1,
+        Cover::Scattered => 0.15,
+        Cover::Broken => 0.25,
+        Cover::Overcast => 0.35,
+        Cover::Storm => 1.0,
+    };
     let w = |coverage, thickness| LayerWeather {
         coverage,
         thickness,
+        churn,
     };
     match cover {
         Cover::Clear => [w(0.0, 1.0), w(0.0, 1.5), w(0.0, 2.0)],
@@ -244,17 +256,41 @@ pub struct LayerField {
     seed: u32,
     /// Rows of sky (the ground row).
     sky_rows: f64,
+    /// Seconds of cloud life: heaps grow and fade, and billows drift and
+    /// rise, as this advances.
+    pub time: f64,
 }
 
 impl LayerField {
-    /// The field for `layer` in a sky of `sky_rows`, from the scene seed.
+    /// The field for `layer` in a sky of `sky_rows`, from the scene seed,
+    /// at time 0.
     pub fn new(layer: Layer, weather: LayerWeather, sky_rows: i32, seed: u32) -> Self {
         Self {
             layer,
             weather,
             seed: seed ^ layer.salt(),
             sky_rows: f64::from(sky_rows.max(1)),
+            time: 0.0,
         }
+    }
+
+    /// The same field at `time` seconds of cloud life.
+    pub fn at_time(self, time: f64) -> Self {
+        Self {
+            time: if time.is_finite() { time } else { 0.0 },
+            ..self
+        }
+    }
+
+    /// How far the billowy detail has drifted and risen by now, in noise
+    /// units: a slow sideways drift always, and in storms a quick rise that
+    /// makes the tops boil.
+    fn churn_offset(&self) -> (f64, f64) {
+        let churn = self.weather.churn;
+        (
+            self.time * (0.004 + 0.01 * churn),
+            -self.time * (0.003 + 0.09 * churn),
+        )
     }
 
     /// Cloud density at world column `x` and row `row` (fractional, cell
@@ -281,7 +317,14 @@ impl LayerField {
         let broad = fractal(x / (sx * 6.0), 0.37, self.seed ^ 0xb0b0, 3, false);
         // Heap height along the sky (mid layer), also broad.
         let heap = fractal(x / (sx * 3.0), 1.71, self.seed ^ 0x4ea9, 2, false);
-        let detail = fractal(x / sx, row / sy, self.seed, 4, self.layer.billow());
+        let (drift, rise) = self.churn_offset();
+        let detail = fractal(
+            x / sx + drift,
+            row / sy + rise,
+            self.seed,
+            4,
+            self.layer.billow(),
+        );
         // The broad noise decides where cloud fields are (clear gaps between
         // them until coverage is high); the detail shapes each cloud.
         let group = smoothstep(0.2, 0.7, broad);
@@ -370,7 +413,17 @@ impl LayerField {
             }
             let r = |n: i32| hash(k, salt + n, self.seed);
             // Each heap grows over 0.3 of coverage past its own threshold.
-            let grow = smoothstep(r(1), r(1) + 0.3, coverage * 1.15);
+            // A life cycle: each heap grows in, matures, and dissolves over
+            // its own seeded lifetime (about 2 minutes calm, 20 s in a
+            // storm), then another takes its slot. Coverage is lifted a
+            // little so the sky stays as cloudy on average.
+            let lifetime = (120.0 - 100.0 * self.weather.churn) * (0.7 + 0.6 * r(7));
+            let phase = (self.time / lifetime + r(8)).rem_euclid(1.0);
+            let life = smoothstep(0.0, 0.2, phase) * smoothstep(1.0, 0.7, phase);
+            if life <= 0.0 {
+                continue;
+            }
+            let grow = smoothstep(r(1), r(1) + 0.3, coverage * 1.3) * life;
             if grow <= 0.0 {
                 continue;
             }
@@ -387,8 +440,8 @@ impl LayerField {
                 self.sky_rows * (base_v + lower + 0.1 * scale * (r(5) - 0.5)).min(0.995);
             // A gentle undulation of a row or two along the base, so even
             // big heaps never sit on a ruler-straight line.
-            let wobble = value_noise(x / (9.0 * scale), f64::from(k), self.seed ^ 0x7e57) - 0.5;
-            let base_row = flat_base + wobble * 4.0 * scale.max(0.5);
+            let wobble = value_noise(x / (7.0 * scale), f64::from(k), self.seed ^ 0x7e57) - 0.5;
+            let base_row = flat_base + wobble * 5.0 * scale.max(0.5);
             // Bases are squashed, not cut: below the base line each ball
             // falls off BASE_SQUASH times faster, so big heaps are nearly
             // flat underneath with rounded ends and small puffs stay round.
@@ -413,7 +466,7 @@ impl LayerField {
                 };
                 let d2 = ((x - bx).powi(2) + dy * dy) / (radius * radius);
                 if d2 < 1.0 {
-                    field += (1.0 - d2) * (1.0 - d2);
+                    field += life * (1.0 - d2) * (1.0 - d2);
                 }
             }
         }
@@ -422,8 +475,8 @@ impl LayerField {
         }
         let (sx, sy) = self.layer.scale();
         let detail = fractal(
-            x / (sx * scale),
-            row / (sy * scale),
+            x / (sx * scale) + self.churn_offset().0,
+            row / (sy * scale) + self.churn_offset().1,
             self.seed ^ (salt + parity) as u32,
             4,
             true,
@@ -582,7 +635,8 @@ pub fn layer_parts(band: usize) -> Vec<(usize, usize)> {
     }
 }
 
-/// The three layer fields for a preset, high to low.
+/// The three layer fields for a preset, high to low, at time 0 (use
+/// [`LayerField::at_time`] for later).
 pub fn sky_fields(cover: Cover, sky_rows: i32, seed: u32) -> [LayerField; 3] {
     let weather = weather(cover);
     [0, 1, 2].map(|i| LayerField::new(LAYERS[i], weather[i], sky_rows, seed))
@@ -653,6 +707,7 @@ mod tests {
             let w = LayerWeather {
                 coverage: f64::from(step) / 40.0,
                 thickness: 2.0,
+                churn: 0.0,
             };
             let field = LayerField::new(Layer::Mid, w, ROWS, 3);
             let share = coverage(&[field], 0.0, 300, ROWS);
@@ -774,6 +829,7 @@ mod tests {
             LayerWeather {
                 coverage: 0.5,
                 thickness: 0.6,
+                churn: 0.0,
             },
             ROWS,
             1,
@@ -926,6 +982,75 @@ mod tests {
                 .min()
         };
         assert!(nearest(3) < nearest(2) && nearest(2) < nearest(1) && nearest(1) < nearest(0));
+    }
+
+    #[test]
+    fn clouds_change_smoothly_over_time() {
+        let field = sky_fields(Cover::Broken, ROWS, 4)[1];
+        let sample = |t: f64| {
+            let f = field.at_time(t);
+            (0..300)
+                .flat_map(|x| (60..200).step_by(5).map(move |y| (x, y)))
+                .map(|(x, y)| f.density(f64::from(x) + 0.5, f64::from(y) + 0.5))
+                .collect::<Vec<f64>>()
+        };
+        let (a, b, later) = (sample(10.0), sample(10.1), sample(90.0));
+        let step: f64 = a.iter().zip(&b).map(|(p, q)| (p - q).abs()).sum::<f64>() / a.len() as f64;
+        let drift: f64 = a
+            .iter()
+            .zip(&later)
+            .map(|(p, q)| (p - q).abs())
+            .sum::<f64>()
+            / a.len() as f64;
+        assert!(step < 0.01, "a tenth of a second changes little: {step}");
+        assert!(
+            drift > 5.0 * step,
+            "a minute and a half changes a lot: {drift} vs {step}"
+        );
+    }
+
+    #[test]
+    fn heaps_fade_in_and_out_over_their_lives() {
+        // Somewhere a cell is clear, then cloudy, then clear again, over a
+        // few minutes of calm weather.
+        let field = sky_fields(Cover::Broken, ROWS, 5)[1];
+        let mut found = false;
+        'cells: for x in (0..400).step_by(7) {
+            for y in (60..260).step_by(9) {
+                let at = |t: f64| {
+                    field
+                        .at_time(t)
+                        .density(f64::from(x) + 0.5, f64::from(y) + 0.5)
+                };
+                let series: Vec<f64> = (0..60).map(|i| at(f64::from(i) * 5.0)).collect();
+                let first_cloud = series.iter().position(|&d| d > 0.5);
+                if let Some(start) = first_cloud {
+                    let clear_before = series[..start].contains(&0.0);
+                    let clear_after = series[start..].contains(&0.0);
+                    if clear_before && clear_after {
+                        found = true;
+                        break 'cells;
+                    }
+                }
+            }
+        }
+        assert!(found, "clouds come and go");
+    }
+
+    #[test]
+    fn storms_churn_faster_than_fair_weather() {
+        let change = |cover: Cover| {
+            let field = sky_fields(cover, ROWS, 6)[1];
+            let (a, b) = (field.at_time(0.0), field.at_time(5.0));
+            (0..300)
+                .flat_map(|x| (40..260).step_by(6).map(move |y| (x, y)))
+                .map(|(x, y)| {
+                    let (x, y) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                    (a.density(x, y) - b.density(x, y)).abs()
+                })
+                .sum::<f64>()
+        };
+        assert!(change(Cover::Storm) > 2.0 * change(Cover::Broken));
     }
 
     #[test]

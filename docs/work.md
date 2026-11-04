@@ -293,8 +293,41 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (the owner is using the machine).
+- **Four cloud layers, life cycles, and boiling (owner, 2026-11-04):** "give clouds their own 4 layers so we can have a bit more 'energy' in the cloud mix... clouds can fade in and out of existence... In bad thunderstorms I've even seen them 'boil'". The owner approved the plan and `opt-level = 1` for dev builds ("yes to all").
+  - **Build setting:** `[profile.dev] opt-level = 1` in `Cargo.toml`. A debug-build sky now takes 0.71 s instead of 2.7 s (release: 0.55 s). Debug info and assertions stay on.
+  - **Four distance layers:**
+    - `cloudgen::layer_parts` splits the 22 parts: far (high streaks and heap rows 7-9), mid-far (rows 4-6), mid-near (rows 2-3 and low scud), near (rows 0-1);
+    - winds are 0.15/0.25/0.35/0.5 cells/s, and the layers follow 0.03/0.06/0.1/0.16 of the Endless camera;
+    - the worker keeps only the newest request per layer and renders the nearest first.
+  - **Life cycles:**
+    - each heap has a seeded lifetime of `(120 - 100 × churn) × (0.7..1.3)` s, growing over the first 20% and dissolving over the last 30%; its balls' weights scale with its life, so it shrinks and fades rather than vanishing;
+    - coverage is lifted 1.3× to keep the sky as cloudy on average;
+    - `LayerWeather::churn` runs from 0 (clear) through 0.1-0.35 to 1 (storm);
+    - `LayerField::at_time` sets the cloud time.
+  - **Boiling:** the billowy detail drifts slowly sideways and rises at `0.003 + 0.09 × churn` noise units per second, so storm tops churn upward.
+  - **Keyframes and cross-fade:**
+    - each layer renders keyframes an interval ahead: `8 - 5.5 × churn` s (8 s calm, 2.5 s in a storm), 1.5× for the far layer;
+    - the GPU blends from the previous keyframe to the next in linear light over the time until the next is due, so forming heaps fade in and edges morph;
+    - every keyframe is lit with the moon's current position, which replaces the separate relight step;
+    - a cover or palette change fades in over 1.5 s;
+    - the cloud clock runs with the speed setting and stops on pause.
+  - The cloud texture holds 8 strips (4 layers × 2 slots). The shader receives each layer's front and back offsets, fade, and front slot.
+  - The base wobble was tightened (wavelength 7 instead of 9, height 5 instead of 4), after the straight-bottom test found a 30-column run with the larger lifted heaps.
+  - Tests:
+    - the four layers cover every part exactly once, far to near;
+    - clouds change smoothly over a tenth of a second but substantially over 90 s;
+    - heaps fade in and out over their lives (a cell goes clear, then cloudy, then clear);
+    - storms churn more than twice as much as broken skies in 5 s;
+    - keyframes at different times differ;
+    - keyframe intervals per cover and layer;
+    - layers drift at their own speeds;
+    - keyframes cross-fade forward in time, with fades staying in 0..1;
+    - a cover change fades in quickly, and pausing stops the clock.
+  - `cargo test`: PASS, 250 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 - **Still open:**
-  - parallax by depth (the whole cloud strip moves as one, though distant heaps could drift slower);
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
 - **Earlier next steps:**

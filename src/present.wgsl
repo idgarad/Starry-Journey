@@ -45,15 +45,21 @@ struct Params {
     // Per vehicle slot: x, y device pixels from the sprite's top-left to
     // the screen's top-left; z: 1 when the slot holds a vehicle.
     vehicles: array<vec4<f32>, 6>,
-    // Cloud layers 0 (far) to 3 (near): device pixels from each layer's
-    // strip's left edge to the screen's left edge (fractional).
-    cloud_offsets: vec4<f32>,
-    // Cloud layers: 1 when the layer has a strip.
-    cloud_layers_on: vec4<f32>,
+    // Cloud layers 0 (far) to 3 (near), each cross-fading between two
+    // keyframes: device pixels from the front keyframe's strip to the
+    // screen's left edge, the same for the back keyframe, the fade (weight
+    // of the front), and the front slot (+2 if the back one exists; -1 if
+    // the layer has nothing yet).
+    cloud_front_offsets: vec4<f32>,
+    cloud_back_offsets: vec4<f32>,
+    cloud_fades: vec4<f32>,
+    cloud_slots: vec4<f32>,
 }
 
-// Cloud strips stacked in one texture, far (top) to near.
+// Cloud strips stacked in one texture: per layer (far at the top), two
+// keyframe slots.
 const CLOUD_LAYERS: u32 = 4u;
+const CLOUD_SLOTS: u32 = 2u;
 
 // Vehicle slots in the atlas; the atlas holds every beam sprite (rows
 // 2 * slot) above every body sprite (rows 12 + 2 * slot).
@@ -152,19 +158,19 @@ fn vehicle_sample(slot: u32, body: bool, position: vec2<f32>) -> vec4<f32> {
     return mix(top, bottom, t.y);
 }
 
-// One cloud texel of layer `band`, premultiplied; transparent outside the
-// layer's band of the shared texture.
-fn cloud_texel(x: i32, row: i32, band: u32) -> vec4<f32> {
+// One cloud texel of strip `strip` (layer * CLOUD_SLOTS + slot),
+// premultiplied; transparent outside that strip of the shared texture.
+fn cloud_texel(x: i32, row: i32, strip: u32) -> vec4<f32> {
     let dims = vec2<i32>(textureDimensions(cloud_strip));
-    let rows = dims.y / i32(CLOUD_LAYERS);
+    let rows = dims.y / i32(CLOUD_LAYERS * CLOUD_SLOTS);
     if (x < 0 || x >= dims.x || row < 0 || row >= rows) {
         return vec4<f32>(0.0);
     }
-    return premultiplied(cloud_strip, x, i32(band) * rows + row);
+    return premultiplied(cloud_strip, x, i32(strip) * rows + row);
 }
 
-// A cloud layer at its fractional offset, reconstructed like sharp_sample
-// but confined to its band of the texture.
+// One cloud strip at its fractional offset, reconstructed like
+// sharp_sample but confined to that strip of the texture.
 fn cloud_sample(band: u32, offset: f32, position: vec2<f32>) -> vec4<f32> {
     let cell = params.cell.x;
     let u = floor(position) + vec2<f32>(offset, 0.0);
@@ -197,10 +203,21 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // The cloud layers far to near, each at its own fractional offset, lit
     // (including by the moon) on a background thread; they let some of the
     // moon and stars behind them through.
+    // Each layer cross-fades (in linear light, premultiplied) from its back
+    // keyframe to its front one.
     for (var band = 0u; band < CLOUD_LAYERS; band++) {
-        if (params.cloud_layers_on[band] > 0.5) {
-            color = over(cloud_sample(band, params.cloud_offsets[band], position.xy), color);
+        let slots = params.cloud_slots[band];
+        if (slots < 0.0) {
+            continue;
         }
+        let front = u32(slots) % 2u;
+        let fade = params.cloud_fades[band];
+        var cloud = cloud_sample(band * CLOUD_SLOTS + front, params.cloud_front_offsets[band], position.xy) * fade;
+        if (slots >= 2.0) {
+            let back = 1u - front;
+            cloud += cloud_sample(band * CLOUD_SLOTS + back, params.cloud_back_offsets[band], position.xy) * (1.0 - fade);
+        }
+        color = over(cloud, color);
     }
     if (params.cell.z > 0.5) {
         color = over(premultiplied(still_city, texel.x, texel.y), color);
