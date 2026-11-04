@@ -9,9 +9,11 @@
 
 pub mod clock;
 pub mod config;
+pub mod endless;
 pub mod message;
 pub mod model;
 pub mod moon;
+pub mod quips;
 pub mod raster;
 pub mod reveal;
 pub mod station;

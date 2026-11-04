@@ -16,6 +16,7 @@ use std::{
 
 use starry_journey::clock::{format_remaining, ConstructionClock};
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
+use starry_journey::endless::EndlessCity;
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
@@ -23,7 +24,8 @@ use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::Rgb;
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
 use starry_journey::moon::{is_station, moon_at, sky_cells, MoonState};
-use starry_journey::raster::{generate_stars, CityRaster, Star, WindowLighting};
+use starry_journey::quips::quip_at;
+use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::station::StationFate;
 use starry_journey::street::{apply_paint, CellPaint, StreetLayer};
@@ -163,6 +165,16 @@ impl ApplicationHandler for App {
                                 renderer.next_palette();
                             }
                         }
+                        KeyCode::KeyE => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.toggle_endless();
+                            }
+                        }
+                        KeyCode::Space => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.toggle_pause();
+                            }
+                        }
                         KeyCode::KeyR => {
                             if let Some(renderer) = &mut self.renderer {
                                 renderer.restart(random_seed());
@@ -261,11 +273,26 @@ struct Scene {
     traffic: Option<Traffic>,
     /// The palette the scene is drawn in (palettes are static data).
     palette: &'static Palette,
+    /// The scrolling layers in Endless mode; `None` in Normal mode. They
+    /// start moving once construction is complete.
+    endless: Option<EndlessCity>,
+    /// Background and stars only, the base the Endless layers draw over.
+    sky: Vec<u8>,
+    /// Cells covered by a building in the last Endless frame (the moon
+    /// hides behind them).
+    building_mask: Vec<bool>,
+    /// The composed Endless layers over the sky, reused until a layer moves
+    /// a whole column, so a frame costs one copy (as the construction view
+    /// does).
+    layer_frame: Vec<u8>,
+    /// `layer_frame` must be composed again.
+    layers_stale: bool,
 }
 
 impl Scene {
     /// Generates the city for a `width x height` surface and reveals it up
     /// to `progress` (0 for a new city; the old progress after a resize).
+    /// `endless` holds the Endless camera position, or `None` for Normal.
     fn new(
         seed: u32,
         width: u32,
@@ -273,18 +300,33 @@ impl Scene {
         palette: &'static Palette,
         progress: f64,
         scaling: CellScaling,
+        endless: Option<f64>,
     ) -> Self {
         // Starry Journey extension: Normal mode has the road too, so the
         // grid reserves the seven road rows below the city.
         let grid = Grid::with_scaling(width, height, true, scaling);
-        let mut buildings = generate_normal_city(seed, &grid);
+        let city = endless.map(|camera| EndlessCity::with_camera(seed, &grid, palette, camera));
+        // An Endless city is built like a Normal one first (owner request,
+        // 2026-11-03), from the buildings its layers show at camera 0.
+        let mut buildings = match &city {
+            Some(city) => {
+                let mut buildings = city.initial_buildings();
+                for building in &mut buildings {
+                    building.windows.lit.fill(false);
+                }
+                buildings
+            }
+            None => generate_normal_city(seed, &grid),
+        };
         let stars = generate_stars(seed, &grid);
         let ownership = CityRaster::render(&grid, &buildings, &stars, palette);
         let mut reveal = Reveal::new(&ownership, seed);
         let cells = reveal.advance_to(progress).to_vec();
         light_revealed(&mut buildings, &ownership, &cells);
-        let view = Self::view_for(&grid, &buildings, &stars, palette, &reveal);
+        let endless_tint = city.is_some();
+        let view = Self::view_for(&grid, &buildings, &stars, palette, &reveal, endless_tint);
         let street = StreetLayer::new(&grid, seed, palette);
+        let sky = CityRaster::render(&grid, &[], &stars, palette).rgba;
         let mut scene = Self {
             seed,
             grid,
@@ -298,19 +340,63 @@ impl Scene {
             moon: Vec::new(),
             traffic: None,
             palette,
+            endless: city,
+            sky,
+            building_mask: Vec::new(),
+            layer_frame: Vec::new(),
+            layers_stale: true,
         };
         scene.start_traffic_if_complete();
         scene.compose();
         scene
     }
 
-    /// Rebuilds the presented frame: city view, then the moon on cells that
-    /// currently show sky, then the street's back layer (road and background
-    /// trees), then its front layer. O(grid cells + street + moon cells).
+    /// True once an Endless city is finished, so its layers scroll.
+    fn is_scrolling(&self) -> bool {
+        self.endless.is_some() && self.reveal.is_complete()
+    }
+
+    /// The Endless camera to keep across a rebuild, or `None` in Normal.
+    fn endless_camera(&self) -> Option<f64> {
+        self.endless.as_ref().map(EndlessCity::camera)
+    }
+
+    /// Moves the Endless layers by one frame once construction is done.
+    /// Returns true when the frame needs composing again.
+    fn scroll(&mut self, dt: f64, speed: f64) -> bool {
+        if !self.reveal.is_complete() {
+            return false;
+        }
+        let moved = match &mut self.endless {
+            Some(city) => city.advance(dt, speed, self.palette),
+            None => false,
+        };
+        self.layers_stale |= moved;
+        moved
+    }
+
+    /// Rebuilds the presented frame: the city (the construction view, or
+    /// the scrolling layers), then the moon on cells that currently show
+    /// sky, then the street's back layer (road and background trees), then
+    /// its front layer. O(grid cells + street + moon cells).
     fn compose(&mut self) {
-        self.frame.clone_from(&self.view.rgba);
+        let scrolling = self.is_scrolling();
+        match (&self.endless, scrolling) {
+            (Some(city), true) => {
+                if self.layers_stale {
+                    city.compose(&self.sky, &mut self.layer_frame, &mut self.building_mask);
+                    self.layers_stale = false;
+                }
+                self.frame.clone_from(&self.layer_frame);
+            }
+            _ => self.frame.clone_from(&self.view.rgba),
+        }
         for &(cell, color) in &self.moon {
-            let building_shown = self.ownership.owner[cell] >= 0 && self.reveal.is_revealed(cell);
+            let building_shown = if scrolling {
+                self.building_mask[cell]
+            } else {
+                self.ownership.owner[cell] >= 0 && self.reveal.is_revealed(cell)
+            };
             if !building_shown {
                 self.frame[cell * 4..cell * 4 + 3].copy_from_slice(&color.0);
             }
@@ -366,9 +452,14 @@ impl Scene {
         stars: &[Star],
         palette: &Palette,
         reveal: &Reveal,
+        endless_tint: bool,
     ) -> ConstructionView {
-        let built =
-            CityRaster::render_with(grid, buildings, stars, palette, WindowLighting::Target);
+        let options = RasterOptions {
+            lighting: WindowLighting::Target,
+            endless_tint,
+            ..RasterOptions::default()
+        };
+        let built = CityRaster::render_options(grid, buildings, stars, palette, options);
         let sky = CityRaster::render(grid, &[], stars, palette);
         ConstructionView::new(built.rgba, sky.rgba, reveal)
     }
@@ -382,8 +473,14 @@ impl Scene {
             &self.stars,
             palette,
             &self.reveal,
+            self.endless.is_some(),
         );
         self.street = StreetLayer::new(&self.grid, self.seed, palette);
+        self.sky = CityRaster::render(&self.grid, &[], &self.stars, palette).rgba;
+        if let Some(city) = &mut self.endless {
+            city.set_palette(palette);
+            self.layers_stale = true;
+        }
         self.compose();
     }
 
@@ -434,6 +531,8 @@ struct Renderer {
     moon_start_step: u64,
     /// What happens to the station (`--station-fate`).
     station_fate: StationFate,
+    /// Endless scrolling and traffic are paused (`Space`).
+    paused: bool,
     options: LaunchOptions,
     scale_factor: f64,
 }
@@ -573,6 +672,7 @@ impl Renderer {
             palette_at(palette_index),
             0.0,
             options.cell_scaling(scale_factor),
+            options.endless.then_some(0.0),
         );
         let city_texture = create_city_texture(&device, &scene.grid);
         let message_texture = create_message_texture(&device, 1, 1);
@@ -607,6 +707,7 @@ impl Renderer {
             moon_state: None,
             moon_start_step: options.moon_start_step,
             station_fate: options.station_fate,
+            paused: false,
             options,
             scale_factor,
         };
@@ -640,10 +741,11 @@ impl Renderer {
         self.surface_config.width = size.width;
         self.surface_config.height = size.height;
         self.surface.configure(&self.device, &self.surface_config);
-        let new_grid = Grid::with_scaling(size.width, size.height, false, self.scaling());
+        // The scene grid always reserves the road rows (see Scene::new).
+        let new_grid = Grid::with_scaling(size.width, size.height, true, self.scaling());
         if new_grid != self.scene.grid {
-            // Same seed, same construction progress (Rebuild Prompt: resize
-            // preserves progress).
+            // Same seed, same construction progress and Endless camera
+            // (Rebuild Prompt: resize preserves progress).
             let progress = self.scene.reveal.progress();
             self.scene = Scene::new(
                 self.scene.seed,
@@ -652,6 +754,7 @@ impl Renderer {
                 palette_at(self.palette_index),
                 progress,
                 self.scaling(),
+                self.scene.endless_camera(),
             );
             self.moon_state = None;
             self.update_moon(Instant::now());
@@ -669,9 +772,11 @@ impl Renderer {
             palette_at(self.palette_index),
             0.0,
             self.scaling(),
+            self.scene.endless.is_some().then_some(0.0),
         );
         // Restart restarts a duration timer (Rebuild Prompt); resizing keeps it.
         self.construction_start = Instant::now();
+        self.paused = false;
         self.moon_state = None;
         self.update_moon(Instant::now());
         self.scene.compose();
@@ -692,6 +797,36 @@ impl Renderer {
         self.upload();
     }
 
+    /// Switches between Normal and Endless mode (`E`, a Starry Journey
+    /// addition). The new mode's city uses the same seed and keeps the
+    /// construction progress; an Endless camera starts at 0.
+    fn toggle_endless(&mut self) {
+        let endless = self.scene.endless.is_none();
+        let progress = self.scene.reveal.progress();
+        self.scene = Scene::new(
+            self.scene.seed,
+            self.surface_config.width,
+            self.surface_config.height,
+            palette_at(self.palette_index),
+            progress,
+            self.scaling(),
+            endless.then_some(0.0),
+        );
+        self.paused = false;
+        self.moon_state = None;
+        self.update_moon(Instant::now());
+        self.scene.compose();
+        self.upload();
+    }
+
+    /// Pauses or resumes Endless scrolling and traffic (`Space`). Drawing,
+    /// the moon, and construction continue.
+    fn toggle_pause(&mut self) {
+        if self.scene.endless.is_some() {
+            self.paused = !self.paused;
+        }
+    }
+
     /// Changes construction speed by `delta`, within 0.25x to 4x.
     fn change_speed(&mut self, delta: f64) {
         self.speed = (self.speed + delta).clamp(SPEED_RANGE.0, SPEED_RANGE.1);
@@ -709,14 +844,28 @@ impl Renderer {
         let progress = self
             .clock
             .progress(self.scene.reveal.progress(), dt, self.speed, elapsed);
+        let was_complete = self.scene.reveal.is_complete();
         self.scene.advance_to(progress);
+        // The frame that completes an Endless city switches to the layers.
+        let finished = !was_complete && self.scene.reveal.is_complete();
         let moon_moved = self.update_moon(now);
-        let traffic_moved = self.scene.step_traffic(dt, self.speed);
-        if self.scene.view.take_dirty() || moon_moved || traffic_moved {
+        let motion_dt = if self.paused { 0.0 } else { dt };
+        let traffic_moved = self.scene.step_traffic(motion_dt, self.speed);
+        let scrolled = self.scene.scroll(motion_dt, self.speed);
+        if self.scene.view.take_dirty() || moon_moved || traffic_moved || scrolled || finished {
             self.scene.compose();
             self.upload();
         }
+        self.update_status(elapsed);
         self.update_message();
+    }
+
+    /// Shows the silly startup lines while an Endless city is being built,
+    /// and clears them when it is done.
+    fn update_status(&mut self, construction_seconds: f64) {
+        let building = self.scene.endless.is_some() && !self.scene.reveal.is_complete();
+        let status = building.then(|| quip_at(self.scene.seed, construction_seconds));
+        self.notice.set_status(status);
     }
 
     /// Seconds since the app started, the clock for the message notice.
@@ -849,11 +998,23 @@ impl Renderer {
             let left = self.clock.remaining(elapsed).unwrap_or(0.0);
             format!("{} left", format_remaining(left))
         };
-        if self.scene.reveal.is_complete() {
-            format!("{TITLE} - complete - {size}")
+        let mode = if self.scene.endless.is_some() {
+            "endless - "
+        } else {
+            ""
+        };
+        if self.scene.is_scrolling() {
+            let state = if self.paused {
+                "paused".to_string()
+            } else {
+                format!("scrolling {}x", self.speed)
+            };
+            format!("{TITLE} - {mode}{state} - {size}")
+        } else if self.scene.reveal.is_complete() {
+            format!("{TITLE} - {mode}complete - {size}")
         } else {
             let percent = (self.scene.reveal.progress() * 100.0).floor();
-            format!("{TITLE} - building {percent}% - {pace} - {size}")
+            format!("{TITLE} - {mode}building {percent}% - {pace} - {size}")
         }
     }
 
@@ -1033,8 +1194,8 @@ mod tests {
     #[test]
     fn fixed_pixel_size_scene_shows_more_city_on_bigger_screens() {
         let fixed = CellScaling::Fixed(4);
-        let small = Scene::new(14, 1280, 720, classic(), 1.0, fixed);
-        let large = Scene::new(14, 2560, 1440, classic(), 1.0, fixed);
+        let small = Scene::new(14, 1280, 720, classic(), 1.0, fixed, None);
+        let large = Scene::new(14, 2560, 1440, classic(), 1.0, fixed, None);
         assert_eq!((small.grid.cols, small.grid.rows), (320, 180));
         assert_eq!((large.grid.cols, large.grid.rows), (640, 360));
         assert!(large.buildings.len() > small.buildings.len() * 3 / 2);
@@ -1051,7 +1212,7 @@ mod tests {
 
     #[test]
     fn normal_scene_has_a_road_and_trees_from_the_start() {
-        let scene = Scene::new(15, 1280, 720, classic(), 0.0, CellScaling::Fixed(3));
+        let scene = Scene::new(15, 1280, 720, classic(), 0.0, CellScaling::Fixed(3), None);
         let grid = scene.grid;
         assert_eq!(grid.ground_row, grid.rows - 7, "road rows are reserved");
         let pixel = |x: i32, row: i32| {
@@ -1078,7 +1239,7 @@ mod tests {
     fn duration_clock_finishes_the_scene_on_time_at_any_speed() {
         let clock = ConstructionClock::Duration { seconds: 10.0 };
         for speed in [0.25, 1.0, 4.0] {
-            let mut scene = Scene::new(16, 1280, 720, classic(), 0.0, CellScaling::Fixed(3));
+            let mut scene = Scene::new(16, 1280, 720, classic(), 0.0, CellScaling::Fixed(3), None);
             let mut elapsed = 0.0;
             while elapsed < 5.0 {
                 elapsed += 1.0 / 60.0;
@@ -1094,7 +1255,7 @@ mod tests {
 
     #[test]
     fn moon_is_drawn_on_sky_but_hidden_behind_revealed_buildings() {
-        let mut scene = Scene::new(17, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3));
+        let mut scene = Scene::new(17, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3), None);
         let grid = scene.grid;
         // A full moon low over the city, partly behind the skyline: search
         // upward from the road for a height where it overlaps both open sky
@@ -1146,7 +1307,7 @@ mod tests {
 
     #[test]
     fn traffic_with_lit_headlights_starts_only_after_the_city_is_finished() {
-        let mut scene = Scene::new(18, 1920, 1080, classic(), 0.5, CellScaling::Fixed(3));
+        let mut scene = Scene::new(18, 1920, 1080, classic(), 0.5, CellScaling::Fixed(3), None);
         assert!(scene.traffic.is_none(), "no cars while building");
         assert!(!scene.step_traffic(1.0 / 60.0, 1.0));
         scene.advance_to(1.0);
@@ -1162,7 +1323,7 @@ mod tests {
             .filter(|pixel| pixel[..3] == headlight)
             .count();
         assert!(lit > 0, "headlights are on");
-        let finished = Scene::new(18, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3));
+        let finished = Scene::new(18, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3), None);
         assert!(
             finished.traffic.is_some(),
             "a resized finished city keeps its traffic"
@@ -1170,7 +1331,7 @@ mod tests {
 
         // Park a car 6 cells before a background tree trunk (the cone widens with
         // distance, so it reaches the road edge there) and check the trunk glows.
-        let mut lit_scene = Scene::new(19, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3));
+        let mut lit_scene = Scene::new(19, 1920, 1080, classic(), 1.0, CellScaling::Fixed(3), None);
         let grid = lit_scene.grid;
         let &(cell, plain) = lit_scene
             .street
@@ -1207,7 +1368,7 @@ mod tests {
 
     #[test]
     fn new_scene_covers_the_window_grid_and_starts_as_empty_sky() {
-        let scene = Scene::new(11, 1280, 720, classic(), 0.0, CellScaling::Spec);
+        let scene = Scene::new(11, 1280, 720, classic(), 0.0, CellScaling::Spec, None);
         assert_eq!(
             (scene.grid.cols, scene.grid.rows, scene.grid.cell),
             (427, 240, 3)
@@ -1222,7 +1383,7 @@ mod tests {
 
     #[test]
     fn scene_builds_up_over_240_seconds_and_ends_fully_built() {
-        let mut scene = Scene::new(12, 1280, 720, classic(), 0.0, CellScaling::Spec);
+        let mut scene = Scene::new(12, 1280, 720, classic(), 0.0, CellScaling::Spec, None);
         let clock = ConstructionClock::Untimed;
         let step = |scene: &mut Scene| {
             let progress = clock.progress(scene.reveal.progress(), 1.0 / 60.0, 1.0, 0.0);
@@ -1249,10 +1410,10 @@ mod tests {
 
     #[test]
     fn resize_keeps_progress_and_palette_change_keeps_the_reveal() {
-        let mut scene = Scene::new(13, 1280, 720, classic(), 0.0, CellScaling::Spec);
+        let mut scene = Scene::new(13, 1280, 720, classic(), 0.0, CellScaling::Spec, None);
         scene.advance_to(150.0 / 240.0);
         let progress = scene.reveal.progress();
-        let resized = Scene::new(13, 1920, 1080, classic(), progress, CellScaling::Spec);
+        let resized = Scene::new(13, 1920, 1080, classic(), progress, CellScaling::Spec, None);
         assert_eq!(resized.reveal.progress(), progress);
         let expected = (progress * resized.reveal.total() as f64).floor() as usize;
         assert_eq!(resized.reveal.shown(), expected);
@@ -1273,6 +1434,59 @@ mod tests {
             scene.view.rgba[unrevealed * 4..unrevealed * 4 + 4],
             sky.rgba[unrevealed * 4..unrevealed * 4 + 4]
         );
+    }
+
+    #[test]
+    fn endless_scene_is_built_first_and_then_scrolls_seamlessly() {
+        let fixed = CellScaling::Fixed(3);
+        let mut scene = Scene::new(21, 960, 540, classic(), 0.0, fixed, Some(0.0));
+        assert!(!scene.is_scrolling(), "starts by building");
+        assert!(!scene.scroll(1.0 / 30.0, 4.0), "no motion while building");
+        assert_eq!(scene.endless_camera(), Some(0.0));
+        // Windows start dark and light as they are revealed.
+        assert!(scene
+            .buildings
+            .iter()
+            .all(|b| !b.windows.lit.contains(&true)));
+
+        scene.advance_to(0.999_999);
+        scene.compose();
+        scene.advance_to(1.0);
+        scene.compose();
+        let last_built = scene.view.rgba.clone();
+        assert!(scene.is_scrolling());
+        // The first scrolling frame, before any motion, is the built city
+        // (the street and traffic aside, which are drawn the same way).
+        let mut layers_only = Vec::new();
+        let mut mask = Vec::new();
+        scene
+            .endless
+            .as_ref()
+            .unwrap()
+            .compose(&scene.sky, &mut layers_only, &mut mask);
+        assert_eq!(layers_only, last_built);
+
+        let mut moved = false;
+        for _ in 0..30 {
+            moved |= scene.scroll(1.0 / 30.0, 1.0);
+        }
+        assert!(moved, "scrolls once complete");
+        assert!(scene.endless_camera().unwrap() > 1.9);
+    }
+
+    #[test]
+    fn endless_resize_keeps_the_camera_and_normal_has_no_layers() {
+        let fixed = CellScaling::Fixed(3);
+        let mut scene = Scene::new(22, 960, 540, classic(), 1.0, fixed, Some(0.0));
+        for _ in 0..90 {
+            scene.scroll(1.0 / 30.0, 4.0);
+        }
+        let camera = scene.endless_camera().unwrap();
+        let resized = Scene::new(22, 1280, 720, classic(), 1.0, fixed, Some(camera));
+        assert_eq!(resized.endless_camera(), Some(camera));
+        assert!(resized.is_scrolling());
+        let normal = Scene::new(22, 960, 540, classic(), 1.0, fixed, None);
+        assert!(!normal.is_scrolling() && normal.endless_camera().is_none());
     }
 
     #[test]
