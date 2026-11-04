@@ -44,7 +44,26 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent. The GPU output is not compared against the CPU mirror automatically. For the owner: `cargo run -- --endless --deadline 20s`, then watch the far layers glide at `-` (0.25×) and at 4×.
-- **Not yet:** the road and trees still stand still (`feature/endless-street`). Stars and the moon don't scroll, by design.
+- **Smooth moon (owner request, 2026-11-03: "we need to do the same for the moon"):**
+  - `moon_at` now also keeps the unrounded `exact_x` and `exact_row`.
+  - [src/moon.rs](../src/moon.rs) `moon_sprite` draws the moon, or the station with its battle, into its own small image: 41 × 41 cells for a plain moon, 161 × 161 on the station lap (the debris reaches about 76 cells out; a test checks a whole destroyed lap fits).
+  - The shader places the sprite at the exact fractional x and y with the same linear-light reconstruction, now bilinear over the four overlapped source pixels.
+  - The sprite is redrawn only on a new lap or phase (every frame on the station lap); otherwise each frame just moves it.
+- **One draw order for every mode:** sky and stars, then the moon, then the city, then the overlay (street, trees, traffic), then the message box. The city is the still city in Normal mode and during construction (transparent where nothing is built), or the four layers while Endless scrolls. Buildings hide the moon because they are drawn after it, which replaces the old CPU masking. The still city is recomposed only when construction reveals cells; the overlay only when traffic moves.
+- **More verification (2026-11-03):**
+  - `cargo test`: PASS, 214 tests. New tests:
+    - the exact moon position moves continuously and rounds to the cell position;
+    - the sprite equals the cell-painted moon at whole-cell positions;
+    - the station sprite holds the whole battle;
+    - a sprite gliding diagonally keeps constant linear-light brightness, and the 2D sampler matches the row form;
+    - the still city is opaque exactly on built cells at 0%, 50%, and 100%;
+    - the street overlay covers the horizon.
+    
+    Tests that used to read the single CPU frame now read `Scene::flattened` (sky, still city, overlay).
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent. Normal mode now also goes through the new draw order, so it is worth a look too.
+- **Not yet:** the road and trees still stand still (`feature/endless-street`). The stars don't move, by design.
 
 ### feature/endless-layers
 
