@@ -379,6 +379,19 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent.
+- **Matched fade-in and fade-out (owner, 2026-11-04):** watching a storm at 4x, "It almost like fade outs and fade ins aren't the same speed."
+  - Cause: each cloud drew its fade-in share (0.1-0.4 of its life) and its fade-out share (0.15-0.5) separately. Measured in a storm, mass 10%-90%: fade-in median 29 s (quickest 10%: 12 s, about 3 s at 4x), fade-out median 39 s.
+  - Now `cloudgen::fade_share` gives each cloud one share, 0.3-0.45, for both its fade-in and its fade-out. Lifetimes are spread 0.5x-2x (was 0.4x-2x).
+  - Measured in a storm: fade-in median 47 s, fade-out median 47 s (quickest 10%: 29 s each).
+  - The parent coverage lift is 1.4 (was 1.25), so skies stay as cloudy. Mid-layer coverage: Puffs 0.042, Scattered 0.101, Broken 0.233, Overcast 0.317, Storm 0.418. Storm sits a little under the first heaps' 0.456, because its heaps are already all grown.
+  - Tests:
+    - a new test checks that a cloud's mass at each phase of its life equals its mass at the mirrored phase;
+    - the fade-pace test now checks that fade lengths vary between clouds and that each fades out as fast as it faded in;
+    - the moon-halo test searches more of the sky for a cell deep inside thick cloud, because clouds now spend more of their life part-faded. The check itself is unchanged.
+  - `cargo test`: PASS, 258 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

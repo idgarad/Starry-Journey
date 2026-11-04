@@ -458,11 +458,11 @@ impl LayerField {
     }
 
     /// Seconds each life of slot `k` in depth row `depth` lasts: the
-    /// weather's typical life, spread 0.4x to 2x (evenly in log) by slot so
+    /// weather's typical life, spread 0.5x to 2x (evenly in log) by slot so
     /// heaps never fall into step with each other.
     fn slot_lifetime(&self, k: i32, depth: i32) -> f64 {
         let typical = LIFETIME_CALM - (LIFETIME_CALM - LIFETIME_STORM) * self.weather.churn;
-        typical * 0.4 * 5f64.powf(hash(k, depth * 1000 + 7, self.seed))
+        typical * 0.5 * 4f64.powf(hash(k, depth * 1000 + 7, self.seed))
     }
 
     /// The seed of slot `k`'s generation `generation`: each life of a slot
@@ -483,7 +483,7 @@ impl LayerField {
         let q = |n: i32| hash(k, salt + n, seed);
         // Each parent grows over 0.3 of coverage past its own threshold, so
         // raising coverage adds clouds without popping.
-        let grow = smoothstep(q(1), q(1) + 0.3, coverage * 1.25);
+        let grow = smoothstep(q(1), q(1) + 0.3, coverage * 1.4);
         if grow <= 0.0 {
             return None;
         }
@@ -498,8 +498,8 @@ impl LayerField {
             height: width * (0.32 + 0.16 * q(3)) * (1.0 - 0.35 * t),
             base: self.sky_rows * (base_v + 0.1 * scale * (q(5) - 0.5)).min(0.995),
             grow,
-            rise: 0.1 + 0.3 * q(10),
-            fall: 0.15 + 0.35 * q(11),
+            rise: fade_share(q(10)),
+            fall: fade_share(q(10)),
             key: (k, salt, seed),
         })
     }
@@ -567,8 +567,8 @@ impl LayerField {
                 // edge, not by hanging lower.
                 base: parent.base,
                 grow: parent.grow,
-                rise: 0.1 + 0.3 * h(6),
-                fall: 0.15 + 0.35 * h(7),
+                rise: fade_share(h(6)),
+                fall: fade_share(h(6)),
                 key: (k, salt + 500 + child * 16, seed),
             };
             field += self.heap_field(x, row, &heap, life_envelope(phase, heap.rise, heap.fall), t);
@@ -656,12 +656,20 @@ struct Heap {
     base: f64,
     /// 0..1: how far this sky's coverage has grown it in.
     grow: f64,
-    /// Shares of its life spent growing in (0.1-0.4) and dissolving
-    /// (0.15-0.5): each cloud fades at its own pace.
+    /// Shares of its life spent growing in and dissolving: the same for
+    /// both (see [`fade_share`]), at each cloud's own pace.
     rise: f64,
     fall: f64,
     /// `(slot, salt, seed)` for its seeded balls.
     key: (i32, i32, u32),
+}
+
+/// The share of a cloud's life it spends fading in, and again fading
+/// out, from its seeded `r` (0..1): 0.3 to 0.45. Owner, 2026-11-04: fade
+/// ins and fade outs looked like different speeds (they were drawn
+/// separately, 0.1-0.4 in and 0.15-0.5 out).
+fn fade_share(r: f64) -> f64 {
+    0.3 + 0.15 * r
 }
 
 /// How alive a cloud is at `phase` (0..1) of its life: it grows over the
@@ -1078,9 +1086,10 @@ mod tests {
                 })
             })
         };
-        let (dense, row) = (0..600)
+        let (dense, row) = (0..3000)
+            .step_by(2)
             .flat_map(|x| {
-                (60..200)
+                (60..260)
                     .step_by(4)
                     .map(move |r| (f64::from(x) + 0.5, f64::from(r) + 0.5))
             })
@@ -1259,6 +1268,36 @@ mod tests {
     }
 
     #[test]
+    fn a_cloud_fades_out_exactly_as_it_faded_in() {
+        // The visible mass at a phase of its life equals the mass at the
+        // mirrored phase, for parents of several sizes.
+        let field = sky_fields(Cover::Storm, ROWS, 12)[1];
+        for k in 0..6 {
+            let Some(heap) = field.parent_heap(k, 0.0, 2, 0.2) else {
+                continue;
+            };
+            let mass = |phase: f64| {
+                let life = life_envelope(phase, heap.rise, heap.fall);
+                let mut m = 0.0;
+                for dx in -60..=60 {
+                    for dy in -40..=10 {
+                        let (x, row) = (heap.center + f64::from(dx), heap.base + f64::from(dy));
+                        m += field.heap_field(x, row, &heap, life, 0.2);
+                    }
+                }
+                m
+            };
+            for phase in [0.05, 0.15, 0.25, 0.35] {
+                let (rising, falling) = (mass(phase), mass(1.0 - phase));
+                assert!(
+                    (rising - falling).abs() <= 1e-9 * rising.max(1.0),
+                    "slot {k} at {phase}: {rising} vs {falling}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn clouds_fade_at_their_own_paces() {
         // Lifetimes and fade lengths vary from heap to heap, so they never
         // fade in step.
@@ -1273,8 +1312,11 @@ mod tests {
             let min = values.iter().copied().fold(f64::MAX, f64::min);
             max - min
         };
-        assert!(spread(|h| h.rise) > 0.2, "fade-in lengths vary");
-        assert!(spread(|h| h.fall) > 0.2, "fade-out lengths vary");
+        assert!(spread(|h| h.rise) > 0.1, "fade lengths vary between clouds");
+        assert!(
+            heaps.iter().all(|h| h.rise == h.fall),
+            "each fades out as fast as it faded in"
+        );
         let lives: Vec<f64> = (0..60).map(|k| field.slot_lifetime(k, 3)).collect();
         let longest = lives.iter().copied().fold(f64::MIN, f64::max);
         let shortest = lives.iter().copied().fold(f64::MAX, f64::min);
