@@ -28,7 +28,7 @@ use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::station::StationFate;
-use starry_journey::street::{apply_paint, CellPaint, StreetLayer};
+use starry_journey::street::{apply_paint, mark_opaque, CellPaint, StreetLayer};
 use starry_journey::traffic::{Traffic, Verge};
 use winit::{
     application::ApplicationHandler,
@@ -278,15 +278,9 @@ struct Scene {
     endless: Option<EndlessCity>,
     /// Background and stars only, the base the Endless layers draw over.
     sky: Vec<u8>,
-    /// Cells covered by a building in the last Endless frame (the moon
-    /// hides behind them).
-    building_mask: Vec<bool>,
-    /// The composed Endless layers over the sky, reused until a layer moves
-    /// a whole column, so a frame costs one copy (as the construction view
-    /// does).
-    layer_frame: Vec<u8>,
-    /// `layer_frame` must be composed again.
-    layers_stale: bool,
+    /// While Endless scrolls: the street, trees, and traffic, drawn over
+    /// the layers by the GPU (transparent elsewhere). Empty otherwise.
+    overlay: Vec<u8>,
 }
 
 impl Scene {
@@ -342,9 +336,7 @@ impl Scene {
             palette,
             endless: city,
             sky,
-            building_mask: Vec::new(),
-            layer_frame: Vec::new(),
-            layers_stale: true,
+            overlay: Vec::new(),
         };
         scene.start_traffic_if_complete();
         scene.compose();
@@ -362,66 +354,64 @@ impl Scene {
     }
 
     /// Moves the Endless layers by one frame once construction is done.
-    /// Returns true when the frame needs composing again.
+    /// The GPU places them, so the frame needs no composing. Returns true if
+    /// any layer moved to a new whole column.
     fn scroll(&mut self, dt: f64, speed: f64) -> bool {
         if !self.reveal.is_complete() {
             return false;
         }
-        let moved = match &mut self.endless {
+        match &mut self.endless {
             Some(city) => city.advance(dt, speed, self.palette),
             None => false,
-        };
-        self.layers_stale |= moved;
-        moved
+        }
     }
 
-    /// Rebuilds the presented frame: the city (the construction view, or
-    /// the scrolling layers), then the moon on cells that currently show
-    /// sky, then the street's back layer (road and background trees), then
-    /// its front layer. O(grid cells + street + moon cells).
+    /// Rebuilds the cell-resolution images.
+    ///
+    /// Normal mode and construction: `frame` is the city view, then the moon
+    /// on cells that show sky, then the street's back layer (road and
+    /// background trees), traffic, and its front layer.
+    ///
+    /// Endless scrolling: `frame` is only the sky, stars, and moon; the GPU
+    /// draws the layers over it at fractional positions (buildings hide the
+    /// moon there), and the street and traffic go to `overlay`, drawn on top.
+    ///
+    /// O(grid cells + street + moon cells).
     fn compose(&mut self) {
         let scrolling = self.is_scrolling();
-        match (&self.endless, scrolling) {
-            (Some(city), true) => {
-                if self.layers_stale {
-                    city.compose(&self.sky, &mut self.layer_frame, &mut self.building_mask);
-                    self.layers_stale = false;
-                }
-                self.frame.clone_from(&self.layer_frame);
-            }
-            _ => self.frame.clone_from(&self.view.rgba),
+        if scrolling {
+            self.frame.clone_from(&self.sky);
+        } else {
+            self.frame.clone_from(&self.view.rgba);
         }
         for &(cell, color) in &self.moon {
-            let building_shown = if scrolling {
-                self.building_mask[cell]
-            } else {
-                self.ownership.owner[cell] >= 0 && self.reveal.is_revealed(cell)
-            };
+            let building_shown =
+                !scrolling && self.ownership.owner[cell] >= 0 && self.reveal.is_revealed(cell);
             if !building_shown {
                 self.frame[cell * 4..cell * 4 + 3].copy_from_slice(&color.0);
             }
         }
-        match &self.traffic {
-            None => {
-                self.street.apply_back(&mut self.frame);
-                self.street.apply_front(&mut self.frame);
-            }
-            Some(traffic) => {
-                // Headlights light up the roadside trees ahead of each car.
-                let grid = self.grid;
-                let light = self.palette.headlight;
-                // Top trees take light from the top lane, bottom trees from
-                // the bottom lane.
-                let back_glow = |x, row| traffic.glow(&grid, x, row, Verge::Back);
-                let front_glow = |x, row| traffic.glow(&grid, x, row, Verge::Front);
-                self.street
-                    .apply_back_lit(&mut self.frame, grid.cols, light, back_glow);
-                let mut paint = CellPaint::new();
-                traffic.paint(&grid, self.palette, &mut paint);
-                apply_paint(&paint, &mut self.frame);
-                self.street
-                    .apply_front_lit(&mut self.frame, grid.cols, light, front_glow);
-            }
+        if scrolling {
+            self.overlay.clear();
+            self.overlay.resize(self.frame.len(), 0);
+            let traffic_paint = paint_street(
+                &self.street,
+                self.traffic.as_ref(),
+                self.grid,
+                self.palette,
+                &mut self.overlay,
+            );
+            self.street.mark_opaque(&mut self.overlay);
+            mark_opaque(&traffic_paint, &mut self.overlay);
+        } else {
+            self.overlay.clear();
+            paint_street(
+                &self.street,
+                self.traffic.as_ref(),
+                self.grid,
+                self.palette,
+                &mut self.frame,
+            );
         }
     }
 
@@ -479,7 +469,6 @@ impl Scene {
         self.sky = CityRaster::render(&self.grid, &[], &self.stars, palette).rgba;
         if let Some(city) = &mut self.endless {
             city.set_palette(palette);
-            self.layers_stale = true;
         }
         self.compose();
     }
@@ -507,6 +496,12 @@ struct Renderer {
     city_texture: wgpu::Texture,
     /// The message box image (premultiplied sRGB; 1 x 1 when hidden).
     message_texture: wgpu::Texture,
+    /// Endless street and traffic, drawn over the layers (grid-sized).
+    overlay_texture: wgpu::Texture,
+    /// The four Endless layer buffers, far to near (cell resolution).
+    layer_textures: [wgpu::Texture; 4],
+    /// The layer image revisions currently uploaded (0: none).
+    layer_revisions: [u64; 4],
     bind_group: wgpu::BindGroup,
     scene: Scene,
     /// What the message box shows (`--message`, or a palette name).
@@ -558,7 +553,13 @@ impl Renderer {
                 &wgpu::DeviceDescriptor {
                     label: Some("Starry Journey device"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::default(),
+                    // The adapter's real texture size limit (often 16384,
+                    // not the 8192 default) leaves room for wide surfaces
+                    // such as a city spanning several monitors.
+                    required_limits: wgpu::Limits {
+                        max_texture_dimension_2d: adapter.limits().max_texture_dimension_2d,
+                        ..wgpu::Limits::default()
+                    },
                     memory_hints: wgpu::MemoryHints::Performance,
                 },
                 None,
@@ -588,40 +589,31 @@ impl Renderer {
             label: Some("City presentation shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
         });
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("City texture and cell size"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
+        // Binding 1 is the uniform buffer; 0 and 2..=7 are textures (see
+        // present.wgsl).
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..8)
+            .map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: if binding == 1 {
+                    wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
+                    }
+                } else {
+                    wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
-                    },
-                    count: None,
+                    }
                 },
-            ],
+                count: None,
+            })
+            .collect();
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Scene textures and parameters"),
+            entries: &entries,
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("City presentation pipeline layout"),
@@ -654,8 +646,8 @@ impl Renderer {
             cache: None,
         });
         let params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Cell size and message box"),
-            size: 32,
+            label: Some("Cell size, message box, and layer offsets"),
+            size: PARAMS_BYTES,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -676,11 +668,17 @@ impl Renderer {
         );
         let city_texture = create_city_texture(&device, &scene.grid);
         let message_texture = create_message_texture(&device, 1, 1);
+        let overlay_texture = create_city_texture(&device, &scene.grid);
+        let layer_textures = [0, 1, 2, 3].map(|_| create_layer_texture(&device, 1, 1));
         let bind_group = create_bind_group(
             &device,
             &bind_group_layout,
-            &city_texture,
-            &message_texture,
+            &BindTextures {
+                background: &city_texture,
+                message: &message_texture,
+                overlay: &overlay_texture,
+                layers: layer_textures.each_ref(),
+            },
             &params,
         );
         let mut renderer = Self {
@@ -693,6 +691,9 @@ impl Renderer {
             params,
             city_texture,
             message_texture,
+            overlay_texture,
+            layer_textures,
+            layer_revisions: [0; 4],
             bind_group,
             scene,
             notice: Notice::new(options.message.clone()),
@@ -851,10 +852,16 @@ impl Renderer {
         let moon_moved = self.update_moon(now);
         let motion_dt = if self.paused { 0.0 } else { dt };
         let traffic_moved = self.scene.step_traffic(motion_dt, self.speed);
-        let scrolled = self.scene.scroll(motion_dt, self.speed);
-        if self.scene.view.take_dirty() || moon_moved || traffic_moved || scrolled || finished {
+        // The GPU places the layers, so scrolling needs only new offsets
+        // (and an upload when a layer buffer was rebased).
+        self.scene.scroll(motion_dt, self.speed);
+        if self.scene.view.take_dirty() || moon_moved || traffic_moved || finished {
             self.scene.compose();
             self.upload();
+        }
+        if self.scene.is_scrolling() {
+            self.upload_layers();
+            self.write_params();
         }
         self.update_status(elapsed);
         self.update_message();
@@ -942,17 +949,94 @@ impl Renderer {
         self.bind_group = create_bind_group(
             &self.device,
             &self.bind_group_layout,
-            &self.city_texture,
-            &self.message_texture,
+            &BindTextures {
+                background: &self.city_texture,
+                message: &self.message_texture,
+                overlay: &self.overlay_texture,
+                layers: self.layer_textures.each_ref(),
+            },
             &self.params,
         );
     }
 
-    /// Writes the cell size and the message box rectangle for the shader.
+    /// Uploads any Endless layer buffer whose image changed (a rebase, a
+    /// palette change, or a new city), reusing texture storage when the size
+    /// matches. Nothing is uploaded while the layers only move.
+    fn upload_layers(&mut self) {
+        let Some(city) = &self.scene.endless else {
+            return;
+        };
+        let mut recreated = false;
+        for index in 0..4 {
+            let image = city.layer_image(index);
+            if self.layer_revisions[index] == image.revision {
+                continue;
+            }
+            let (width, height) = (image.width as u32, image.height as u32);
+            let size = self.layer_textures[index].size();
+            if size.width != width || size.height != height {
+                self.layer_textures[index] = create_layer_texture(&self.device, width, height);
+                recreated = true;
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.layer_textures[index],
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                image.rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+                self.layer_textures[index].size(),
+            );
+            self.layer_revisions[index] = image.revision;
+        }
+        if recreated {
+            self.rebind();
+        }
+    }
+
+    /// Writes the cell size, the Endless switch and layer offsets, and the
+    /// message box rectangle for the shader.
     fn write_params(&self) {
         let cell = self.scene.grid.cell as f32;
         let [x, y, width, height] = self.message_rect;
-        let params: [f32; 8] = [cell, 0.0, 0.0, 0.0, x, y, width, height];
+        let scrolling = self.scene.is_scrolling();
+        let offset = |layer: usize| match &self.scene.endless {
+            Some(city) if scrolling => city.source_offset_px(layer) as f32,
+            _ => 0.0,
+        };
+        let layers_on = if scrolling { 1.0 } else { 0.0 };
+        let params: [f32; 24] = [
+            cell,
+            layers_on,
+            0.0,
+            0.0,
+            x,
+            y,
+            width,
+            height,
+            offset(0),
+            0.0,
+            0.0,
+            0.0,
+            offset(1),
+            0.0,
+            0.0,
+            0.0,
+            offset(2),
+            0.0,
+            0.0,
+            0.0,
+            offset(3),
+            0.0,
+            0.0,
+            0.0,
+        ];
         let bytes: Vec<u8> = params
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -1018,31 +1102,38 @@ impl Renderer {
         }
     }
 
-    /// Uploads the shown image, recreating the texture only when the grid
-    /// dimensions change.
+    /// Uploads the background image (and, while Endless scrolls, the
+    /// overlay and any changed layer), recreating textures only when the
+    /// grid dimensions change.
     fn upload(&mut self) {
         let width = self.scene.grid.cols.max(1) as u32;
         let height = self.scene.grid.rows.max(1) as u32;
         let size = self.city_texture.size();
         if size.width != width || size.height != height {
             self.city_texture = create_city_texture(&self.device, &self.scene.grid);
+            self.overlay_texture = create_city_texture(&self.device, &self.scene.grid);
             self.rebind();
         }
+        let layout = wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 4),
+            rows_per_image: Some(height),
+        };
         self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.city_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
+            self.city_texture.as_image_copy(),
             &self.scene.frame,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 4),
-                rows_per_image: Some(height),
-            },
+            layout,
             self.city_texture.size(),
         );
+        if !self.scene.overlay.is_empty() {
+            self.queue.write_texture(
+                self.overlay_texture.as_image_copy(),
+                &self.scene.overlay,
+                layout,
+                self.overlay_texture.size(),
+            );
+        }
+        self.upload_layers();
         self.write_params();
     }
 
@@ -1079,6 +1170,36 @@ impl Renderer {
         frame.present();
         Ok(())
     }
+}
+
+/// Paints the street's back layer (road and background trees), traffic,
+/// and the front trees into `rgba`. With traffic, headlights light the trees
+/// ahead of each car: top trees from the top lane, bottom trees from the
+/// bottom lane. Returns the traffic's cells.
+fn paint_street(
+    street: &StreetLayer,
+    traffic: Option<&Traffic>,
+    grid: Grid,
+    palette: &Palette,
+    rgba: &mut [u8],
+) -> CellPaint {
+    let mut paint = CellPaint::new();
+    match traffic {
+        None => {
+            street.apply_back(rgba);
+            street.apply_front(rgba);
+        }
+        Some(traffic) => {
+            let light = palette.headlight;
+            let back_glow = |x, row| traffic.glow(&grid, x, row, Verge::Back);
+            let front_glow = |x, row| traffic.glow(&grid, x, row, Verge::Front);
+            street.apply_back_lit(rgba, grid.cols, light, back_glow);
+            traffic.paint(&grid, palette, &mut paint);
+            apply_paint(&paint, rgba);
+            street.apply_front_lit(rgba, grid.cols, light, front_glow);
+        }
+    }
+    paint
 }
 
 /// The palette at `index`, falling back to the default palette.
@@ -1136,32 +1257,70 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
     })
 }
 
+/// Size of the shader's `Params` uniform: cell, message, and four layer
+/// vectors of four floats.
+const PARAMS_BYTES: u64 = 6 * 16;
+
+/// Creates an Endless layer texture: one sRGB texel per cell, alpha 0 on
+/// sky. The shader decodes it to linear light when it loads a texel.
+fn create_layer_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Endless layer buffer"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+/// The textures the presentation shader reads.
+struct BindTextures<'a> {
+    background: &'a wgpu::Texture,
+    message: &'a wgpu::Texture,
+    overlay: &'a wgpu::Texture,
+    layers: [&'a wgpu::Texture; 4],
+}
+
 fn create_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    texture: &wgpu::Texture,
-    message_texture: &wgpu::Texture,
+    textures: &BindTextures<'_>,
     params: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let message_view = message_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let view =
+        |texture: &wgpu::Texture| texture.create_view(&wgpu::TextureViewDescriptor::default());
+    // Bindings 0, 2, 3, 4..=7 (see present.wgsl); 1 is the uniform.
+    let views = [
+        (0, view(textures.background)),
+        (2, view(textures.message)),
+        (3, view(textures.overlay)),
+        (4, view(textures.layers[0])),
+        (5, view(textures.layers[1])),
+        (6, view(textures.layers[2])),
+        (7, view(textures.layers[3])),
+    ];
+    let mut entries: Vec<wgpu::BindGroupEntry> = views
+        .iter()
+        .map(|(binding, view)| wgpu::BindGroupEntry {
+            binding: *binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        })
+        .collect();
+    entries.push(wgpu::BindGroupEntry {
+        binding: 1,
+        resource: params.as_entire_binding(),
+    });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("City texture and cell size"),
+        label: Some("Scene textures and parameters"),
         layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: params.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::TextureView(&message_view),
-            },
-        ],
+        entries: &entries,
     })
 }
 
@@ -1472,6 +1631,39 @@ mod tests {
         }
         assert!(moved, "scrolls once complete");
         assert!(scene.endless_camera().unwrap() > 1.9);
+    }
+
+    #[test]
+    fn scrolling_frame_is_sky_and_the_street_goes_to_a_transparent_overlay() {
+        let fixed = CellScaling::Fixed(3);
+        let scene = Scene::new(23, 960, 540, classic(), 1.0, fixed, Some(0.0));
+        assert!(scene.is_scrolling());
+        // The layers are drawn by the GPU, so the background is only sky.
+        assert_eq!(scene.frame, scene.sky);
+        let grid = scene.grid;
+        let alpha = |x: i32, row: i32| scene.overlay[(row * grid.cols + x) as usize * 4 + 3];
+        for x in [0, grid.cols / 2, grid.cols - 1] {
+            assert_eq!(alpha(x, grid.ground_row), 255, "top curb");
+            assert_eq!(alpha(x, grid.rows - 1), 255, "bottom curb");
+            assert_eq!(alpha(x, 0), 0, "sky stays clear");
+        }
+        // Opaque overlay cells carry exactly the Normal-style street colors.
+        let mut expected = scene.sky.clone();
+        paint_street(
+            &scene.street,
+            scene.traffic.as_ref(),
+            grid,
+            classic(),
+            &mut expected,
+        );
+        for (cell, pixel) in scene.overlay.chunks(4).enumerate() {
+            if pixel[3] == 255 {
+                assert_eq!(pixel[..3], expected[cell * 4..cell * 4 + 3]);
+            }
+        }
+        // Normal mode keeps everything in one frame and no overlay.
+        let normal = Scene::new(23, 960, 540, classic(), 1.0, fixed, None);
+        assert!(normal.overlay.is_empty());
     }
 
     #[test]

@@ -19,6 +19,8 @@
 //! For now layers are drawn at whole-cell positions. Smooth fractional
 //! reconstruction arrives with the Endless compositor.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::model::building::Building;
 use crate::model::city::{endless_layer_generator, CityGenerator};
 use crate::model::grid::Grid;
@@ -38,6 +40,54 @@ pub const ORIGIN_MARGIN: i32 = 4;
 /// Columns generated past the buffer's right edge.
 pub const GENERATE_AHEAD: i32 = 32;
 
+/// A fresh image revision, unique across every city in the process, so a
+/// rebuilt city never looks unchanged to the uploader.
+fn next_revision() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// sRGB decode of one encoded channel in `0..=1` (Rebuild Prompt).
+pub fn decode_srgb(c: f64) -> f64 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// Reconstructs one screen row of a layer at a fractional position: the CPU
+/// mirror of the presentation shader, used to test its math.
+///
+/// The layer is treated as a sharp device-resolution image in which every
+/// cell is `cell` pixels wide. Screen pixel `p` covers source pixels
+/// `[p + offset, p + offset + 1)`, so it takes the two source pixels it
+/// overlaps, decoded to linear light and premultiplied by alpha, weighted by
+/// their overlap. Cells outside the row are transparent. Returns linear,
+/// premultiplied RGBA per screen pixel. O(width).
+pub fn reconstruct_row(cells: &[[u8; 4]], cell: u32, offset: f64, width: usize) -> Vec<[f64; 4]> {
+    let cell = f64::from(cell.max(1));
+    let texel = |pixel: f64| -> [f64; 4] {
+        let index = (pixel / cell).floor();
+        if index < 0.0 || index as usize >= cells.len() {
+            return [0.0; 4];
+        }
+        let [r, g, b, a] = cells[index as usize];
+        let alpha = f64::from(a) / 255.0;
+        let linear = |v: u8| decode_srgb(f64::from(v) / 255.0) * alpha;
+        [linear(r), linear(g), linear(b), alpha]
+    };
+    (0..width)
+        .map(|p| {
+            let u = p as f64 + offset;
+            let left = u.floor();
+            let t = u - left;
+            let (a, b) = (texel(left), texel(left + 1.0));
+            [0, 1, 2, 3].map(|i| a[i] * (1.0 - t) + b[i] * t)
+        })
+        .collect()
+}
+
 /// A layer buffer's width for a grid: `2 * cols + 64`.
 pub fn buffer_width(cols: i32) -> i32 {
     2 * cols.max(1) + 64
@@ -49,6 +99,24 @@ struct EndlessLayer {
     generator: CityGenerator,
     origin_x: i32,
     raster: CityRaster,
+    /// Increases every time the buffer is redrawn (rebase or palette).
+    revision: u64,
+}
+
+/// One layer's drawn buffer, for uploading to the GPU.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerImage<'a> {
+    /// RGBA bytes, row-major, sRGB-encoded; alpha is 0 on sky, 255 on
+    /// buildings.
+    pub rgba: &'a [u8],
+    /// Columns.
+    pub width: usize,
+    /// Rows.
+    pub height: usize,
+    /// World x of column 0.
+    pub origin_x: i32,
+    /// Changes whenever the image changes.
+    pub revision: u64,
 }
 
 impl EndlessLayer {
@@ -60,10 +128,28 @@ impl EndlessLayer {
             generator,
             origin_x: ORIGIN_START,
             raster,
+            revision: next_revision(),
         }
     }
 
+    /// Draws the buffer; sky cells are made transparent so far layers and
+    /// the sky show through.
     fn draw(
+        generator: &CityGenerator,
+        origin_x: i32,
+        grid: &Grid,
+        palette: &Palette,
+    ) -> CityRaster {
+        let mut raster = Self::render(generator, origin_x, grid, palette);
+        for (cell, owner) in raster.owner.iter().enumerate() {
+            if *owner < 0 {
+                raster.rgba[cell * 4 + 3] = 0;
+            }
+        }
+        raster
+    }
+
+    fn render(
         generator: &CityGenerator,
         origin_x: i32,
         grid: &Grid,
@@ -99,6 +185,7 @@ impl EndlessLayer {
             .extend_to(self.origin_x + width + GENERATE_AHEAD);
         self.generator.prune_before(self.origin_x - ORIGIN_MARGIN);
         self.raster = Self::draw(&self.generator, self.origin_x, grid, palette);
+        self.revision = next_revision();
         true
     }
 }
@@ -186,7 +273,27 @@ impl EndlessCity {
         for layer in &mut self.layers {
             layer.raster =
                 EndlessLayer::draw(&layer.generator, layer.origin_x, &self.grid, palette);
+            layer.revision = next_revision();
         }
+    }
+
+    /// The drawn buffer of `layer` (0 farthest to 3 nearest).
+    pub fn layer_image(&self, layer: usize) -> LayerImage<'_> {
+        let layer = &self.layers[layer];
+        LayerImage {
+            rgba: &layer.raster.rgba,
+            width: layer.raster.width,
+            height: layer.raster.height,
+            origin_x: layer.origin_x,
+            revision: layer.revision,
+        }
+    }
+
+    /// How far into `layer`'s buffer the screen's left edge is, in device
+    /// pixels: `(viewX - originX) * cell`. Fractional; computed in f64 so it
+    /// stays exact however far the camera has gone.
+    pub fn source_offset_px(&self, layer: usize) -> f64 {
+        (self.view_x(layer) - f64::from(self.layers[layer].origin_x)) * f64::from(self.grid.cell)
     }
 
     fn ensure_covered(&mut self, palette: &Palette) {
@@ -393,6 +500,116 @@ mod tests {
         let fresh = EndlessCity::new(4, &grid, ega);
         let sky = sky(&grid, 4, ega);
         assert_eq!(composed(&city, &sky), composed(&fresh, &sky));
+    }
+
+    fn luminance_sum(pixels: &[[f64; 4]]) -> f64 {
+        pixels.iter().map(|p| p[0] + p[1] + p[2]).sum()
+    }
+
+    #[test]
+    fn whole_pixel_offsets_reproduce_the_sharp_image() {
+        let cells = [[0, 0, 0, 255], [200, 100, 50, 255], [10, 20, 30, 0]];
+        let row = reconstruct_row(&cells, 3, 3.0, 6);
+        // Offset 3 px = one cell: pixels 0..3 show cell 1, 3..6 cell 2.
+        let expected = [
+            decode_srgb(200.0 / 255.0),
+            decode_srgb(100.0 / 255.0),
+            decode_srgb(50.0 / 255.0),
+            1.0,
+        ];
+        for pixel in &row[0..3] {
+            for (got, want) in pixel.iter().zip(expected) {
+                assert!((got - want).abs() < 1e-12);
+            }
+        }
+        // A transparent cell is premultiplied to nothing.
+        assert!(row[3..6].iter().all(|p| *p == [0.0; 4]));
+    }
+
+    #[test]
+    fn subpixel_motion_keeps_brightness_constant_in_linear_light() {
+        // A mid-grey cell moving across black, a quarter pixel at a time.
+        let grey = [128, 128, 128, 255];
+        let cells = [
+            [0, 0, 0, 255],
+            [0, 0, 0, 255],
+            grey,
+            [0, 0, 0, 255],
+            [0, 0, 0, 255],
+        ];
+        let reference = luminance_sum(&reconstruct_row(&cells, 3, 0.0, 12));
+        let mut encoded_sums = Vec::new();
+        for step in 0..=12 {
+            let offset = f64::from(step) * 0.25;
+            let row = reconstruct_row(&cells, 3, offset, 12);
+            let sum = luminance_sum(&row);
+            assert!((sum - reference).abs() < 1e-9, "offset {offset}: {sum}");
+            // What interpolating the encoded values would give: the edge
+            // pixels come out too dark, so the sum dips between pixels.
+            let encoded: f64 = (0..12)
+                .map(|p| {
+                    let u = p as f64 + offset;
+                    let t = u - u.floor();
+                    let at = |x: f64| {
+                        let i = (x / 3.0).floor() as usize;
+                        f64::from(cells.get(i).map_or(0, |c| c[0])) / 255.0
+                    };
+                    3.0 * decode_srgb(at(u.floor()) * (1.0 - t) + at(u.floor() + 1.0) * t)
+                })
+                .sum();
+            encoded_sums.push(encoded);
+        }
+        let dip = encoded_sums.iter().cloned().fold(f64::MAX, f64::min);
+        assert!(
+            dip < reference * 0.95,
+            "encoded-space blending dims a moving edge (flicker): {dip} vs {reference}"
+        );
+    }
+
+    #[test]
+    fn edges_outside_the_buffer_are_transparent() {
+        let cells = [[255, 255, 255, 255]];
+        // A 2-pixel cell shifted 1.5 px right covers pixels 1..=3 as
+        // 1/2, 1, 1/2; nothing outside the buffer adds coverage.
+        let row = reconstruct_row(&cells, 2, -1.5, 5);
+        let alphas: Vec<f64> = row.iter().map(|p| p[3]).collect();
+        assert_eq!(alphas, vec![0.0, 0.5, 1.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn layer_images_are_transparent_on_sky_and_track_revisions() {
+        let grid = grid();
+        let palette = classic();
+        let mut city = EndlessCity::new(8, &grid, palette);
+        let image = city.layer_image(3);
+        assert_eq!(image.width, buffer_width(grid.cols) as usize);
+        assert_eq!(image.origin_x, ORIGIN_START);
+        let alphas: Vec<u8> = image.rgba.chunks(4).map(|p| p[3]).collect();
+        assert!(alphas.contains(&0) && alphas.contains(&255));
+        assert!(alphas.iter().all(|a| *a == 0 || *a == 255));
+        let first = image.revision;
+        city.set_palette(palette_by_key("vga").unwrap());
+        let recolored = city.layer_image(3).revision;
+        assert_ne!(recolored, first);
+        // Scroll until the nearest layer rebases.
+        while city.origin_x(3) == ORIGIN_START {
+            city.advance(1.0 / 30.0, 4.0, palette);
+        }
+        assert_ne!(city.layer_image(3).revision, recolored);
+        // A new city never reuses a revision.
+        let other = EndlessCity::new(8, &grid, palette);
+        assert_ne!(other.layer_image(3).revision, city.layer_image(3).revision);
+    }
+
+    #[test]
+    fn source_offset_is_fractional_device_pixels_into_the_buffer() {
+        let grid = grid();
+        let mut city = EndlessCity::new(8, &grid, classic());
+        assert_eq!(city.source_offset_px(0), f64::from(-ORIGIN_START * 3));
+        city.advance(0.02, 1.0, classic());
+        // Camera 0.04 cells; the farthest layer is at 0.008 cells.
+        let expected = (0.04 * 0.2 + 4.0) * 3.0;
+        assert!((city.source_offset_px(0) - expected).abs() < 1e-12);
     }
 
     #[test]
