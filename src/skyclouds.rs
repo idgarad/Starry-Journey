@@ -10,13 +10,18 @@
 //!
 //! **Keyframes.** Clouds live: heaps grow and dissolve and billows drift
 //! and rise ([`crate::cloudgen::LayerField::at_time`]). Rendering every
-//! frame is far too slow, so a **background thread** renders each layer at
-//! moments a keyframe interval apart (about 8 s calm, 2.5 s in a storm;
-//! the far layer half as often again), always one keyframe ahead. The GPU
-//! cross-fades from the previous keyframe to the next as the cloud clock
-//! runs between them: a heap that forms in between fades in, edges morph,
-//! and every keyframe is lit with the moon where it is now. A cover or
-//! palette change fades over [`QUICK_FADE`] seconds. Each strip is wider
+//! frame is far too slow, so **background threads** (one per layer)
+//! render each layer at moments a keyframe interval apart (about 8 s calm,
+//! 2.5 s in a storm, times the layer's [`LAYER_PACE`]), always one keyframe
+//! ahead. The GPU cross-fades from the previous keyframe to the next over
+//! the whole cloud time between them: a heap that forms in between fades
+//! in, edges morph, and every keyframe is lit with the moon where it is
+//! now. A keyframe never snaps in: if rendering falls behind, the interval
+//! stretches to fit the render time, so the clouds evolve a little slower
+//! instead of jumping (owner, 2026-11-04: "Clouds just suddenly vanish";
+//! measured, storm keyframes due every 2.5-4 s arrived 8-10 s apart and
+//! snapped in over 1.5 s). A cover or palette change fades over
+//! [`QUICK_FADE`] seconds. Each strip is wider
 //! than the screen by [`MARGIN`] cells on each side; the GPU slides it by
 //! its layer's fractional offset. The frame rate never waits on the worker.
 //!
@@ -52,6 +57,18 @@ pub const MAX_STACKED_OPACITY: f64 = 0.94;
 pub const QUICK_FADE: f64 = 1.5;
 /// Strips kept on the GPU per layer: the one fading out and the one in.
 pub const SLOTS: usize = 2;
+
+/// How many times the cloud time a render takes the keyframe interval is
+/// at least, so the next keyframe is ready before the current fade ends.
+pub const RENDER_HEADROOM: f64 = 1.5;
+
+/// The keyframe interval actually used: [`keyframe_interval`], stretched
+/// to [`RENDER_HEADROOM`] times the cloud time a render takes
+/// (`render_seconds` of real time at `speed`).
+pub fn effective_interval(cover: Cover, band: usize, render_seconds: f64, speed: f64) -> f64 {
+    let render = render_seconds.max(0.0) * speed.max(0.0) * RENDER_HEADROOM;
+    keyframe_interval(cover, band).max(if render.is_finite() { render } else { 0.0 })
+}
 
 /// Each layer's keyframe pace (far to near), as a share of the base
 /// interval. The shares differ, so the layers' cross-fades drift apart
@@ -101,6 +118,8 @@ pub struct StripImage {
     pub rows: usize,
     /// The cloud time it shows.
     pub time: f64,
+    /// Real seconds the render took (set by the worker).
+    pub render_seconds: f64,
     pub rgba: Vec<u8>,
 }
 
@@ -182,58 +201,60 @@ pub fn render_strip(request: &StripRequest) -> StripImage {
         width,
         rows,
         time: request.time,
+        render_seconds: 0.0,
         rgba,
     }
 }
 
-/// A background thread that renders strips. For each layer the worker
-/// always skips to the newest request.
+/// Background threads that render strips, one per layer, so a slow layer
+/// never holds up the others. Each skips to its layer's newest request.
 pub struct CloudWorker {
-    requests: Option<Sender<StripRequest>>,
+    requests: Vec<Sender<StripRequest>>,
     results: Receiver<StripImage>,
-    thread: Option<JoinHandle<()>>,
+    threads: Vec<JoinHandle<()>>,
 }
 
 impl CloudWorker {
-    /// Starts the worker thread.
+    /// Starts the threads.
     pub fn spawn() -> Self {
-        let (request_tx, request_rx) = channel::<StripRequest>();
         let (result_tx, result_rx) = channel::<StripImage>();
-        let thread = std::thread::Builder::new()
-            .name("cloud renderer".into())
-            .spawn(move || {
-                while let Ok(first) = request_rx.recv() {
-                    // Keep only the newest request for each layer.
-                    let mut newest: [Option<StripRequest>; CLOUD_LAYERS] = [None; CLOUD_LAYERS];
-                    let mut keep = |request: StripRequest| {
-                        let slot = &mut newest[request.band.min(CLOUD_LAYERS - 1)];
-                        if slot.is_none_or(|old| old.generation < request.generation) {
-                            *slot = Some(request);
+        let mut requests = Vec::new();
+        let mut threads = Vec::new();
+        for band in 0..CLOUD_LAYERS {
+            let (request_tx, request_rx) = channel::<StripRequest>();
+            let result_tx = result_tx.clone();
+            let thread = std::thread::Builder::new()
+                .name(format!("cloud layer {band}"))
+                .spawn(move || {
+                    while let Ok(mut request) = request_rx.recv() {
+                        // Keep only the newest request.
+                        while let Ok(more) = request_rx.try_recv() {
+                            if more.generation > request.generation {
+                                request = more;
+                            }
                         }
-                    };
-                    keep(first);
-                    while let Ok(more) = request_rx.try_recv() {
-                        keep(more);
-                    }
-                    // Nearest first: it moves fastest.
-                    for request in newest.iter().rev().flatten() {
-                        if result_tx.send(render_strip(request)).is_err() {
+                        let start = std::time::Instant::now();
+                        let mut image = render_strip(&request);
+                        image.render_seconds = start.elapsed().as_secs_f64();
+                        if result_tx.send(image).is_err() {
                             return;
                         }
                     }
-                }
-            })
-            .expect("the cloud thread starts");
+                })
+                .expect("a cloud thread starts");
+            requests.push(request_tx);
+            threads.push(thread);
+        }
         Self {
-            requests: Some(request_tx),
+            requests,
             results: result_rx,
-            thread: Some(thread),
+            threads,
         }
     }
 
-    /// Queues a request.
+    /// Queues a request with its layer's thread.
     pub fn request(&self, request: StripRequest) {
-        if let Some(tx) = &self.requests {
+        if let Some(tx) = self.requests.get(request.band.min(CLOUD_LAYERS - 1)) {
             // A closed worker just means no more clouds; ignore it.
             let _ = tx.send(request);
         }
@@ -247,11 +268,11 @@ impl CloudWorker {
 
 impl Drop for CloudWorker {
     fn drop(&mut self) {
-        // Closing the channel ends the worker's loop once it finishes the
-        // strip in hand. It is not joined: a resize or restart must not
+        // Closing the channels ends each thread's loop once it finishes the
+        // strip in hand. They are not joined: a resize or restart must not
         // wait for a strip nobody will see.
-        self.requests.take();
-        self.thread.take();
+        self.requests.clear();
+        self.threads.clear();
     }
 }
 
@@ -279,6 +300,8 @@ struct LayerState {
     pending: bool,
     /// Something changed (cover, palette): fetch a keyframe for now.
     urgent: bool,
+    /// Real seconds this layer's last render took.
+    render_seconds: f64,
 }
 
 impl LayerState {
@@ -468,6 +491,7 @@ impl SkyClouds {
             if image.generation == layer.generation {
                 layer.pending = false;
             }
+            layer.render_seconds = image.render_seconds;
             if image.generation < layer.wanted {
                 continue;
             }
@@ -480,24 +504,31 @@ impl SkyClouds {
             }
         }
         for band in 0..CLOUD_LAYERS {
-            let interval = keyframe_interval(self.cover, band);
+            let interval =
+                effective_interval(self.cover, band, self.layers[band].render_seconds, speed);
             let layer = &mut self.layers[band];
             layer.wind += LAYER_WIND[band] * speed.max(0.0) * step;
             if camera.is_finite() {
                 layer.view = layer.wind + LAYER_PARALLAX[band] * camera;
             }
             // When the current fade is done, the queued keyframe fades in
-            // over the time until it is due.
+            // over the whole cloud time between the two, so it never snaps
+            // in, even when it arrived late.
             if layer.fade(clock) >= 1.0 {
                 if let Some(next) = layer.queued.take() {
-                    let length = (next.time - clock).max(QUICK_FADE.min(interval));
+                    let since = layer.front_image().map_or(0.0, |image| image.time);
+                    let length = (next.time - since).max(QUICK_FADE.min(interval));
                     changed.push((band, layer.rotate(next, clock, length)));
                 }
             }
-            let running_out = layer.front_image().is_none_or(|image| {
+            // A queued strip the view has nearly run past is replaced.
+            let runs_out = |image: &StripImage| {
                 let into = layer.view - f64::from(image.origin);
                 into < 0.0 || into > f64::from(MARGIN) * 1.5
-            });
+            };
+            if layer.queued.as_ref().is_some_and(runs_out) {
+                layer.queued = None;
+            }
             if layer.pending {
                 continue;
             }
@@ -505,15 +536,9 @@ impl SkyClouds {
                 self.request(band, clock, light);
             } else if layer.queued.is_none() {
                 // Always one keyframe ahead: the next is due an interval
-                // after the one now fading in (sooner if the strip is about
-                // to run out).
+                // after the one now fading in.
                 let front_time = layer.front_image().map_or(clock, |image| image.time);
-                let due = if running_out {
-                    clock
-                } else {
-                    front_time.max(clock) + interval
-                };
-                self.request(band, due, light);
+                self.request(band, front_time + interval, light);
             }
         }
         changed
@@ -697,6 +722,47 @@ mod tests {
             (sky.clock() - 10.0).abs() < 1e-9,
             "the cloud clock runs with the speed"
         );
+    }
+
+    #[test]
+    fn slow_renders_stretch_the_interval() {
+        let base = keyframe_interval(Cover::Storm, 3);
+        assert_eq!(effective_interval(Cover::Storm, 3, 0.1, 1.0), base);
+        let slow = effective_interval(Cover::Storm, 3, 4.0, 1.0);
+        assert!((slow - 4.0 * RENDER_HEADROOM).abs() < 1e-12, "{slow}");
+        // At 4x the cloud clock runs faster than the renders.
+        assert!(effective_interval(Cover::Storm, 3, 1.0, 4.0) > base);
+        assert_eq!(effective_interval(Cover::Storm, 3, f64::NAN, 1.0), base);
+    }
+
+    #[test]
+    fn late_keyframes_still_fade_over_their_whole_gap() {
+        // Regression (owner, 2026-11-04: "Clouds just suddenly vanish"):
+        // with the clock far ahead of the renders, every keyframe after the
+        // first still fades over the cloud time since the one before.
+        let vga = palette_by_key("vga").unwrap();
+        let mut sky = SkyClouds::new(3, 60, 40, Cover::Storm, vga);
+        sky.advance(0.0, 1.0, 0.0, None);
+        assert!(sky.wait());
+        let mut fades = 0;
+        for _ in 0..(10 * 30) {
+            // 4x speed, and no sleeping: the renders lag the clock.
+            for (band, slot) in sky.advance(1.0 / 30.0, 4.0, 0.0, None) {
+                let layer = &sky.layers[band];
+                let (Some(front), Some(back)) = (&layer.slots[slot], &layer.slots[1 - slot]) else {
+                    continue;
+                };
+                let gap = front.time - back.time;
+                assert!(
+                    layer.fade_length >= gap - 1e-9,
+                    "layer {band} faded {} s over a {gap} s gap",
+                    layer.fade_length
+                );
+                fades += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(fades >= 4, "keyframes arrived: {fades}");
     }
 
     #[test]

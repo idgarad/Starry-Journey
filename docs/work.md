@@ -360,6 +360,25 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent.
+- **Keyframes never snap (owner, 2026-11-04):** "The fades are still sudden... CLouds just suddenly vanish... our gentle fade in out doesn't really work if we are only periodically redrawing the layers."
+  - Measured first, with simulations of exactly what the shader shows (offline probes, not committed):
+    - The model is smooth. Each heap's visible mass takes a median 2.5 min to fade in and 3.5 min to fade out (quickest 10%: 1-1.5 min).
+    - Broken skies, Normal or Endless camera: no visible spot changed by more than 0.4 within 2 s of cloud time.
+    - Storms: 45,381 of 6.7 million samples did. Storm keyframes due every 2.5-4 s arrived 8-10 s apart, because one thread rendered all four layers in turn (about 2.8 s per round at full size). Each late keyframe then snapped in over the 1.5 s quick fade.
+  - Fixes in `skyclouds`:
+    - A keyframe always fades over the whole cloud time since the previous one, even if it arrived late. If rendering lags, the clouds evolve a little slower instead of jumping.
+    - `CloudWorker` runs one thread per layer, so a slow layer never holds up the others. A round now takes as long as the slowest layer, not the sum of all four.
+    - `effective_interval` stretches a layer's keyframe interval to `RENDER_HEADROOM` (1.5) times the cloud time its last render took, so the next keyframe is ready before the current fade ends.
+    - The next keyframe is due an interval after the current one's time, not the clock's. A queued strip the view has nearly run past is dropped and requested again.
+  - After the fixes, storms: 17,581 of 6.7 million samples changed sharply within 2 s (down 61%). What remains is the storm boil itself (detail rises 0.09 noise units per second at churn 1). Broken: still none.
+  - Tried and reverted: shrinking a dying heap instead of fading its weight. It made no measurable difference.
+  - Tests:
+    - a regression test checks that late keyframes still fade over their whole gap (it fails on the old code: "faded 1.5 s over a 2.3 s gap");
+    - slow renders stretch the interval.
+  - `cargo test`: PASS, 257 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
