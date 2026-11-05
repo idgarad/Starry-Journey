@@ -537,11 +537,17 @@
     - `weather::WIND_DIRECTION` (-1) and `wind_now` now give the signed wind, so rain and snow slant and drift left;
     - the clouds' drift factor uses the wind's strength (`abs`);
     - a test ties both directions to the clouds' actual on-screen motion.
+  - Snow (owner, 2026-11-05): "at least 75% slower than rain ... the max size of a snowflake is the same as a window size in the city":
+    - snow already fell at 14 cells/s against rain's 220 (94% slower); a test now pins snow at no more than 25% of rain's speed;
+    - windows are single cells, so every flake is exactly the one cell its center falls in (was up to 2 cells across);
+    - farther flakes read as smaller by being dimmer (0.66-0.95 opacity, far to near);
+    - the side-to-side wobble is unchanged;
+    - checked with snapshots (storm, overcast, and a 4x zoom).
   - Assumptions to confirm:
     - rain is the default;
     - nothing falls from broken or lighter cover.
   - Tests: precipitation follows cover and mode, far layers smaller/denser/fainter, the slant (snow more than rain, storm rain above 18°), smooth bounded gusts, travel direction, parallax and wrapping, wind driving the clouds, and option parsing.
-  - `cargo test`: PASS, 307 tests.
+  - `cargo test`: PASS, 308 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only; motion is not checked).

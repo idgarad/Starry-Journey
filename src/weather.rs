@@ -207,7 +207,11 @@ impl Precipitation {
                 // cell wide, a bright head and a fading tail (see the
                 // shader); brighter now they are sparse.
                 PrecipKind::Rain => (2.5 + 1.5 * scale, 0.5, 0.35 + 0.45 * scale),
-                PrecipKind::Snow => (0.8 * scale, 0.35 + 0.65 * scale, 0.55 + 0.4 * scale),
+                // A flake is never bigger than a city window, one cell
+                // (owner, 2026-11-05), so every flake is exactly one cell
+                // (see the shader); farther ones read smaller by being
+                // dimmer.
+                PrecipKind::Snow => (0.8 * scale, 0.5, 0.3 + 0.65 * scale),
             };
             PrecipLayer {
                 offset: self.offsets[k],
@@ -283,8 +287,8 @@ mod tests {
         }
         let snow = Precipitation::default().layers(PrecipKind::Snow, 1.0);
         assert!(
-            snow.windows(2).all(|pair| pair[0].size < pair[1].size),
-            "far flakes are smaller"
+            snow.windows(2).all(|pair| pair[0].alpha < pair[1].alpha),
+            "far flakes are dimmer"
         );
         // Light rain has fewer drops in every layer.
         let light = Precipitation::default().layers(PrecipKind::Rain, 0.35);
@@ -296,6 +300,19 @@ mod tests {
             .layers(PrecipKind::Snow, 0.0)
             .iter()
             .all(|l| l.density == 0.0));
+    }
+
+    #[test]
+    fn snow_falls_at_least_75_percent_slower_than_rain_in_one_cell_flakes() {
+        assert!(
+            SNOW_SPEED <= 0.25 * RAIN_SPEED,
+            "owner: at least 75% slower"
+        );
+        let snow = Precipitation::default().layers(PrecipKind::Snow, 1.0);
+        assert!(
+            snow.iter().all(|flake| flake.size == 0.5),
+            "no bigger than a window (one cell)"
+        );
     }
 
     #[test]

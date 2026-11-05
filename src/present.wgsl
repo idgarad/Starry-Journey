@@ -421,9 +421,12 @@ fn precip_alpha(layer: u32, cell_pos: vec2<f32>) -> f32 {
             let center = (vec2<f32>(id) + vec2<f32>(0.15 + 0.7 * h.y, 0.15 + 0.7 * h.z)) * tile;
             var offset = q - center;
             if (snow) {
-                // Flakes drift side to side as they fall down the screen.
-                offset.x -= sin(cell_pos.y * 0.18 + h.y * 6.2832) * look.x;
-                if (length(offset) <= look.y) {
+                // A flake fills exactly the one cell its center is in: never
+                // bigger than a city window (owner, 2026-11-05). It drifts
+                // side to side as it falls down the screen.
+                let wobble = sin(cell_pos.y * 0.18 + h.y * 6.2832) * look.x;
+                let flake = center + grid.xy + vec2<f32>(wobble, 0.0);
+                if (all(floor(flake) == floor(cell_pos))) {
                     return look.z;
                 }
             } else {
