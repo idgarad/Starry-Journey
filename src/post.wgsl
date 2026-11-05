@@ -1,24 +1,49 @@
 // Display effects (Rebuild Prompt, "Palette-Specific Materials And Display
-// Effects"): a second pass over the finished scene, applying the palette's
-// monitor effect, then the message box, which stays clear of every effect.
+// Effects", plus owner additions of 2026-11-05): a second pass over the
+// finished scene, applying the palette's monitor effect, then the message
+// box, which stays clear of every effect (only Amber and Green give its
+// text a phosphor bloom).
 //
-// Effects by palette: Amber, Apple II, C64, and both CGAs get monitor
-// scanlines (and their own color treatment); Game Boy gets an LCD grid
-// (always, not controlled by the Display Effects switch). Every other
-// palette passes through unchanged. Monitor effects work in encoded sRGB on
-// device pixels, screen-fixed: they never move with the scene.
+// Effects by palette (`effect` below):
+//   1 Amber      scanlines, phosphor persistence, vignette, text bloom
+//   2 Apple II   composite color bleed and fringes, scanlines, convergence
+//                error, vignette
+//   3 C64        color bleed and highlight halo, scanlines, convergence
+//                error, vignette
+//   4 CGA        RGB stripes and halo, scanlines, convergence error,
+//                vignette
+//   5 Game Boy   LCD grid and ghosting (always, not the Display Effects
+//                switch)
+//   6 Green      phosphor persistence, vignette, text bloom
+//   7 EGA        scanlines, vignette (owner: "get those on the EGA and VGA
+//   8 VGA        palette too"; the spec leaves them unprocessed)
+//   0 none       Classic, ArtDeco, Parchment, or effects switched off
+//
+// Monitor effects work in encoded sRGB on device pixels and are
+// screen-fixed: they never move with the scene. The CRT power-on (a line
+// opening out to the picture) plays once after switching into a CRT palette.
+// The pass also writes this frame (before the message box) to a history
+// texture, which the next frame reads for ghosting and persistence.
 
 struct PostParams {
-    // x: effect (0 none, 1 Amber, 2 Apple II, 3 C64, 4 CGA, 5 Game Boy);
-    // y: neighbor reach in device pixels; z: device pixels per cell;
-    // w: scanline period in device pixels.
+    // x: effect (see above); y: neighbor reach in device pixels; z: device
+    // pixels per cell; w: scanline period in device pixels.
     effect: vec4<f32>,
     // x: dark scanline rows per period; y: Game Boy gap width in device
-    // pixels; z, w unused.
+    // pixels; z: the screen's width and w its height in device pixels.
     lines: vec4<f32>,
     // The message box: x, y, width, height in device pixels (width 0 hides).
     message: vec4<f32>,
+    // x: how much of the previous frame a Game Boy pixel keeps (LCD
+    // ghosting); y: how much of it a phosphor keeps (persistence); z: the
+    // CRT power-on's progress (1 when done); w unused.
+    history: vec4<f32>,
 }
+
+@group(0) @binding(0) var scene: texture_2d<f32>;
+@group(0) @binding(1) var message_box: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> post: PostParams;
+@group(0) @binding(3) var previous: texture_2d<f32>;
 
 // Color bleed is stronger than the Rebuild Prompt's (owner, 2026-11-05:
 // "color bleed effects in some of palettes could be a little stronger"):
@@ -26,10 +51,16 @@ struct PostParams {
 // further from the center. Luma keeps the spec's weights, so edges stay
 // readable while color smears.
 const BLEED_SPREAD: i32 = 2;
-
-@group(0) @binding(0) var scene: texture_2d<f32>;
-@group(0) @binding(1) var message_box: texture_2d<f32>;
-@group(0) @binding(2) var<uniform> post: PostParams;
+// Convergence error: red and blue drift this many reaches apart at the
+// screen's left and right edges, nothing at the center.
+const CONVERGENCE: f32 = 1.5;
+// Vignette: how much the corners darken.
+const VIGNETTE: f32 = 0.22;
+// Scanline dark rows keep this much on EGA and VGA.
+const EGA_ROWS: f32 = 0.75;
+const VGA_ROWS: f32 = 0.82;
+// Phosphor bloom around Amber and Green message text.
+const TEXT_BLOOM: f32 = 0.9;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -48,11 +79,36 @@ fn decode_srgb(encoded: vec3<f32>) -> vec3<f32> {
     return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
 }
 
-// The scene's encoded sRGB color at device pixel `p` (edges clamped).
-fn source(p: vec2<i32>) -> vec3<f32> {
+// One scene texel's encoded sRGB color (edges clamped).
+fn texel(p: vec2<i32>) -> vec3<f32> {
     let dims = vec2<i32>(textureDimensions(scene));
     let q = clamp(p, vec2<i32>(0), dims - vec2<i32>(1));
     return encode_srgb(textureLoad(scene, q, 0).rgb);
+}
+
+// The scene at a fractional horizontal position (linear between texels).
+fn texel_at(x: f32, y: i32) -> vec3<f32> {
+    let left = floor(x);
+    let t = x - left;
+    return mix(texel(vec2<i32>(i32(left), y)), texel(vec2<i32>(i32(left) + 1, y)), t);
+}
+
+fn has_convergence_error() -> bool {
+    let effect = u32(post.effect.x);
+    return effect == 2u || effect == 3u || effect == 4u;
+}
+
+// The scene's encoded sRGB color at device pixel `p`, with the CRT
+// palettes' convergence error: red drifts outward and blue inward toward
+// the screen's sides (sub-pixel, so it grows smoothly).
+fn source(p: vec2<i32>) -> vec3<f32> {
+    if (!has_convergence_error()) {
+        return texel(p);
+    }
+    let half = max(post.lines.z * 0.5, 1.0);
+    let off = CONVERGENCE * post.effect.y * (f32(p.x) - half) / half;
+    let x = f32(p.x);
+    return vec3<f32>(texel_at(x - off, p.y).r, texel(p).g, texel_at(x + off, p.y).b);
 }
 
 fn luma(c: vec3<f32>) -> f32 {
@@ -96,12 +152,39 @@ fn halo(p: vec2<i32>, reach: i32, base: vec3<f32>, weight: f32) -> vec3<f32> {
     return encode_srgb(screened);
 }
 
+// The message box's premultiplied sRGB texel at `local` (transparent
+// outside).
+fn box_texel(local: vec2<i32>) -> vec4<f32> {
+    let size = vec2<i32>(post.message.zw);
+    if (any(local < vec2<i32>(0, 0)) || any(local >= size)) {
+        return vec4<f32>(0.0);
+    }
+    return textureLoad(message_box, local, 0);
+}
+
+struct Output {
+    // What the screen shows.
+    @location(0) screen: vec4<f32>,
+    // This frame before the message box, for the next frame's ghosting
+    // and persistence.
+    @location(1) history: vec4<f32>,
+}
+
 @fragment
-fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+fn fs_main(@builtin(position) position: vec4<f32>) -> Output {
     let p = vec2<i32>(floor(position.xy));
     let effect = u32(post.effect.x);
     let reach = max(i32(post.effect.y), 1);
     var color = source(p);
+    // Ghosting (Game Boy's slow LCD) and phosphor persistence (Amber,
+    // Green), from the previous frame.
+    let before = encode_srgb(textureLoad(previous, p, 0).rgb);
+    if (effect == 5u) {
+        color = mix(color, before, post.history.x);
+    } else if (effect == 1u || effect == 6u) {
+        color = max(color, before * post.history.y);
+    }
+    let remembered = color;
     if (effect == 1u) {
         // Amber: whole-scene scanlines, dark rows keeping 75%.
         if (dark_row(p.y)) {
@@ -128,7 +211,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
             color *= 0.7;
         }
     } else if (effect == 3u) {
-        // C64: milder chroma bleed (luma unchanged) and a tight halo.
+        // C64: color bleed (luma unchanged) and a tight halo.
         // Chroma (stronger than the spec's 0.7/0.15 at 1x reach).
         let b = vec2<i32>(BLEED_SPREAD * reach, 0);
         let l1 = source(p - b);
@@ -162,14 +245,58 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         if (p.y % cell >= cell - gap) {
             color = mix(color, gap_color, 0.55);
         }
+    } else if (effect == 7u || effect == 8u) {
+        // EGA and VGA: scanlines only (VGA monitors were finer, so a
+        // lighter dark row).
+        if (dark_row(p.y)) {
+            color *= select(EGA_ROWS, VGA_ROWS, effect == 8u);
+        }
     }
-    // The message box, premultiplied sRGB, over the effect (it stays clear
-    // of every effect).
+    // Every CRT palette: a gentle vignette toward the corners.
+    let crt = effect != 0u && effect != 5u;
+    let screen = max(post.lines.zw, vec2<f32>(1.0));
+    if (crt) {
+        let from_center = (position.xy / screen - vec2<f32>(0.5)) * vec2<f32>(2.0, 2.0);
+        let corner = clamp(dot(from_center, from_center) * 0.5, 0.0, 1.0);
+        color *= 1.0 - VIGNETTE * corner * corner;
+    }
+    // The message box, premultiplied sRGB, over the effect. Amber and
+    // Green text glows a little, like a phosphor terminal.
     let local = vec2<i32>(floor(position.xy - post.message.xy));
-    let size = vec2<i32>(post.message.zw);
-    if (post.message.z > 0.0 && all(local >= vec2<i32>(0, 0)) && all(local < size)) {
-        let box_color = textureLoad(message_box, local, 0);
+    if (post.message.z > 0.0) {
+        if (effect == 1u || effect == 6u) {
+            var glow = vec3<f32>(0.0);
+            let reach_box = 2 * reach;
+            let offsets = array<vec2<i32>, 8>(
+                vec2<i32>(reach_box, 0), vec2<i32>(-reach_box, 0), vec2<i32>(0, reach_box), vec2<i32>(0, -reach_box),
+                vec2<i32>(2 * reach_box, 0), vec2<i32>(-2 * reach_box, 0), vec2<i32>(0, 2 * reach_box), vec2<i32>(0, -2 * reach_box),
+            );
+            for (var i = 0; i < 8; i++) {
+                let weight = select(0.5, 1.0, i < 4) / 6.0;
+                let t = box_texel(local + offsets[i]);
+                // The text (bright) glows; the box's dim fill does not.
+                glow += t.rgb * smoothstep(0.35, 0.7, max(max(t.r, t.g), t.b)) * weight;
+            }
+            color = color + glow * TEXT_BLOOM;
+        }
+        let box_color = box_texel(local);
         color = box_color.rgb + color * (1.0 - box_color.a);
     }
-    return vec4<f32>(decode_srgb(color), 1.0);
+    // The CRT power-on: the picture opens out of a bright line through the
+    // middle, then settles.
+    let progress = clamp(post.history.z, 0.0, 1.0);
+    if (crt && progress < 1.0) {
+        let open = smoothstep(0.0, 0.7, progress);
+        let half_height = max(open * screen.y * 0.5, 1.0);
+        let from_middle = abs(position.y - screen.y * 0.5);
+        if (from_middle > half_height) {
+            color = vec3<f32>(0.0);
+        } else {
+            color = min(color * (1.0 + 1.5 * (1.0 - progress)), vec3<f32>(1.0));
+        }
+    }
+    var out: Output;
+    out.screen = vec4<f32>(decode_srgb(color), 1.0);
+    out.history = vec4<f32>(decode_srgb(remembered), 1.0);
+    return out;
 }

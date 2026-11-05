@@ -704,6 +704,28 @@
   - `cargo test`: PASS, 326 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **More period effects (owner, 2026-11-05):** "Lets add your 1-6. Later when we have menu options we can add specific toggles to those. I do like how the scanlines look so lets get those on the EGA and VGA palette too."
+  - The effect pass keeps the previous frame: two history textures swap every frame. The pass writes a second output, this frame before the message box, and reads the other.
+  - Trails fade by half-life in seconds (`0.5^(elapsed / half_life)`), so they look the same at any frame rate. A first frame, or one long after the last, keeps nothing.
+  1. **Game Boy LCD ghosting:** `mix(now, previous, keep)` with a 35 ms half-life (about half a frame's worth at 60 fps). It is always on, with the grid.
+  2. **Amber and Green phosphor persistence:** `max(now, previous x keep)`, 60 ms half-life. Green now has effect 6 (persistence, vignette, bloom; its code rain comes later).
+  3. **Convergence error (CGA, C64, Apple II):** red and blue are sampled 1.5 x reach apart at the screen's sides, nothing at the center, growing linearly. It is sub-pixel, interpolated between texels, and applied where the scene is read, so the bleed and halo see it too.
+  4. **Vignette (every CRT palette):** corners darken up to 22% (`1 - 0.22 x (r²/2)²`).
+  5. **CRT power-on:** switching into a CRT palette with effects on (`is_crt`) opens the picture out of a line through the middle over 0.5 s, brighter at first. It plays once; it can't be snapshotted (it needs `P`).
+  6. **Message bloom (Amber, Green):** eight samples of the box at 2 and 4 reaches; only bright text glows (×0.9; at 0.35 it was invisible).
+  - **EGA and VGA scanlines:** effects 7 and 8, with dark rows keeping 75% and 82% (VGA monitors were finer), plus the vignette. This is a deviation from the spec, which leaves them unprocessed.
+  - Snapshot names now carry milliseconds (`t000030.033s.png`): consecutive frames had overwritten each other at one decimal. The name test was updated.
+  - Checked with snapshots:
+    - EGA 254 → 190 and VGA 232 → 190 on dark rows;
+    - CGA's left edge shows red/blue convergence fringes;
+    - Amber and Green text glows;
+    - two consecutive frames (30.000 s and 30.033 s) show a faint Game Boy smear and Amber glow behind a moving car;
+    - the power-on and the trails' motion are for the owner's eyes.
+  - Backlog: one toggle per effect once there are menu options (owner); `D` switches them all for now.
+  - Tests: effect mapping per palette (Green 6, EGA 7, VGA 8; only Game Boy when off); both shaders validate; snapshot names differ for consecutive frames.
+  - `cargo test`: PASS, 326 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

@@ -722,8 +722,19 @@ struct Renderer {
     /// layout and group, and parameters.
     post_pipeline: wgpu::RenderPipeline,
     post_layout: wgpu::BindGroupLayout,
-    post_bind_group: wgpu::BindGroup,
+    /// One bind group per history parity: group `i` reads history `i` and
+    /// the pass writes history `1 - i`.
+    post_bind_groups: [wgpu::BindGroup; 2],
     post_params: wgpu::Buffer,
+    /// The last two frames before the message box (ghosting and phosphor
+    /// persistence), swapping roles every frame.
+    history_textures: [wgpu::Texture; 2],
+    history_parity: std::cell::Cell<usize>,
+    /// When the last frame was drawn (seconds), for frame-rate-independent
+    /// trails.
+    last_draw: std::cell::Cell<Option<f64>>,
+    /// When the CRT power-on started (switching into a CRT palette).
+    power_on_start: Option<f64>,
     /// The scene drawn before the display effects (surface-sized).
     scene_texture: wgpu::Texture,
     /// Palette display effects on (`--effects`, `D`).
@@ -1098,19 +1109,32 @@ impl Renderer {
             },
             &params,
         );
-        let post_bind_group = create_post_bind_group(
+        let history_textures = [0, 1].map(|_| {
+            create_scene_texture(
+                &device,
+                surface_config.width,
+                surface_config.height,
+                surface_format,
+            )
+        });
+        let post_bind_groups = create_post_bind_groups(
             &device,
             &post_layout,
             &scene_texture,
             &message_texture,
             &post_params,
+            &history_textures,
         );
         let mut renderer = Self {
             surface,
             post_pipeline,
             post_layout,
-            post_bind_group,
+            post_bind_groups,
             post_params,
+            history_textures,
+            history_parity: std::cell::Cell::new(0),
+            last_draw: std::cell::Cell::new(None),
+            power_on_start: None,
             scene_texture,
             effects: options.effects,
             device,
@@ -1236,6 +1260,16 @@ impl Renderer {
             size.height,
             self.surface_config.format,
         );
+        self.history_textures = [0, 1].map(|_| {
+            create_scene_texture(
+                &self.device,
+                size.width,
+                size.height,
+                self.surface_config.format,
+            )
+        });
+        // The old frames are the wrong size: no trails from them.
+        self.last_draw.set(None);
         self.rebind();
         // The scene grid always reserves the road rows (see Scene::new).
         let new_grid = Grid::with_scaling(size.width, size.height, true, self.scaling());
@@ -1290,6 +1324,10 @@ impl Renderer {
         let palette = palette_at(self.palette_index);
         self.scene.set_palette(palette);
         self.notice.flash(palette.label, self.seconds(self.now()));
+        // Switching into a CRT palette powers the monitor on.
+        if self.effects && is_crt(palette.key) {
+            self.power_on_start = Some(self.seconds(self.now()));
+        }
         self.moon_state = None;
         self.update_moon(self.now());
         self.sky_clouds.set_palette(palette);
@@ -1955,12 +1993,13 @@ impl Renderer {
             },
             &self.params,
         );
-        self.post_bind_group = create_post_bind_group(
+        self.post_bind_groups = create_post_bind_groups(
             &self.device,
             &self.post_layout,
             &self.scene_texture,
             &self.message_texture,
             &self.post_params,
+            &self.history_textures,
         );
     }
 
@@ -1979,15 +2018,28 @@ impl Renderer {
     /// The display effect for the current palette (see post.wgsl), and the
     /// pass's parameters: neighbor reach, scanline period and dark rows
     /// from the display scale, and the Game Boy gap from the cell size.
-    fn post_params(&self) -> [f32; 12] {
+    fn post_params(&self) -> [f32; 16] {
         let effect = display_effect(palette_at(self.palette_index).key, self.effects);
+        // Trails fade by half every half-life, however often frames come.
+        // A first frame, or one long after the last, keeps nothing.
+        let now = self.seconds(self.now());
+        let elapsed = self
+            .last_draw
+            .get()
+            .map_or(f64::INFINITY, |last| (now - last).max(0.0));
+        self.last_draw.set(Some(now));
+        let keep = |half_life: f64| 0.5f64.powf(elapsed / half_life) as f32;
+        let power_on = self.power_on_start.map_or(1.0, |start| {
+            ((now - start) / POWER_ON_SECONDS).clamp(0.0, 1.0)
+        });
+        let (width, height) = self.surface_size();
         let scale = self.scale_factor.max(0.5);
         let reach = scale.round().max(1.0);
         let period = (2.0 * scale).round().max(2.0);
         let dark = scale.round().max(1.0);
         let cell = f64::from(self.scene.grid.cell);
         let gap = (cell * 0.2).round().max(1.0);
-        let [x, y, width, height] = self.message_rect;
+        let [x, y, message_width, message_height] = self.message_rect;
         [
             effect,
             reach as f32,
@@ -1995,12 +2047,16 @@ impl Renderer {
             period as f32,
             dark as f32,
             gap as f32,
-            0.0,
-            0.0,
+            width as f32,
+            height as f32,
             x,
             y,
-            width,
-            height,
+            message_width,
+            message_height,
+            keep(LCD_GHOST_HALF_LIFE),
+            keep(PHOSPHOR_HALF_LIFE),
+            power_on as f32,
+            0.0,
         ]
     }
 
@@ -2597,27 +2653,42 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+        // This frame reads history `parity` and writes the other.
+        let parity = self.history_parity.get();
+        let history_view =
+            self.history_textures[1 - parity].create_view(&wgpu::TextureViewDescriptor::default());
         {
             // The palette's display effect, then the message box.
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Display effects"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &history_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
             pass.set_pipeline(&self.post_pipeline);
-            pass.set_bind_group(0, &self.post_bind_group, &[]);
+            pass.set_bind_group(0, &self.post_bind_groups[parity], &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
+        self.history_parity.set(1 - parity);
     }
 }
 
@@ -2801,12 +2872,15 @@ fn display_effect(key: &str, effects: bool) -> f32 {
         "appleii" => 2.0,
         "c64" => 3.0,
         "cga" | "cga2" => 4.0,
+        "green" => 6.0,
+        "ega" => 7.0,
+        "vga" => 8.0,
         _ => 0.0,
     }
 }
 
-/// Bytes of the display-effects parameters (post.wgsl): three vec4s.
-const POST_PARAMS_BYTES: u64 = 3 * 16;
+/// Bytes of the display-effects parameters (post.wgsl): four vec4s.
+const POST_PARAMS_BYTES: u64 = 4 * 16;
 
 /// The scene texture the display-effects pass reads: surface-sized, in the
 /// surface's format.
@@ -2830,6 +2904,23 @@ fn create_scene_texture(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     })
+}
+
+/// Seconds the CRT power-on takes.
+const POWER_ON_SECONDS: f64 = 0.5;
+/// How fast the Game Boy LCD's ghost fades: it halves every this many
+/// seconds.
+const LCD_GHOST_HALF_LIFE: f64 = 0.035;
+/// How fast a phosphor's glow fades (Amber, Green).
+const PHOSPHOR_HALF_LIFE: f64 = 0.06;
+
+/// The palettes that look like a CRT monitor (the power-on plays when
+/// switching into one).
+fn is_crt(key: &str) -> bool {
+    matches!(
+        key,
+        "amber" | "green" | "appleii" | "c64" | "cga" | "cga2" | "ega" | "vga"
+    )
 }
 
 /// The display-effects pipeline (post.wgsl) and its bind group layout:
@@ -2867,6 +2958,7 @@ fn create_post_pipeline(
                 },
                 count: None,
             },
+            texture(3),
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -2887,11 +2979,19 @@ fn create_post_pipeline(
             module: &shader,
             entry_point: Some("fs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            // The screen, and this frame's history.
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: None,
@@ -2902,33 +3002,43 @@ fn create_post_pipeline(
     (pipeline, layout)
 }
 
-/// The display-effects bind group.
-fn create_post_bind_group(
+/// The display-effects bind groups, one per history parity (group `i`
+/// reads history `i`).
+fn create_post_bind_groups(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     scene: &wgpu::Texture,
     message: &wgpu::Texture,
     params: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    let scene = scene.create_view(&wgpu::TextureViewDescriptor::default());
-    let message = message.create_view(&wgpu::TextureViewDescriptor::default());
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Display effect inputs"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&scene),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&message),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: params.as_entire_binding(),
-            },
-        ],
+    history: &[wgpu::Texture; 2],
+) -> [wgpu::BindGroup; 2] {
+    let view =
+        |texture: &wgpu::Texture| texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let (scene, message) = (view(scene), view(message));
+    [0, 1].map(|i| {
+        let previous = view(&history[i]);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Display effect inputs"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&scene),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&message),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&previous),
+                },
+            ],
+        })
     })
 }
 
@@ -3323,7 +3433,13 @@ mod tests {
         assert_eq!(expect("c64"), 3.0);
         assert_eq!((expect("cga"), expect("cga2")), (4.0, 4.0));
         assert_eq!(expect("gameboy"), 5.0);
-        for plain in ["classic", "ega", "vga", "blackonwhite", "artdeco", "green"] {
+        assert_eq!(expect("green"), 6.0);
+        assert_eq!(
+            (expect("ega"), expect("vga")),
+            (7.0, 8.0),
+            "owner: scanlines on EGA and VGA too"
+        );
+        for plain in ["classic", "blackonwhite", "artdeco"] {
             assert_eq!(expect(plain), 0.0, "{plain} has no screen effect here");
         }
         // Switched off, only the Game Boy grid stays.

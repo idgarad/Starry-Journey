@@ -119,9 +119,10 @@ pub fn run_id(unix_seconds: u64) -> String {
 }
 
 /// The file name for a snapshot `seconds` into the run, sortable by time:
-/// `t000030.0s.png`.
+/// `t000030.000s.png`. Milliseconds, so consecutive frames (1/30 s
+/// apart) get their own files.
 pub fn frame_name(seconds: f64) -> String {
-    format!("t{:08.1}s.png", seconds.max(0.0))
+    format!("t{:010.3}s.png", seconds.max(0.0))
 }
 
 #[cfg(test)]
@@ -183,8 +184,13 @@ mod tests {
 
     #[test]
     fn frame_names_sort_by_time() {
-        assert_eq!(frame_name(30.0), "t000030.0s.png");
+        assert_eq!(frame_name(30.0), "t000030.000s.png");
+        assert_ne!(
+            frame_name(30.0),
+            frame_name(30.0334),
+            "consecutive frames differ"
+        );
         assert!(frame_name(9.5) < frame_name(600.0));
-        assert_eq!(frame_name(-1.0), "t000000.0s.png");
+        assert_eq!(frame_name(-1.0), "t000000.000s.png");
     }
 }
