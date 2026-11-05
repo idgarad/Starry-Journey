@@ -101,7 +101,8 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - a CRT power-on when switching into one;
   - scanlines on EGA and VGA (the spec leaves them unprocessed).
   - Green Terminal's falling code rain across the whole scene, with 157 GNU Unifont 16.0.04 glyphs.
-  - Classic and Parchment stay unprocessed. Still to come: ArtDeco's sheen material and Amber's message animation.
+  - ArtDeco's building material: a warm sheen and a cool edge reflection across each building, a fine grain, and a faint spill from lit windows. It is drawn into the city's pixels, not the screen pass, and `D` turns it off with the other effects.
+  - Classic and Parchment stay unprocessed. Still to come: Amber's message animation.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** 157 GNU Unifont 16.0.04 bitmaps compiled into the app ([src/rain_glyph_data.rs](../src/rain_glyph_data.rs)), shipped with their SIL OFL 1.1 notice in [src/fonts/unifont-OFL.txt](../src/fonts/unifont-OFL.txt).
 

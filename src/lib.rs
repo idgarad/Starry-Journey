@@ -8,6 +8,7 @@
 //! and GPU presentation.
 
 pub mod ambience;
+pub mod artdeco;
 pub mod cityglow;
 pub mod clock;
 pub mod cloudgen;

@@ -150,6 +150,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | [src/cityglow.rs](src/cityglow.rs) | City glow on the clouds: each column's lit-window light, blurred into a glow row the shader reads under every cloud pixel. |
 | [src/endless.rs](src/endless.rs), [src/quips.rs](src/quips.rs) | Endless mode's four scrolling layer cities with bounded buffers, and the startup quips. |
 | [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |
+| [src/artdeco.rs](src/artdeco.rs) | The ArtDeco material's color formulas (sheen, edge reflection, grain, window spill), which the rasterizer applies to building bodies and dark windows. |
 | [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind), `mast`, `tint`, `windows`, `decorations`, and `city` (the generator that assembles them). |
 | [src/bin/shapes.rs](src/bin/shapes.rs), [src/bin/city.rs](src/bin/city.rs) | Text previews of building shapes and of a whole generated city. |
 | [src/bin/gallery.rs](src/bin/gallery.rs) | The building gallery: every kind drawn with the real rasterizer, labelled, as a PNG. |

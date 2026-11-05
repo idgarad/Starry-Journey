@@ -11,6 +11,7 @@
 //! lights. Reveal, flicker, beacon blinking, landmark color cycling,
 //! twinkles, and the palette materials come in later features.
 
+use crate::artdeco;
 use crate::model::building::Building;
 use crate::model::grid::Grid;
 use crate::model::palette::{
@@ -136,6 +137,9 @@ pub struct RasterOptions {
     pub width: Option<usize>,
     /// Use Endless body colors ([`endless_body_color`]).
     pub endless_tint: bool,
+    /// Apply the ArtDeco material (`artdeco.rs`) to body and unlit-window
+    /// cells: on for ArtDeco with display effects on.
+    pub material: bool,
 }
 
 impl Default for RasterOptions {
@@ -145,8 +149,18 @@ impl Default for RasterOptions {
             origin_x: 0,
             width: None,
             endless_tint: false,
+            material: false,
         }
     }
+}
+
+/// Whether window `w` of `building` is lit in `lighting`'s state.
+fn window_on(building: &Building, w: usize, lighting: WindowLighting) -> bool {
+    let flags = match lighting {
+        WindowLighting::Current => &building.windows.lit,
+        WindowLighting::Target => &building.windows.target,
+    };
+    flags.get(w).copied().unwrap_or(false)
 }
 
 /// The color the rasterizer gives window `w` of `building` in its current
@@ -278,6 +292,103 @@ impl CityRaster {
         raster
     }
 
+    /// The ArtDeco material color of cell `i`, or `None` when the cell is
+    /// not a material surface (sky, a mast, or a window lit in
+    /// `lighting`'s state). Spill comes from the four axial neighbors that
+    /// are lit windows of the same building, the strongest per channel.
+    /// O(tiers).
+    pub fn material_color(
+        &self,
+        i: usize,
+        grid: &Grid,
+        buildings: &[Building],
+        palette: &Palette,
+        endless_tint: bool,
+        lighting: WindowLighting,
+    ) -> Option<Rgb> {
+        let owner = usize::try_from(*self.owner.get(i)?).ok()?;
+        let building = buildings.get(owner)?;
+        match self.window_index[i] {
+            WINDOW_MAST => return None,
+            w if w >= 0 && window_on(building, w as usize, lighting) => return None,
+            _ => {}
+        }
+        let tint = if endless_tint {
+            endless_body_color
+        } else {
+            body_color
+        };
+        let body = tint(building, palette);
+        let x = (i % self.width) as i32 + self.origin_x;
+        let row = (i / self.width) as i32;
+        let height = grid.ground_row - 1 - row;
+        let u = artdeco::across(artdeco::footprint(building), x);
+        let shaded = artdeco::shade(body, u, height);
+        let mut spills = Vec::with_capacity(4);
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let Some(j) = self.index(x + dx, row + dy) else {
+                continue;
+            };
+            let w = self.window_index[j];
+            if self.owner[j] == owner as i32 && w >= 0 && window_on(building, w as usize, lighting)
+            {
+                let w = w as usize;
+                let lit = palette.window_color(building.windows.tone[w]);
+                spills.push(artdeco::spill(mix(
+                    lit,
+                    body,
+                    shade_from_level(building.windows.shade[w]),
+                )));
+            }
+        }
+        Some(artdeco::finish(shaded, &spills))
+    }
+
+    /// The cells to repaint after window `w` of building `b` changed, with
+    /// their new colors, for the ArtDeco material: the window's cell (its
+    /// material color when dark, its lit color when lit) and its
+    /// same-building axial neighbors, whose spill changed. Each entry is
+    /// `(x, row, index, color)`. Empty if the window is hidden. O(tiers).
+    pub fn material_window_patches(
+        &self,
+        grid: &Grid,
+        buildings: &[Building],
+        (b, w): (usize, usize),
+        palette: &Palette,
+        endless_tint: bool,
+    ) -> Vec<(i32, i32, usize, Rgb)> {
+        let building = &buildings[b];
+        let (x, row) = (
+            building.windows.x[w],
+            grid.row_for_height(building.windows.h[w]),
+        );
+        let Some(i) = self.index(x, row) else {
+            return Vec::new();
+        };
+        if self.owner[i] != b as i32 || self.window_index[i] != w as i32 {
+            return Vec::new();
+        }
+        let current = WindowLighting::Current;
+        let own = self
+            .material_color(i, grid, buildings, palette, endless_tint, current)
+            .unwrap_or_else(|| window_cell_color(building, w, palette, endless_tint));
+        let mut patches = vec![(x, row, i, own)];
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let Some(j) = self.index(x + dx, row + dy) else {
+                continue;
+            };
+            if self.owner[j] != b as i32 {
+                continue;
+            }
+            if let Some(color) =
+                self.material_color(j, grid, buildings, palette, endless_tint, current)
+            {
+                patches.push((x + dx, row + dy, j, color));
+            }
+        }
+        patches
+    }
+
     fn paint(&mut self, x: i32, row: i32, color: Rgb) {
         if let Some(i) = self.index(x, row) {
             self.rgba[i * 4..i * 4 + 3].copy_from_slice(&color.0);
@@ -386,6 +497,15 @@ impl CityRaster {
                 _ => body,
             };
             self.rgba[i * 4..i * 4 + 3].copy_from_slice(&color.0);
+        }
+        if options.material {
+            for i in 0..self.owner.len() {
+                if let Some(color) =
+                    self.material_color(i, grid, buildings, palette, options.endless_tint, lighting)
+                {
+                    self.rgba[i * 4..i * 4 + 3].copy_from_slice(&color.0);
+                }
+            }
         }
         for (owner, building) in buildings.iter().enumerate() {
             let Some(decoration) = &building.decoration else {
@@ -505,6 +625,121 @@ mod tests {
         assert_eq!(raster.color_at(2, row), Some(classic.window_color(0)));
         assert_eq!(raster.color_at(4, row), Some(body_color(&b, classic)));
         assert_eq!(raster.color_at(6, row), Some(body_color(&b, classic)));
+    }
+
+    fn material_options(material: bool) -> RasterOptions {
+        RasterOptions {
+            material,
+            ..RasterOptions::default()
+        }
+    }
+
+    /// A 10-wide ArtDeco slab with a bright lit window at (2, 5), a dark
+    /// one at (6, 5), and a mast.
+    fn deco_slab() -> Building {
+        let mut b = slab(3, 0, 10, 10, 0);
+        b.windows.push(2, 5, 0, 0, true);
+        b.windows.push(6, 5, 0, 0, false);
+        b.windows.lit = vec![true, false];
+        b.mast = Some(Mast {
+            x: 5,
+            h0: 10,
+            h1: 14,
+            beacon_period: 2.0,
+            beacon_phase: 0.0,
+        });
+        b
+    }
+
+    #[test]
+    fn artdeco_material_changes_only_body_and_unlit_window_cells() {
+        let grid = small_grid();
+        let deco = palette_by_key("artdeco").unwrap();
+        let b = deco_slab();
+        let stars = [Star {
+            x: 15,
+            row: 2,
+            fade: 0.0,
+        }];
+        let render = |m| {
+            CityRaster::render_options(
+                &grid,
+                std::slice::from_ref(&b),
+                &stars,
+                deco,
+                material_options(m),
+            )
+        };
+        let (plain, shaded) = (render(false), render(true));
+        assert_eq!(
+            plain,
+            CityRaster::render(&grid, std::slice::from_ref(&b), &stars, deco)
+        );
+        let row = grid.row_for_height(5);
+        // The lit window, the mast, the sky, and the star keep their colors.
+        assert_eq!(shaded.color_at(2, row), plain.color_at(2, row));
+        for h in 10..14 {
+            let r = grid.row_for_height(h);
+            assert_eq!(shaded.color_at(5, r), plain.color_at(5, r), "mast {h}");
+        }
+        assert_eq!(shaded.color_at(15, 2), plain.color_at(15, 2));
+        assert_eq!(shaded.color_at(15, 10), plain.color_at(15, 10));
+        // The body and the dark window take the material.
+        assert_ne!(
+            shaded.color_at(3, grid.row_for_height(1)),
+            plain.color_at(3, grid.row_for_height(1))
+        );
+        assert_ne!(shaded.color_at(6, row), plain.color_at(6, row));
+        // The sheen peaks ~30% across: column 3 is brighter than column 9.
+        let low = grid.row_for_height(1);
+        let red = |x| shaded.color_at(x, low).unwrap().0[0];
+        assert!(red(3) > red(9), "{} {}", red(3), red(9));
+    }
+
+    #[test]
+    fn artdeco_spill_brightens_only_the_lit_windows_neighbors() {
+        let grid = small_grid();
+        let deco = palette_by_key("artdeco").unwrap();
+        let b = deco_slab();
+        let mut dark = b.clone();
+        dark.windows.lit = vec![false, false];
+        let opts = material_options(true);
+        let lit = CityRaster::render_options(&grid, &[b], &[], deco, opts);
+        let off = CityRaster::render_options(&grid, &[dark], &[], deco, opts);
+        let row = grid.row_for_height(5);
+        let sum = |r: &CityRaster, x, y| {
+            r.color_at(x, y)
+                .unwrap()
+                .0
+                .iter()
+                .map(|&c| u32::from(c))
+                .sum::<u32>()
+        };
+        assert!(sum(&lit, 1, row) > sum(&off, 1, row));
+        assert!(sum(&lit, 2, row - 1) > sum(&off, 2, row - 1));
+        // Diagonal and farther cells get nothing.
+        assert_eq!(lit.color_at(1, row - 1), off.color_at(1, row - 1));
+        assert_eq!(lit.color_at(4, row), off.color_at(4, row));
+    }
+
+    #[test]
+    fn artdeco_window_patches_match_a_full_redraw() {
+        let grid = small_grid();
+        let deco = palette_by_key("artdeco").unwrap();
+        let mut buildings = vec![deco_slab()];
+        let opts = material_options(true);
+        let mut raster = CityRaster::render_options(&grid, &buildings, &[], deco, opts);
+        // Window 0 goes dark, window 1 lights.
+        buildings[0].windows.lit = vec![false, true];
+        for w in [0, 1] {
+            for (_, _, i, color) in
+                raster.material_window_patches(&grid, &buildings, (0, w), deco, false)
+            {
+                raster.rgba[i * 4..i * 4 + 3].copy_from_slice(&color.0);
+            }
+        }
+        let fresh = CityRaster::render_options(&grid, &buildings, &[], deco, opts);
+        assert_eq!(raster.rgba, fresh.rgba);
     }
 
     #[test]

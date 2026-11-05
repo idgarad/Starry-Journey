@@ -160,7 +160,7 @@ impl EndlessLayer {
     fn new(seed: u32, layer: u8, grid: &Grid, palette: &Palette, profile: BuildingProfile) -> Self {
         let mut generator = endless_layer_generator(seed, layer, grid.max_h).with_profile(profile);
         generator.extend_to(ORIGIN_START + buffer_width(grid.cols) + GENERATE_AHEAD);
-        let raster = Self::draw(&generator, ORIGIN_START, grid, palette);
+        let raster = Self::draw(&generator, ORIGIN_START, grid, palette, false);
         Self {
             generator,
             origin_x: ORIGIN_START,
@@ -169,15 +169,16 @@ impl EndlessLayer {
         }
     }
 
-    /// Draws the buffer; sky cells are made transparent so far layers and
-    /// the sky show through.
+    /// Draws the buffer, with the ArtDeco material when `material`; sky
+    /// cells are made transparent so far layers and the sky show through.
     fn draw(
         generator: &CityGenerator,
         origin_x: i32,
         grid: &Grid,
         palette: &Palette,
+        material: bool,
     ) -> CityRaster {
-        let mut raster = Self::render(generator, origin_x, grid, palette);
+        let mut raster = Self::render(generator, origin_x, grid, palette, material);
         for (cell, owner) in raster.owner.iter().enumerate() {
             if *owner < 0 {
                 raster.rgba[cell * 4 + 3] = 0;
@@ -191,6 +192,7 @@ impl EndlessLayer {
         origin_x: i32,
         grid: &Grid,
         palette: &Palette,
+        material: bool,
     ) -> CityRaster {
         CityRaster::render_options(
             grid,
@@ -202,6 +204,7 @@ impl EndlessLayer {
                 origin_x,
                 width: Some(buffer_width(grid.cols) as usize),
                 endless_tint: true,
+                material,
             },
         )
     }
@@ -209,7 +212,13 @@ impl EndlessLayer {
     /// Rebases and redraws the buffer if the view at `view_x` would run past
     /// it. Returns true if it rebased. O(1) unless rebasing, then
     /// O(buffer cells + new buildings).
-    fn ensure_covers(&mut self, view_x: f64, grid: &Grid, palette: &Palette) -> bool {
+    fn ensure_covers(
+        &mut self,
+        view_x: f64,
+        grid: &Grid,
+        palette: &Palette,
+        material: bool,
+    ) -> bool {
         let left = view_x.floor() as i32;
         let width = buffer_width(grid.cols);
         // One spare column on the right for fractional positions later.
@@ -221,7 +230,7 @@ impl EndlessLayer {
         self.generator
             .extend_to(self.origin_x + width + GENERATE_AHEAD);
         self.generator.prune_before(self.origin_x - ORIGIN_MARGIN);
-        self.raster = Self::draw(&self.generator, self.origin_x, grid, palette);
+        self.raster = Self::draw(&self.generator, self.origin_x, grid, palette, material);
         self.revision = next_revision();
         true
     }
@@ -233,6 +242,8 @@ pub struct EndlessCity {
     grid: Grid,
     camera: f64,
     layers: Vec<EndlessLayer>,
+    /// The ArtDeco material is drawn on the buildings.
+    material: bool,
 }
 
 impl EndlessCity {
@@ -263,6 +274,7 @@ impl EndlessCity {
             layers: (0..4)
                 .map(|layer| EndlessLayer::new(seed, layer, grid, palette, profile))
                 .collect(),
+            material: false,
         };
         city.ensure_covered(palette);
         city
@@ -319,9 +331,23 @@ impl EndlessCity {
     /// Redraws every layer buffer in another palette.
     pub fn set_palette(&mut self, palette: &Palette) {
         for layer in &mut self.layers {
-            layer.raster =
-                EndlessLayer::draw(&layer.generator, layer.origin_x, &self.grid, palette);
+            layer.raster = EndlessLayer::draw(
+                &layer.generator,
+                layer.origin_x,
+                &self.grid,
+                palette,
+                self.material,
+            );
             layer.revision = next_revision();
+        }
+    }
+
+    /// Turns the ArtDeco material on or off, redrawing every layer in
+    /// `palette` if it changed. Geometry and lights are untouched.
+    pub fn set_material(&mut self, palette: &Palette, material: bool) {
+        if self.material != material {
+            self.material = material;
+            self.set_palette(palette);
         }
     }
 
@@ -361,7 +387,7 @@ impl EndlessCity {
     fn ensure_covered(&mut self, palette: &Palette) {
         for index in 0..self.layers.len() {
             let view_x = self.view_x(index);
-            self.layers[index].ensure_covers(view_x, &self.grid, palette);
+            self.layers[index].ensure_covers(view_x, &self.grid, palette, self.material);
         }
     }
 
@@ -415,6 +441,21 @@ mod tests {
 
     fn classic() -> &'static Palette {
         palette_by_key("classic").unwrap()
+    }
+
+    #[test]
+    fn artdeco_material_turns_off_to_the_original_colors() {
+        let grid = grid();
+        let deco = palette_by_key("artdeco").unwrap();
+        let mut city = EndlessCity::new(5, &grid, deco);
+        let before: Vec<Vec<u8>> = (0..4).map(|l| city.layer_image(l).rgba.to_vec()).collect();
+        city.set_material(deco, true);
+        assert!((0..4).any(|l| city.layer_image(l).rgba != before[l].as_slice()));
+        // It stays on through scrolling to new buffers.
+        city.advance(0.05, 1.0, deco);
+        city.set_material(deco, false);
+        let after: Vec<Vec<u8>> = (0..4).map(|l| city.layer_image(l).rgba.to_vec()).collect();
+        assert_eq!(after, before);
     }
 
     fn sky(grid: &Grid, seed: u32, palette: &Palette) -> Vec<u8> {
