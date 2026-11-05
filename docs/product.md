@@ -81,10 +81,11 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - The sun is planned with a day/night cycle.
 - **Rain, snow, and wind (owner decisions, 2026-11-05):**
   - Precipitation falls in the foreground only, in four layers of slightly different size: farther layers are smaller, slower, fainter, and denser. Density per layer scales with how hard it falls (light in overcast, heavy in storms).
+  - Showers come by chance with the cloud cover: every 10 minutes, a 10% chance under overcast and 60% under a storm (none under lighter cover). A shower eases in over a minute, holds 5 minutes, and eases out over a minute.
   - `--precip rain|snow|off` and `W` choose what falls.
   - The wind gusts, slants the fall (snow more than rain), and drives the clouds' drift.
   - Searchlights are never on while anything falls. Lightning comes only in rainstorms; snowstorms are quiet.
-  - Planned next: weather that drifts on its own over time (clouds, precipitation, and wind together).
+  - The cloud cover itself stays as set (`--clouds`, `C`).
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 

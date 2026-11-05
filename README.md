@@ -31,7 +31,7 @@ cargo run
 | `P` | Next palette (its name shows in the message box for 2 seconds) |
 | `R` | New city (construction restarts) |
 | `C` | Cycle the cloud cover (its name shows in the message box) |
-| `W` | Cycle what falls from overcast and storm clouds: rain, snow, or nothing |
+| `W` | Cycle what falls in showers: rain, snow, or nothing |
 | `E` | Switch between Normal and Endless mode |
 | `Space` | Pause or resume Endless scrolling |
 | `+` / `-` | Construction speed, 0.25× to 4× |
@@ -87,7 +87,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 | `--endless` | Endless mode: the city is built, then scrolls forever in four parallax layers. Silly status lines show while it builds (unless `--message` is set). Works with `--timer`. |
 | `--lightning L` | Lightning in storms: `auto` (default) or `off`. Flashes are soft and capped well under three a second. |
 | `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
-| `--precip P` | What falls from overcast and storm clouds: `rain` (default), `snow`, or `off`. Press `W` to cycle it. |
+| `--precip P` | What falls in showers: `rain` (default), `snow`, or `off`. Press `W` to cycle it. Every 10 minutes overcast clouds have a 10% chance of a shower and storms 60%; a shower eases in over a minute, holds 5 minutes, and eases out over a minute. |
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 15 s after opening on that lap), or `survive`. |
 | `--searchlights S` | Ground searchlights: `auto` (now and then a show of two or three sweeping beams for up to 2 minutes, very rarely in Endless; default), `always`, or `off`. |

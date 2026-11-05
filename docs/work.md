@@ -566,6 +566,16 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only; motion is not checked).
+- **Showers (owner, 2026-11-05):** "Weather should be a bit random derived from cloud coverage. Overcast might have a 10% chance and storm might have 60%. We should gradually start precipitation if it rolls it, hold it for 5 minutes then gradually dial it back to zero. I am guessing a 1 minute ramp up." This replaces the earlier "random weather" plan of drifting the cloud cover: the clouds stay as set.
+  - `weather::shower_in` gives each 10-minute stretch one seeded roll: `shower_chance` is 10% overcast, 60% storm, and 0 for lighter cover. A shower starts at a random point that leaves room for its 7 minutes: 1 minute in, 5 minutes held, 1 minute out (assumption: the ramp down also takes a minute).
+  - `shower_target` is the cover's full strength (overcast 0.35, storm 1.0) from a shower's start until it eases out. `Shower` eases toward it at a steady rate of its peak strength per minute, so it ramps in and out in a straight minute and a cover change glides.
+    - The first version stepped by the current level, which decayed on the way out and never reached zero; the new test caught it.
+  - The renderer runs a weather clock (with the speed setting, stopping on pause). Precipitation falls only while the shower's level is above zero, so searchlights come back after it.
+  - Checked with snapshots (seed 7, storm, 640x360; its first shower starts at 699 s): dry at 690 s, half at 730 s, full at 840 s, half again at 1090 s. 18 minutes of storm took about 2 minutes to render.
+  - Tests: chances (about 10% and 60% over 2000 stretches, none for broken), showers fitting their stretch, and the ramp (half at 30 s, full at 60 s, held, half 30 s into easing out, gone at 60 s, no jumps; a light shower also takes a minute).
+  - `cargo test`: PASS, 310 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.
