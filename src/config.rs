@@ -10,6 +10,7 @@
 
 use crate::clock::{parse_duration, ConstructionClock};
 use crate::clouds::Cover;
+use crate::lightning::LightningMode;
 use crate::message::parse_message;
 use crate::model::building::BuildingProfile;
 use crate::model::grid::CellScaling;
@@ -53,6 +54,8 @@ Options:
                      1 second to 24 hours. Example: --timer 10 for a meeting
                      that starts in 10 minutes, --timer 10s for a quick test.
   --deadline D       Same as --timer.
+  --lightning L      Lightning in storms: auto (default) or off. Flashes are
+                     soft and capped well under three a second.
   --message TEXT     Show TEXT in a box over the city (at most 240 UTF-16
                      units; quote it). Blank text shows no box. Changing the
                      palette shows its name there for 2 seconds.
@@ -114,6 +117,8 @@ pub struct LaunchOptions {
     pub endless: bool,
     /// Cloud cover preset (`--clouds`).
     pub clouds: Cover,
+    /// Whether storms have lightning (`--lightning`).
+    pub lightning: LightningMode,
     /// Which building kinds and footprints (`--buildings`).
     pub buildings: BuildingProfile,
     /// When ground searchlights appear (`--searchlights`).
@@ -142,6 +147,7 @@ impl Default for LaunchOptions {
             endless: false,
             clouds: Cover::default(),
             buildings: BuildingProfile::default(),
+            lightning: LightningMode::default(),
             searchlights: SearchlightMode::default(),
             seed: None,
             snapshot: None,
@@ -192,6 +198,7 @@ where
     let mut dir_given = false;
     let mut searchlights_given = false;
     let mut buildings_given = false;
+    let mut lightning_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -278,6 +285,17 @@ where
                     .or_else(|| args.next())
                     .ok_or("--message needs text, for example --message \"Back soon\"")?;
                 options.message = parse_message(&value)?;
+            }
+            "--lightning" => {
+                if lightning_given {
+                    return Err("--lightning was given more than once".to_string());
+                }
+                lightning_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--lightning needs auto or off")?;
+                options.lightning = LightningMode::parse(&value)
+                    .map_err(|message| format!("--lightning {message}"))?;
             }
             "--buildings" => {
                 if buildings_given {
@@ -419,6 +437,18 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lightning_option_parses_and_defaults_to_auto() {
+        assert_eq!(parse(&[]).unwrap().lightning, LightningMode::Auto);
+        assert_eq!(
+            parse(&["--lightning", "off"]).unwrap().lightning,
+            LightningMode::Off
+        );
+        assert!(parse(&["--lightning"]).is_err());
+        assert!(parse(&["--lightning", "on"]).is_err());
+        assert!(parse(&["--lightning", "off", "--lightning=off"]).is_err());
+    }
 
     #[test]
     fn buildings_option_parses_and_defaults_to_all() {

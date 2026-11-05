@@ -21,6 +21,7 @@ use starry_journey::cloudgen::{Light, CLOUD_LAYERS};
 use starry_journey::clouds::Cover;
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
 use starry_journey::endless::{buffer_width, decode_srgb, EndlessCity};
+use starry_journey::lightning::{bolt_path, event_at, BoltKind, MAX_SEGMENTS as BOLT_SEGMENTS};
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::building::BuildingProfile;
@@ -719,6 +720,25 @@ struct Renderer {
     searchlight_anchor: Option<(f64, f64)>,
     /// The searchlight beams this frame.
     beams: Vec<Beam>,
+    /// The lightning this frame, in device pixels (`None` when dark).
+    lightning: Option<Flash>,
+    /// The strike target found when the current strike began (its start
+    /// and the point in device pixels), so it stays put while it flashes.
+    strike_target: Option<(f64, (f64, f64))>,
+}
+
+/// One frame of lightning for the shader, in device pixels.
+#[derive(Debug, Clone, PartialEq)]
+struct Flash {
+    /// Where its light centers, and how far it reaches.
+    center: (f64, f64),
+    radius: f64,
+    /// Brightness now, 0..1.
+    intensity: f64,
+    /// How much it brightens the open sky around it (0 for in-cloud).
+    sky: f64,
+    /// The bolt's segments (none for an in-cloud flicker).
+    segments: Vec<[(f64, f64); 2]>,
 }
 
 /// Opens the device on `adapter`, asking for the adapter's real texture
@@ -996,6 +1016,8 @@ impl Renderer {
             virtual_elapsed: None,
             searchlight_anchor: None,
             beams: Vec::new(),
+            lightning: None,
+            strike_target: None,
         };
         renderer.upload();
         renderer.update_message();
@@ -1273,6 +1295,7 @@ impl Renderer {
         // offsets (and an upload when a layer buffer was rebased).
         self.scene.scroll(motion_dt, self.speed);
         self.update_searchlights(now);
+        self.update_lightning(now);
         let city_changed = self.scene.view.take_dirty() || finished;
         if city_changed {
             self.scene.compose_city();
@@ -1293,6 +1316,102 @@ impl Renderer {
     /// Works out this frame's searchlight beams (`--searchlights`): a show
     /// keeps the road view from when it started, so its lights stay put in
     /// the world.
+    /// Works out this frame's lightning (storms only; `--lightning`): the
+    /// flash's place and brightness, and the bolt for cloud-to-cloud bolts
+    /// and strikes. A strike hits the tallest point on screen when it
+    /// begins.
+    fn update_lightning(&mut self, now: Instant) {
+        let seconds = self.seconds(now);
+        let storm = self.cover == Cover::Storm;
+        let Some(event) = event_at(self.scene.seed, self.options.lightning, storm, seconds) else {
+            self.lightning = None;
+            return;
+        };
+        let (width, _) = self.surface_size();
+        let width = f64::from(width);
+        let cell = f64::from(self.scene.grid.cell);
+        let sky = f64::from(self.scene.grid.ground_row) * cell;
+        let at = (event.at.0 * width, event.at.1 * sky);
+        let (segments, center, sky_light, radius) = match event.kind {
+            BoltKind::InCloud => (Vec::new(), at, 0.0, 0.12 * width),
+            BoltKind::CloudToCloud => {
+                let to = (event.to.0 * width, event.to.1 * sky);
+                let middle = ((at.0 + to.0) / 2.0, (at.1 + to.1) / 2.0);
+                (bolt_path(event.seed, at, to), middle, 0.6, 0.15 * width)
+            }
+            BoltKind::Strike => {
+                let target = match self.strike_target {
+                    Some((start, target)) if start == event.start => target,
+                    _ => {
+                        let target = self.tallest_point().unwrap_or((at.0, sky));
+                        self.strike_target = Some((event.start, target));
+                        target
+                    }
+                };
+                let from = (
+                    target.0 + (event.at.0 - 0.5) * 0.25 * width,
+                    at.1.min(target.1 * 0.5),
+                );
+                (
+                    bolt_path(event.seed, from, target),
+                    target,
+                    1.0,
+                    0.2 * width,
+                )
+            }
+        };
+        self.lightning = Some(Flash {
+            center,
+            radius,
+            intensity: event.intensity(seconds),
+            sky: sky_light,
+            segments,
+        });
+    }
+
+    /// The highest built point on screen (device pixels), from the still
+    /// city or, while Endless scrolls, from the four layers. Only the
+    /// middle nine-tenths of the screen count, so strikes stay in view.
+    fn tallest_point(&self) -> Option<(f64, f64)> {
+        let grid = &self.scene.grid;
+        let cols = grid.cols.max(1) as usize;
+        let cell = f64::from(grid.cell);
+        let margin = cols / 20;
+        let mut best: Option<(usize, usize)> = None;
+        let mut consider = |column: usize, row: usize| {
+            if best.is_none_or(|(_, top)| row < top) {
+                best = Some((column, row));
+            }
+        };
+        if !self.scene.city.is_empty() {
+            let city = &self.scene.city;
+            for column in margin..cols - margin {
+                if let Some(row) =
+                    (0..grid.rows as usize).find(|&row| city[(row * cols + column) * 4 + 3] > 0)
+                {
+                    consider(column, row);
+                }
+            }
+        } else if let Some(endless) = &self.scene.endless {
+            for layer in 0..4 {
+                let image = endless.layer_image(layer);
+                let left = (endless.view_x(layer) - f64::from(image.origin_x)).floor() as i64;
+                for column in margin..cols - margin {
+                    let x = left + column as i64;
+                    if x < 0 || x as usize >= image.width {
+                        continue;
+                    }
+                    let found = (0..image.height)
+                        .find(|&row| image.rgba[(row * image.width + x as usize) * 4 + 3] > 0);
+                    if let Some(row) = found {
+                        consider(column, row);
+                    }
+                }
+            }
+        }
+        best.map(|(column, row)| ((column as f64 + 0.5) * cell, row as f64 * cell))
+    }
+
     fn update_searchlights(&mut self, now: Instant) {
         let seconds = self.seconds(now);
         let seed = self.scene.seed;
@@ -1602,6 +1721,36 @@ impl Renderer {
                     beam.angle as f32,
                     beam.power as f32,
                 ]),
+                None => params.extend([0.0; 4]),
+            }
+        }
+        // Lightning: its light's center and reach (device pixels) and
+        // brightness; then the bolt's segment count and how much it lights
+        // the open sky; then the segments.
+        match &self.lightning {
+            Some(flash) => {
+                params.extend([
+                    flash.center.0 as f32,
+                    flash.center.1 as f32,
+                    flash.radius as f32,
+                    flash.intensity as f32,
+                ]);
+                params.extend([
+                    flash.segments.len().min(BOLT_SEGMENTS) as f32,
+                    flash.sky as f32,
+                    0.0,
+                    0.0,
+                ]);
+            }
+            None => params.extend([0.0; 8]),
+        }
+        for slot in 0..BOLT_SEGMENTS {
+            match self
+                .lightning
+                .as_ref()
+                .and_then(|flash| flash.segments.get(slot))
+            {
+                Some([a, b]) => params.extend([a.0 as f32, a.1 as f32, b.0 as f32, b.1 as f32]),
                 None => params.extend([0.0; 4]),
             }
         }
@@ -2012,7 +2161,8 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (13 + SEARCHLIGHTS as u64 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 =
+    (15 + SEARCHLIGHTS as u64 + BOLT_SEGMENTS as u64 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 

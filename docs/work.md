@@ -9,7 +9,7 @@
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | Merged |
 | `feature/clouds` | Procedural clouds in four distance layers; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit and self-shadowed; slow life cycles | Merged |
 | `feature/cloud-lights` | City glow on cloud undersides; ground searchlight shows with beams and cloud pools (the sun waits for a day/night cycle) | Merged |
-| `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | Planned |
+| `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | In review |
 
 ### feature/clouds
 
@@ -484,9 +484,24 @@
   - `cargo test`: PASS, 290 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Lightning (owner decisions, 2026-11-05):** storms only; capped, soft flashes with `--lightning off`; "bolt + cloud glow"; mostly in-cloud.
+  - `lightning::events_in` seeds each minute's events. Pauses are 4-14 s from one event's end to the next start (also across minutes), so about 5 events a minute.
+  - Each event has 1-3 flashes at least 0.34 s apart (under three a second). Each flash rises over 0.08 s and fades over 0.4 s.
+  - The mix is 70% in-cloud, 20% cloud-to-cloud, and 10% strikes (measured over 20 seeds × 1 hour: within ±8 points).
+  - `bolt_path`: a 14-kink jagged channel plus up to two 4-segment branches (at most 24 segments).
+  - The renderer places each event in device pixels. A strike hits the highest built cell in the middle nine-tenths of the screen when it begins (from the still city, or the four Endless layers at their views), and stays there for the event.
+  - Shader: a cool white (0.82, 0.88, 1.0). Light falls off as a gaussian of distance over its reach (12-20% of the screen width). It lights clouds from inside (×1.0 of cloud alpha) and the open sky a little (×0.18, for bolts only).
+  - The bolt is a 0.6-cell core plus a soft 3-cell glow, drawn in front of the clouds and behind the city.
+  - Tuned with snapshots (seed 7, storm, 960x540; in-cloud at 81 s, dark at 90 s, cloud-to-cloud at 127 s, strike at 134 s). With an exponential falloff the whole sky went grey on every flash; the gaussian keeps it local.
+  - Seen: searchlight shows still run in storms. The owner's rule is "never on if it is raining", and there is no rain yet; this is waiting for the weather work.
+  - Tests: no faster than three flashes a second, and gaps across minutes; smooth rise and fade (no 60 fps frame jumps by more than a third); the kind mix and event rate; storms only and off; bolt ends, segment bounds and jaggedness; deterministic events; option parsing.
+  - `cargo test`: PASS, 297 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (snapshots only).
 - **Still open:**
   - reduced motion;
-  - the sun (with a day/night cycle) and lightning (`feature/lightning`); city glow and searchlights are done.
+  - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.
 - **Earlier next steps:**
   - wire the generator into the app;
   - render the strips incrementally, so drifting only computes new columns;

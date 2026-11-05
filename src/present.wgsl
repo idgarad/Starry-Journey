@@ -68,7 +68,24 @@ struct Params {
     // Per searchlight: x, y its foot in device pixels on screen; z its lean
     // from straight up (radians, positive right); w its power (0..1).
     searchlights: array<vec4<f32>, 3>,
+    // Lightning: x, y the center of its light and z its reach (device
+    // pixels), w its brightness (0..1; 0 when there is none).
+    lightning: vec4<f32>,
+    // x the bolt's segment count, y how much it lights the open sky.
+    lightning_info: vec4<f32>,
+    // The bolt's segments: x, y one end and z, w the other (device pixels).
+    bolt: array<vec4<f32>, 24>,
 }
+
+// Lightning (src/lightning.rs): its color (a cool white, linear); how much
+// it lights clouds near it from inside and the open sky around it; the
+// bolt's bright core and soft glow, in cells.
+const FLASH_COLOR: vec3<f32> = vec3<f32>(0.82, 0.88, 1.0);
+const FLASH_CLOUD: f32 = 1.0;
+const FLASH_SKY: f32 = 0.18;
+const BOLT_CORE: f32 = 0.6;
+const BOLT_GLOW: f32 = 3.0;
+const BOLT_GLOW_STRENGTH: f32 = 0.45;
 
 // Searchlight beams: how fast they widen (radians each side) and how wide
 // their foot is (cells); how bright the beam is in the air and how bright
@@ -325,6 +342,20 @@ fn beam_through(light: vec4<f32>, position: vec2<f32>) -> f32 {
     return through;
 }
 
+// Distance (device pixels) from `position` to the nearest bolt segment.
+fn bolt_distance(position: vec2<f32>) -> f32 {
+    var nearest = 1e9;
+    let count = u32(params.lightning_info.x);
+    for (var i = 0u; i < min(count, 24u); i++) {
+        let segment = params.bolt[i];
+        let a = segment.xy;
+        let ab = segment.zw - a;
+        let t = clamp(dot(position - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+        nearest = min(nearest, length(position - (a + ab * t)));
+    }
+    return nearest;
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -359,6 +390,18 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
     }
     let beam_light = params.searchlight_color.rgb * beam;
+    // Lightning: how bright it is here (fading with distance from its
+    // center), lighting the open sky a little and the clouds from inside.
+    let flash = params.lightning.w;
+    var flash_here = 0.0;
+    if (flash > 0.0) {
+        let reach = max(params.lightning.z, 1.0);
+        // A gaussian falloff keeps the light local: bright near the bolt
+        // or flicker, gone a couple of reaches away, never a sky-wide flash.
+        let r = length(position.xy - params.lightning.xy) / reach;
+        flash_here = flash * exp(-r * r);
+        color += FLASH_COLOR * flash_here * FLASH_SKY * params.lightning_info.y;
+    }
     let glow = city_glow_at(position.xy);
     let ground = params.glow.x;
     let height = max(ground - position.y / cell, 0.0);
@@ -382,7 +425,18 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         if (band >= BEAM_FIRST_BAND && cloud.a > 0.0 && beam > 0.0) {
             cloud = vec4<f32>(cloud.rgb + beam_light * BEAM_POOL * cloud.a, cloud.a);
         }
+        if (flash_here > 0.0 && cloud.a > 0.0) {
+            cloud = vec4<f32>(cloud.rgb + FLASH_COLOR * flash_here * FLASH_CLOUD * cloud.a, cloud.a);
+        }
         color = over(cloud, color);
+    }
+    // The bolt, in front of the clouds and behind the city: a bright core
+    // and a soft glow.
+    if (flash > 0.0 && params.lightning_info.x > 0.0) {
+        let d = bolt_distance(position.xy) / cell;
+        let core = 1.0 - smoothstep(BOLT_CORE * 0.5, BOLT_CORE, d);
+        let glow = BOLT_GLOW_STRENGTH * exp(-d / BOLT_GLOW);
+        color += FLASH_COLOR * flash * (core + glow);
     }
     if (params.cell.z > 0.5) {
         color = over(premultiplied(still_city, texel.x, texel.y), color);

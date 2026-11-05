@@ -84,6 +84,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 | `--buildings B` | Building kinds: `all` (default), or `baseline`: only the 19 kinds shared with the Python version, at its per-layer widths (no extension kinds, no wide footprints), for comparing the two. |
 | `--clouds C` | Cloud cover: `clear`, `puffs`, `scattered` (default), `broken`, `overcast`, or `storm`. |
 | `--endless` | Endless mode: the city is built, then scrolls forever in four parallax layers. Silly status lines show while it builds (unless `--message` is set). Works with `--timer`. |
+| `--lightning L` | Lightning in storms: `auto` (default) or `off`. Flashes are soft and capped well under three a second. |
 | `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 15 s after opening on that lap), or `survive`. |
@@ -127,6 +128,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | [src/snapshot.rs](src/snapshot.rs) | Snapshot mode helpers: a dependency-free PNG writer and run folder names. |
 | [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |
 | [src/clouds.rs](src/clouds.rs) | Cloud shapes, coverage presets, wind and parallax, and moonlit four-tone drawing. |
+| [src/lightning.rs](src/lightning.rs) | Storm lightning: when flashes happen (capped for photosensitive viewers), their kinds, and bolt shapes. The shader draws them. |
 | [src/searchlights.rs](src/searchlights.rs) | Ground searchlight shows: when they run, where the lights stand, and how they sweep. The shader draws the beams. |
 | [src/cityglow.rs](src/cityglow.rs) | City glow on the clouds: each column's lit-window light, blurred into a glow row the shader reads under every cloud pixel. |
 | [src/endless.rs](src/endless.rs), [src/quips.rs](src/quips.rs) | Endless mode's four scrolling layer cities with bounded buffers, and the startup quips. |
