@@ -121,9 +121,31 @@ impl Event {
     }
 }
 
-/// A flash's shape at `t` seconds after its start: 0 before, rising
-/// smoothly to 1 over [`RISE`], then fading smoothly over [`FALL`].
+/// The brightness steps a flash fades through, full first (owner,
+/// 2026-11-05: pixel-art lightning fades "in 3 brightness steps").
+pub const FLASH_STEPS: [f64; 3] = [1.0, 0.5, 0.25];
+
+/// A flash's brightness at `t` seconds after its start, in steps: it
+/// jumps up through [`FLASH_STEPS`] over [`RISE`], holds full, then steps
+/// down through them over [`FALL`] to off, a retro flicker rather than a
+/// smooth fade. Steps only fall monotonically within a flash, so they add
+/// no flashes. O(1).
 pub fn envelope(t: f64) -> f64 {
+    let smooth = smooth_envelope(t);
+    if smooth >= 0.7 {
+        FLASH_STEPS[0]
+    } else if smooth >= 0.35 {
+        FLASH_STEPS[1]
+    } else if smooth >= 0.1 {
+        FLASH_STEPS[2]
+    } else {
+        0.0
+    }
+}
+
+/// The smooth flash shape the steps follow: 0 before, rising to 1 over
+/// [`RISE`], then fading over [`FALL`].
+fn smooth_envelope(t: f64) -> f64 {
     if t <= 0.0 || t >= RISE + FALL {
         0.0
     } else if t < RISE {
@@ -314,11 +336,11 @@ mod tests {
                 .iter()
                 .all(|f| (f.2 - burst.at.0).abs() <= 0.2 + 1e-9));
         }
-        // Where a second flash starts before the first has faded, both
-        // light at once, and their lights add.
+        // Where a second flash starts before the first has stepped off,
+        // both light at once, and their lights add.
         let burst = events
             .iter()
-            .find(|e| e.flashes.len() > 1 && e.flashes[1].0 < RISE + FALL - 0.05)
+            .find(|e| e.flashes.len() > 1 && envelope(e.flashes[1].0 + 0.02) > 0.0)
             .expect("an overlapping burst");
         let both = burst.start + burst.flashes[1].0 + 0.02;
         assert_eq!(burst.lights(both).len(), 2, "{:?}", burst.flashes);
@@ -326,18 +348,36 @@ mod tests {
     }
 
     #[test]
-    fn flashes_rise_and_fade_smoothly() {
+    fn flashes_step_up_and_down_through_three_brightnesses() {
+        // Owner, 2026-11-05: a retro fade in steps (full, half, quarter,
+        // off) instead of the smooth one.
         assert_eq!(envelope(0.0), 0.0);
-        assert!((envelope(RISE) - 1.0).abs() < 1e-12);
+        assert_eq!(envelope(RISE), 1.0);
         assert_eq!(envelope(RISE + FALL), 0.0);
-        // At 60 frames a second no frame jumps by more than a third of the
-        // peak.
-        let mut previous = 0.0;
-        for frame in 0..60 {
-            let value = envelope(f64::from(frame) / 60.0);
-            assert!((value - previous).abs() < 0.34, "frame {frame}");
-            previous = value;
+        let frames: Vec<f64> = (0..60)
+            .map(|frame| envelope(f64::from(frame) / 60.0))
+            .collect();
+        assert!(
+            frames.iter().all(|v| [0.0, 0.25, 0.5, 1.0].contains(v)),
+            "{frames:?}"
+        );
+        // After the peak it only steps down, through every step.
+        let peak = frames.iter().position(|&v| v == 1.0).unwrap();
+        assert!(frames[peak..].windows(2).all(|w| w[1] <= w[0]));
+        for step in [0.5, 0.25, 0.0] {
+            assert!(frames[peak..].contains(&step), "passes through {step}");
         }
+        // Each step lasts at least two frames at 60 frames a second.
+        let mut run = 0;
+        let mut runs = Vec::new();
+        for w in frames[peak..].windows(2) {
+            run += 1;
+            if w[1] != w[0] {
+                runs.push(run);
+                run = 0;
+            }
+        }
+        assert!(runs.iter().all(|&r| r >= 2), "{runs:?}");
     }
 
     #[test]

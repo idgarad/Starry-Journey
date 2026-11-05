@@ -77,7 +77,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - Moonlight is self-shadowing and passes through thin cloud, following the Python version's GitHub issue #1.
   - The city's window glow lights cloud undersides.
   - Ground searchlights (`--searchlights`) put on occasional shows of two or three sweeping beams. A show lasts at most 2 minutes; shows are very rare in Endless. Beams pass in front of distant clouds and pool on the near clouds overhead.
-  - Lightning in storms (`--lightning auto|off`): mostly flickers inside clouds, some cloud-to-cloud bolts, and rare strikes on the tallest point of the skyline. Flashes are local, soft, and capped: events at least 4 s apart, never more than three flashes a second (WCAG 2.3.1 allows at most three).
+  - Lightning in storms (`--lightning auto|off`): mostly flickers inside clouds, some cloud-to-cloud bolts, and rare strikes on the tallest point of the skyline. Pixel-art style: one-cell stair-step bolts with a glow ring, banded and dithered flash light, and fades in three brightness steps. Flashes are local, soft, and capped: events at least 4 s apart, never more than three flashes a second (WCAG 2.3.1 allows at most three).
   - The sun is planned with a day/night cycle.
 - **Rain, snow, and wind (owner decisions, 2026-11-05):**
   - Precipitation falls in the foreground only, in four layers of slightly different size: farther layers are smaller, slower, fainter, and denser. Density per layer scales with how hard it falls (light in overcast, heavy in storms).
