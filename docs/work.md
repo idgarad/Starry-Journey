@@ -9,7 +9,7 @@
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | Merged |
 | `feature/clouds` | Procedural clouds in four distance layers; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit and self-shadowed; slow life cycles | Merged |
 | `feature/cloud-lights` | City glow on cloud undersides; ground searchlight shows with beams and cloud pools (the sun waits for a day/night cycle) | Merged |
-| `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | In review |
+| `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | Merged |
 
 ### feature/clouds
 
