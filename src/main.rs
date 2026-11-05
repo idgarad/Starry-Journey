@@ -23,7 +23,7 @@ use starry_journey::cityglow::{glow_rgba, glow_row};
 use starry_journey::clock::{format_remaining, ConstructionClock};
 use starry_journey::cloudgen::{Light, CLOUD_LAYERS};
 use starry_journey::clouds::Cover;
-use starry_journey::config::{parse_args, LaunchOptions, USAGE};
+use starry_journey::config::{parse_args, LaunchOptions, TestEvent, USAGE};
 use starry_journey::endless::{buffer_width, decode_srgb, EndlessCity};
 use starry_journey::lightning::{bolt_path, event_at, BoltKind, MAX_SEGMENTS as BOLT_SEGMENTS};
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
@@ -48,8 +48,10 @@ use starry_journey::searchlights::{
 use starry_journey::skyclouds::{SkyClouds, SLOTS as CLOUD_SLOTS};
 use starry_journey::snapshot::{encode_png, frame_name, run_id};
 use starry_journey::station::{radio_line, StationFate};
-use starry_journey::street::{mark_opaque, Span, StreetLayer};
-use starry_journey::traffic::{Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH};
+use starry_journey::street::{mark_opaque, sway_offset, Span, StreetLayer};
+use starry_journey::traffic::{
+    glow_from_lights, Special, Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH,
+};
 use starry_journey::weather::{
     fall_direction, shower_target, wind_now, PrecipKind, PrecipMode, Precipitation, Shower,
     CLOUD_WIND_REFERENCE, PRECIP_LAYERS,
@@ -193,11 +195,27 @@ impl ApplicationHandler for App {
                 // Test keys (owner, 2026-11-05): Shift + a letter forces an
                 // event, so it can be checked without waiting for it.
                 if self.modifiers.shift_key() {
-                    if let (PhysicalKey::Code(KeyCode::KeyS), Some(renderer)) =
+                    if let (PhysicalKey::Code(key), Some(renderer)) =
                         (event.physical_key, &mut self.renderer)
                     {
-                        renderer.force_meteor();
-                        return;
+                        let handled = match key {
+                            KeyCode::KeyS => {
+                                renderer.force_meteor();
+                                true
+                            }
+                            KeyCode::KeyE => {
+                                renderer.force_special(Special::Police);
+                                true
+                            }
+                            KeyCode::KeyU => {
+                                renderer.force_special(Special::Utility);
+                                true
+                            }
+                            _ => false,
+                        };
+                        if handled {
+                            return;
+                        }
                     }
                 }
                 if let PhysicalKey::Code(key) = event.physical_key {
@@ -329,6 +347,9 @@ struct Scene {
     /// Street traffic; starts once the city is finished (Starry Journey
     /// extension: Normal mode has traffic too).
     traffic: Option<Traffic>,
+    /// The wind (cells per second) and the time (seconds) the trees sway
+    /// to, set by the renderer each frame.
+    sway: (f64, f64),
     /// The palette the scene is drawn in (palettes are static data).
     palette: &'static Palette,
     /// The scrolling layers in Endless mode; `None` in Normal mode. They
@@ -420,6 +441,7 @@ impl Scene {
             street_span: Span::screen(&grid),
             city: Vec::new(),
             traffic: None,
+            sway: (0.0, 0.0),
             palette,
             endless: city,
             sky,
@@ -545,10 +567,10 @@ impl Scene {
             self.street_span,
             self.palette,
             (&mut self.overlay, &mut self.overlay_front),
+            self.sway,
         );
+        // The trees mark themselves opaque where they sway to.
         mark_opaque(&self.street.back, &mut self.overlay);
-        mark_opaque(&self.street.back_trees, &mut self.overlay);
-        mark_opaque(&self.street.front, &mut self.overlay_front);
     }
 
     /// Every vehicle as a sprite at its exact position (none before
@@ -780,6 +802,8 @@ struct Renderer {
     ambience_revisions: [u64; 4],
     /// When a shooting star was asked for by hand (Shift+S).
     forced_meteor: Option<f64>,
+    /// `--events` not yet fired, in time order.
+    pending_events: Vec<(TestEvent, f64)>,
     /// The shooting star in flight now.
     meteor: Option<Meteor>,
 }
@@ -1084,9 +1108,11 @@ impl Renderer {
             ambience_cache: HashMap::new(),
             ambience_revisions: [0; 4],
             forced_meteor: None,
+            pending_events: Vec::new(),
             meteor: None,
             wind: 0.0,
         };
+        renderer.pending_events = renderer.options.events.clone();
         renderer.upload();
         renderer.update_message();
         Ok(renderer)
@@ -1371,7 +1397,9 @@ impl Renderer {
             self.scene.compose_city();
             self.upload_still();
         }
-        if traffic_moved || city_changed {
+        // Trees sway whenever the wind is strong enough to move them.
+        let swaying = self.wind.abs() > SWAY_WIND;
+        if traffic_moved || city_changed || swaying {
             self.scene.compose_overlay();
             self.upload_overlay();
         }
@@ -1408,10 +1436,28 @@ impl Renderer {
             _ => None,
         };
         self.wind = wind_now(self.cover, self.scene.seed, seconds);
+        self.scene.sway = (self.wind, seconds);
         self.sky_clouds
             .set_wind_factor(self.wind.abs() / CLOUD_WIND_REFERENCE);
         if let Some((kind, _)) = self.precip_now {
             self.precipitation.advance(dt * self.speed, kind, self.wind);
+        }
+    }
+
+    /// Fires a test event (a Shift test key or `--events`).
+    fn fire(&mut self, event: TestEvent) {
+        match event {
+            TestEvent::Meteor => self.force_meteor(),
+            TestEvent::Police => self.force_special(Special::Police),
+            TestEvent::Utility => self.force_special(Special::Utility),
+        }
+    }
+
+    /// Sends a police car or utility truck now (test keys Shift+E and
+    /// Shift+U). Traffic starts once the city is built.
+    fn force_special(&mut self, special: Special) {
+        if let Some(traffic) = self.scene.traffic.as_mut() {
+            traffic.force(special);
         }
     }
 
@@ -1427,6 +1473,15 @@ impl Renderer {
     /// textures.
     fn update_ambience(&mut self, now: Instant, dt: f64) {
         let seconds = self.seconds(now);
+        // `--events`: fire any whose moment has come.
+        while self
+            .pending_events
+            .first()
+            .is_some_and(|(_, at)| *at <= seconds)
+        {
+            let (event, _) = self.pending_events.remove(0);
+            self.fire(event);
+        }
         let seed = self.scene.seed;
         self.meteor = meteor_at(seed, seconds, self.forced_meteor);
         if !self.scene.reveal.is_complete() {
@@ -2052,6 +2107,37 @@ impl Renderer {
             }
             None => params.extend([0.0; 4 + 8 * PRECIP_LAYERS]),
         }
+        // Flashers lighting the nearest buildings: up to four lit flasher
+        // cells, each its center (device pixels) and brightness, then its
+        // color (linear).
+        let flashers = self
+            .scene
+            .traffic
+            .as_ref()
+            .map(|traffic| traffic.flasher_lights(&self.scene.grid, palette_at(self.palette_index)))
+            .unwrap_or_default();
+        let road = self.scene.road_view();
+        let cell_px = f64::from(cell);
+        for slot in 0..FLASHER_LIGHTS {
+            match flashers.get(slot) {
+                Some(&(x, row, _, brightness)) => params.extend([
+                    ((x - road) * cell_px) as f32,
+                    (row * cell_px) as f32,
+                    0.0,
+                    brightness as f32,
+                ]),
+                None => params.extend([0.0; 4]),
+            }
+        }
+        for slot in 0..FLASHER_LIGHTS {
+            match flashers.get(slot) {
+                Some(&(_, _, color, _)) => {
+                    let [r, g, b] = color.0.map(|c| decode_srgb(f64::from(c) / 255.0) as f32);
+                    params.extend([r, g, b, 0.0]);
+                }
+                None => params.extend([0.0; 4]),
+            }
+        }
         // A shooting star: its head and the end of its trail (device
         // pixels), then its brightness.
         match self.meteor {
@@ -2408,19 +2494,32 @@ fn paint_street(
     span: Span,
     palette: &Palette,
     layers: (&mut [u8], &mut [u8]),
+    sway: (f64, f64),
 ) {
     let (back, front) = layers;
+    // Canopies lean with the wind (owner, 2026-11-05).
+    let (wind, seconds) = sway;
+    let lean = |weight, phase| sway_offset(weight, phase, wind, seconds);
     match traffic {
         None => {
-            street.apply_back(back);
-            street.apply_front(front);
+            let unlit = |_, _| (palette.headlight, 0.0);
+            street.apply_back_swaying(back, span, unlit, lean);
+            street.apply_front_swaying(front, span, unlit, lean);
         }
         Some(traffic) => {
-            let light = palette.headlight;
-            let back_glow = |x, row| traffic.glow(&grid, x, row, Verge::Back);
-            let front_glow = |x, row| traffic.glow(&grid, x, row, Verge::Front);
-            street.apply_back_lit(back, span, light, back_glow);
-            street.apply_front_lit(front, span, light, front_glow);
+            // Each tree cell takes the stronger of the headlights and any
+            // flasher near it (owner, 2026-11-05: flashers "should
+            // illuminate nearby trees").
+            let flashers = traffic.flasher_lights(&grid, palette);
+            let light = |x, row, verge| {
+                let headlight = (palette.headlight, traffic.glow(&grid, x, row, verge));
+                match glow_from_lights(&flashers, x, row) {
+                    Some(flash) if flash.1 > headlight.1 => flash,
+                    _ => headlight,
+                }
+            };
+            street.apply_back_swaying(back, span, |x, row| light(x, row, Verge::Back), lean);
+            street.apply_front_swaying(front, span, |x, row| light(x, row, Verge::Front), lean);
         }
     }
 }
@@ -2485,12 +2584,18 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 /// Lightning lights the shader takes (one per flash of an event).
 const FLASH_LIGHTS: usize = 3;
 const PARAMS_BYTES: u64 = (17
+    + 2 * FLASHER_LIGHTS as u64
     + 2 * PRECIP_LAYERS as u64
     + FLASH_LIGHTS as u64
     + SEARCHLIGHTS as u64
     + BOLT_SEGMENTS as u64
     + VEHICLE_SLOTS as u64)
     * 16;
+/// The wind (cells per second) above which the street is redrawn every
+/// frame so the trees can sway (below it no canopy leans a whole cell).
+const SWAY_WIND: f64 = 1.0;
+/// Flasher lights the shader takes (two police cars' light bars).
+const FLASHER_LIGHTS: usize = 4;
 /// How much of a shooting star's flight its trail spans.
 const METEOR_TRAIL: f64 = 0.35;
 
@@ -3016,6 +3121,7 @@ mod tests {
             span,
             classic(),
             (&mut back, &mut front),
+            scene.sway,
         );
         for (layer, expected) in [(&scene.overlay, &back), (&scene.overlay_front, &front)] {
             for (cell, pixel) in layer.chunks(4).enumerate() {

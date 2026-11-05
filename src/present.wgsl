@@ -88,12 +88,21 @@ struct Params {
     // streak's half-width or the flake's size (cells; 2 is the spinning
     // cross), z opacity, w the clock (seconds) that spins the big flakes.
     precip_looks: array<vec4<f32>, 4>,
+    // Special vehicles' lit flashers: x, y each center (device pixels), w
+    // its brightness (0 when off); then each color (linear).
+    flashers: array<vec4<f32>, 4>,
+    flasher_colors: array<vec4<f32>, 4>,
     // A shooting star: x, y its head and z, w the end of its trail (device
     // pixels).
     meteor: vec4<f32>,
     // x its brightness (0 when there is none).
     meteor_info: vec4<f32>,
 }
+
+// Flashers light the nearest buildings (owner, 2026-11-05): how far, in
+// cells, and how strongly.
+const FLASHER_REACH: f32 = 22.0;
+const FLASHER_STRENGTH: f32 = 0.35;
 
 // A shooting star's streak half-width and soft edge, in cells.
 const METEOR_CORE: f32 = 0.35;
@@ -593,15 +602,36 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         let glow = BOLT_GLOW_STRENGTH * exp(-d / BOLT_GLOW);
         color += FLASH_COLOR * flash * (core + glow);
     }
+    // How much of this pixel is a near building, for flasher light.
+    var building = 0.0;
     if (params.cell.z > 0.5) {
-        color = over(premultiplied(still_city, texel.x, texel.y), color);
+        let still = premultiplied(still_city, texel.x, texel.y);
+        color = over(still, color);
+        building = still.a;
     }
     if (params.cell.y > 0.5) {
         let p = position.xy;
         color = over(sharp_sample(layer0, vec2<f32>(params.layers[0].x, 0.0), p), color);
         color = over(sharp_sample(layer1, vec2<f32>(params.layers[1].x, 0.0), p), color);
-        color = over(sharp_sample(layer2, vec2<f32>(params.layers[2].x, 0.0), p), color);
-        color = over(sharp_sample(layer3, vec2<f32>(params.layers[3].x, 0.0), p), color);
+        let near_back = sharp_sample(layer2, vec2<f32>(params.layers[2].x, 0.0), p);
+        let near_front = sharp_sample(layer3, vec2<f32>(params.layers[3].x, 0.0), p);
+        color = over(near_back, color);
+        color = over(near_front, color);
+        building = max(near_back.a, near_front.a);
+    }
+    // Flashers light the nearest buildings in their colors, fading with
+    // distance.
+    if (building > 0.0) {
+        for (var i = 0u; i < 4u; i++) {
+            let light = params.flashers[i];
+            if (light.w > 0.0) {
+                let d = length(position.xy - light.xy) / (cell * FLASHER_REACH);
+                if (d < 1.0) {
+                    let fall = (1.0 - d * d) * (1.0 - d * d);
+                    color += params.flasher_colors[i].rgb * light.w * FLASHER_STRENGTH * fall * building;
+                }
+            }
+        }
     }
     let street_offset = vec2<f32>(params.cell.w, 0.0);
     color = over(sharp_sample(overlay, street_offset, position.xy), color);
