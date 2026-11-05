@@ -14,6 +14,7 @@ use crate::lightning::LightningMode;
 use crate::message::parse_message;
 use crate::model::building::BuildingProfile;
 use crate::model::grid::CellScaling;
+use crate::model::palette::{palette_by_key, palettes};
 use crate::model::rng::js_round;
 use crate::moon::{parse_moon_phase, START_PHASE_STEP};
 use crate::searchlights::SearchlightMode;
@@ -45,6 +46,9 @@ Options:
                      overcast, or storm. Press C to cycle it.
   --endless          Endless mode: the city is built, then scrolls forever in
                      four parallax layers. Press E to switch modes any time.
+  --palette KEY      Start in palette KEY: classic (default), artdeco,
+                     blackonwhite, cga, cga2, ega, vga, c64, appleii,
+                     gameboy, amber, green. Press P to cycle.
   --pixel-size N    Draw each virtual pixel as N screen pixels (1-16), times
                      the display scaling. Bigger screens show more city and
                      sky. Default: 3.
@@ -132,6 +136,8 @@ pub struct LaunchOptions {
     pub precip: PrecipMode,
     /// Whether storms have lightning (`--lightning`).
     pub lightning: LightningMode,
+    /// The palette to start in (`--palette`); `None` is the default.
+    pub palette: Option<String>,
     /// Which building kinds and footprints (`--buildings`).
     pub buildings: BuildingProfile,
     /// When ground searchlights appear (`--searchlights`).
@@ -162,6 +168,7 @@ impl Default for LaunchOptions {
             endless: false,
             clouds: Cover::default(),
             buildings: BuildingProfile::default(),
+            palette: None,
             lightning: LightningMode::default(),
             precip: PrecipMode::default(),
             searchlights: SearchlightMode::default(),
@@ -357,6 +364,23 @@ where
                     .ok_or("--events needs events, for example --events police@30s")?;
                 options.events = parse_events(&value)?;
             }
+            "--palette" => {
+                if options.palette.is_some() {
+                    return Err("--palette was given more than once".to_string());
+                }
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--palette needs a palette, for example --palette vga")?;
+                let key = value.trim().to_ascii_lowercase();
+                if palette_by_key(&key).is_none() {
+                    let keys: Vec<&str> = palettes().iter().map(|p| p.key).collect();
+                    return Err(format!(
+                        "--palette must be one of {}, got '{value}'",
+                        keys.join(", ")
+                    ));
+                }
+                options.palette = Some(key);
+            }
             "--seed" => {
                 if options.seed.is_some() {
                     return Err("--seed was given more than once".to_string());
@@ -537,6 +561,21 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_option_picks_a_known_palette() {
+        assert_eq!(parse(&[]).unwrap().palette, None);
+        assert_eq!(
+            parse(&["--palette", "BlackOnWhite"])
+                .unwrap()
+                .palette
+                .as_deref(),
+            Some("blackonwhite")
+        );
+        assert!(parse(&["--palette", "sepia"]).is_err());
+        assert!(parse(&["--palette"]).is_err());
+        assert!(parse(&["--palette", "vga", "--palette", "ega"]).is_err());
+    }
 
     #[test]
     fn events_parse_in_time_order_and_reject_bad_ones() {

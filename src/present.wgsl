@@ -63,7 +63,8 @@ struct Params {
     cloud_back_offsets: vec4<f32>,
     cloud_fades: vec4<f32>,
     cloud_slots: vec4<f32>,
-    // City glow: x the ground row in cells; y, z, w unused.
+    // City glow: x the ground row in cells; y 1 on an ink-on-paper palette
+    // (light effects drawn in ink, see `light`); z, w unused.
     glow: vec4<f32>,
     // Searchlights: rgb their color (linear), w how many are on.
     searchlight_color: vec4<f32>,
@@ -521,6 +522,17 @@ fn precip_alpha(layer: u32, cell_pos: vec2<f32>, pixel: vec2<f32>) -> f32 {
     return 0.0;
 }
 
+// Adds `amount` of the light `tint` to `color`; on an ink-on-paper palette
+// (Ink on Parchment), where light would vanish against the pale sky, draws
+// it in the palette's ink instead: a stroke `amount` strong (owner,
+// 2026-11-05).
+fn light(color: vec3<f32>, tint: vec3<f32>, amount: f32) -> vec3<f32> {
+    if (params.glow.y > 0.5) {
+        return mix(color, params.searchlight_color.rgb, clamp(amount, 0.0, 1.0));
+    }
+    return color + tint * amount;
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -547,7 +559,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         let d = length(position.xy - (head + trail * t)) / cell;
         let along = 1.0 - t;
         let streak = 1.0 - smoothstep(METEOR_CORE, METEOR_EDGE, d);
-        color += params.searchlight_color.rgb * params.meteor_info.x * streak * along * along;
+        color = light(color, params.searchlight_color.rgb, params.meteor_info.x * streak * along * along);
     }
     // The cloud layers far to near, each at its own fractional offset, lit
     // (including by the moon) on a background thread; they let some of the
@@ -602,7 +614,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let far_below = position.xy + vec2<f32>(0.0, UNDERSIDE_FAR * cell);
     for (var band = 0u; band < CLOUD_LAYERS; band++) {
         if (band == BEAM_FIRST_BAND) {
-            color += beam_light * BEAM_AIR;
+            color = light(color, params.searchlight_color.rgb, beam * BEAM_AIR);
         }
         if (params.cloud_slots[band] < 0.0) {
             continue;
@@ -615,7 +627,8 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
         // A searchlight's pool where its beam meets this cloud.
         if (band >= BEAM_FIRST_BAND && cloud.a > 0.0 && beam > 0.0) {
-            cloud = vec4<f32>(cloud.rgb + beam_light * BEAM_POOL * cloud.a, cloud.a);
+            let lit = light(cloud.rgb, params.searchlight_color.rgb * cloud.a, beam * BEAM_POOL);
+            cloud = vec4<f32>(select(lit, mix(cloud.rgb, params.searchlight_color.rgb * cloud.a, beam * BEAM_POOL), params.glow.y > 0.5), cloud.a);
         }
         if (flash_here > 0.0 && cloud.a > 0.0) {
             cloud = vec4<f32>(cloud.rgb + FLASH_COLOR * flash_here * FLASH_CLOUD * cloud.a, cloud.a);
@@ -628,9 +641,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (flash > 0.0 && params.lightning_info.x > 0.0) {
         let d = bolt_cells(floor(position.xy / cell) + vec2<f32>(0.5));
         if (d <= 0.5) {
-            color = mix(color, FLASH_COLOR, flash);
+            let ink = params.glow.y > 0.5;
+            color = mix(color, select(FLASH_COLOR, params.searchlight_color.rgb, ink), flash);
         } else if (d <= 1.5) {
-            color += FLASH_COLOR * flash * BOLT_GLOW_TONE;
+            color = light(color, FLASH_COLOR, flash * BOLT_GLOW_TONE);
         }
     }
     // How much of this pixel is a near building, for flasher light.

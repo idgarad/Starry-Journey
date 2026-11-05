@@ -663,6 +663,14 @@
   - `cargo test`: PASS, 321 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Fix: light effects on Ink on Parchment (owner, 2026-11-05):** "Spotlights don't work with the parchment palette."
+  - Cause: Ink on Parchment (`blackonwhite`) is the one palette with a background lighter than its stars, and the beams added the star color (dark ink) as light to a pale sky, which barely changes it. Shooting stars did the same, and the bolt's cool white vanished on the paper.
+  - On an ink-on-paper palette (`is_ink_on_paper`: background luma above star luma; a test checks only `blackonwhite` qualifies), the shader's `light` helper draws effects as ink strokes. It blends toward the ink color by the effect's strength instead of adding light. This covers searchlight beams and their cloud pools, shooting stars, and the bolt and its glow ring. Dark palettes add light exactly as before.
+  - `--palette KEY` (planned in the Rebuild Prompt) starts in any palette; it was needed to snapshot parchment. A test checks it.
+  - Checked with snapshots (seed 7, broken, 960x540, `--searchlights always`, a strike and a shooting star): before, no beams; after, ink beams, an ink bolt on the tallest spire, and an ink streak.
+  - `cargo test`: PASS, 323 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

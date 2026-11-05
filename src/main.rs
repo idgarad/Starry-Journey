@@ -1026,9 +1026,10 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let wanted = options.palette.as_deref().unwrap_or(DEFAULT_PALETTE_KEY);
         let palette_index = palettes()
             .iter()
-            .position(|palette| palette.key == DEFAULT_PALETTE_KEY)
+            .position(|palette| palette.key == wanted)
             .unwrap_or(0);
         let start = Instant::now();
         let scene = Scene::with_profile(
@@ -2068,7 +2069,11 @@ impl Renderer {
             }
         }));
         // City glow: x the ground row (cells).
-        params.extend([self.scene.grid.ground_row as f32, 0.0, 0.0, 0.0]);
+        // y: 1 on an ink-on-paper palette (a background lighter than its
+        // stars), where light effects are drawn as ink instead.
+        let palette = palette_at(self.palette_index);
+        let ink = if is_ink_on_paper(palette) { 1.0 } else { 0.0 };
+        params.extend([self.scene.grid.ground_row as f32, ink, 0.0, 0.0]);
         // Searchlights: their color (the palette's star color, linear) and
         // count, then per slot the beam's foot (device pixels on screen),
         // lean, and power.
@@ -2639,6 +2644,18 @@ const PARAMS_BYTES: u64 = (17
     + BOLT_SEGMENTS as u64
     + VEHICLE_SLOTS as u64)
     * 16;
+/// Whether `palette` is ink on paper: its background is lighter than its
+/// stars (Ink on Parchment). Light added to a pale sky barely shows there,
+/// so beams, shooting stars, and bolts are drawn in its ink instead (owner,
+/// 2026-11-05: "Spotlights don't work with the parchment palette").
+fn is_ink_on_paper(palette: &Palette) -> bool {
+    let luma = |c: starry_journey::model::palette::Rgb| {
+        let [r, g, b] = c.0.map(f64::from);
+        0.299 * r + 0.587 * g + 0.114 * b
+    };
+    luma(palette.bg) > luma(palette.star)
+}
+
 /// The least strength of a shower asked for by hand (an overcast
 /// shower's), so one shows even under light cover.
 const FORCED_SHOWER: f64 = 0.35;
@@ -3014,6 +3031,16 @@ mod tests {
         let image = lit_scene.flattened();
         let shown = &image[cell * 4..cell * 4 + 3];
         assert_ne!(shown, &plain.0[..], "the trunk ahead of the car is lit");
+    }
+
+    #[test]
+    fn only_the_parchment_palette_is_ink_on_paper() {
+        let ink: Vec<&str> = palettes()
+            .iter()
+            .filter(|p| is_ink_on_paper(p))
+            .map(|p| p.key)
+            .collect();
+        assert_eq!(ink, vec!["blackonwhite"]);
     }
 
     #[test]
