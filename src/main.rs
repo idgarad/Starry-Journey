@@ -44,7 +44,7 @@ use starry_journey::station::{radio_line, StationFate};
 use starry_journey::street::{mark_opaque, Span, StreetLayer};
 use starry_journey::traffic::{Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH};
 use starry_journey::weather::{
-    fall_direction, gust, wind_for, PrecipKind, PrecipMode, Precipitation, CLOUD_WIND_REFERENCE,
+    fall_direction, wind_now, PrecipKind, PrecipMode, Precipitation, CLOUD_WIND_REFERENCE,
     PRECIP_LAYERS,
 };
 use winit::{
@@ -1350,9 +1350,9 @@ impl Renderer {
             .precip_mode
             .kind_under(self.cover)
             .map(|kind| (kind, intensity));
-        self.wind = wind_for(self.cover) * gust(self.scene.seed, seconds);
+        self.wind = wind_now(self.cover, self.scene.seed, seconds);
         self.sky_clouds
-            .set_wind_factor(self.wind / CLOUD_WIND_REFERENCE);
+            .set_wind_factor(self.wind.abs() / CLOUD_WIND_REFERENCE);
         if let Some((kind, _)) = self.precip_now {
             self.precipitation.advance(dt * self.speed, kind, self.wind);
         }

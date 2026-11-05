@@ -532,12 +532,16 @@
     - Rain has its own density, 0.12/0.09/0.065/0.045 (about a third of before; snow keeps 0.36-0.13), and is brighter (0.6-0.8) now it is sparse.
     - Checked with snapshots (storm and overcast, and a 4x zoom of the comet shape).
     - Tests: rain stays one cell wide and 3-4 long at well under half snow's density; far snow flakes are smaller.
+  - Wind direction (owner, 2026-11-05): "the rain direction should match the wind. If the clouds are moving right to left that implies the wind direction":
+    - the clouds drift right to left on screen (their views move right), while the precipitation had been pushed to the right;
+    - `weather::WIND_DIRECTION` (-1) and `wind_now` now give the signed wind, so rain and snow slant and drift left;
+    - the clouds' drift factor uses the wind's strength (`abs`);
+    - a test ties both directions to the clouds' actual on-screen motion.
   - Assumptions to confirm:
     - rain is the default;
-    - nothing falls from broken or lighter cover;
-    - wind blows left to right.
+    - nothing falls from broken or lighter cover.
   - Tests: precipitation follows cover and mode, far layers smaller/denser/fainter, the slant (snow more than rain, storm rain above 18°), smooth bounded gusts, travel direction, parallax and wrapping, wind driving the clouds, and option parsing.
-  - `cargo test`: PASS, 306 tests.
+  - `cargo test`: PASS, 307 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only; motion is not checked).

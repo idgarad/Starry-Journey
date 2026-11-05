@@ -134,6 +134,19 @@ pub fn wind_for(cover: Cover) -> f64 {
 /// The wind the clouds' drift speeds were tuned for (the default cover's).
 pub const CLOUD_WIND_REFERENCE: f64 = 1.5;
 
+/// Which way the wind blows across the screen: -1, right to left. The
+/// clouds drift that way (their views move right through the world, so
+/// they slide left on screen), and rain and snow must slant with them
+/// (owner, 2026-11-05: "the rain direction should match the wind").
+pub const WIND_DIRECTION: f64 = -1.0;
+
+/// The wind now under `cover`, in cells per second along the screen
+/// (negative blows to the left): its steady strength times the gusts, in
+/// [`WIND_DIRECTION`].
+pub fn wind_now(cover: Cover, seed: u32, seconds: f64) -> f64 {
+    WIND_DIRECTION * wind_for(cover) * gust(seed, seconds)
+}
+
 /// Gusts: a smooth factor of 0.55 to 1.45 on the steady wind at `seconds`,
 /// seeded, changing over several seconds (two slow waves summed). O(1).
 pub fn gust(seed: u32, seconds: f64) -> f64 {
@@ -317,6 +330,36 @@ mod tests {
             wind_for(Cover::Storm) > wind_for(Cover::Overcast)
                 && wind_for(Cover::Overcast) > wind_for(Cover::Clear)
         );
+    }
+
+    #[test]
+    fn rain_and_snow_slant_the_way_the_clouds_drift() {
+        use crate::model::palette::palette_by_key;
+        use crate::skyclouds::SkyClouds;
+        // On screen the clouds slide the opposite way to their view.
+        let mut sky = SkyClouds::new(1, 40, 30, Cover::Storm, palette_by_key("vga").unwrap());
+        let before = sky.view(3);
+        sky.advance(1.0 / 30.0, 1.0, 0.0, None);
+        let cloud_screen_motion = -(sky.view(3) - before);
+        assert!(cloud_screen_motion < 0.0, "the clouds drift left");
+        let wind = wind_now(Cover::Storm, 3, 10.0);
+        assert!(wind < 0.0);
+        for kind in [PrecipKind::Rain, PrecipKind::Snow] {
+            let (dx, _) = fall_direction(kind, wind);
+            assert!(
+                dx * cloud_screen_motion > 0.0,
+                "{kind:?} slants with the clouds"
+            );
+            let mut p = Precipitation::default();
+            p.advance(0.1, kind, wind);
+            // Travel wraps, so compare against the wrap: moving left wraps
+            // to just below it.
+            let wrap = TILE * LAYER_SCALE[3] * WRAP_TILES;
+            assert!(
+                p.layers(kind, 1.0)[3].offset.0 > wrap / 2.0,
+                "{kind:?} drifts left"
+            );
+        }
     }
 
     #[test]
