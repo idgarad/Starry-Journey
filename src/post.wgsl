@@ -97,6 +97,19 @@ const RAIN_HEAD_COLOR: vec3<f32> = vec3<f32>(0.4, 1.0, 0.45);
 // under a glyph and in its one-pixel outline.
 const RAIN_MAX_WEIGHT: f32 = 0.7;
 const RAIN_DARKEN: f32 = 0.6;
+// Stronger than the spec's (owner, 2026-11-05: "strengthen the scanlines
+// and dial up the phosphor glow"): alternate glyph rows keep this much
+// (spec 0.75), and the halo's near and far neighbor weights and cap (spec
+// 0.045, 0.015, 0.12).
+const RAIN_ROW_KEEP: f32 = 0.5;
+const RAIN_HALO_NEAR: f32 = 0.11;
+const RAIN_HALO_FAR: f32 = 0.05;
+const RAIN_HALO_CAP: f32 = 0.35;
+// When the refresh beam passes a glyph it flares (owner, 2026-11-05): its
+// emission grows by up to this much, fading over this share of the screen
+// height behind the beam, and the blend may then reach full weight.
+const RAIN_BURST: f32 = 1.5;
+const RAIN_BURST_FADE: f32 = 0.04;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -266,11 +279,17 @@ fn code_rain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
     // Darkening scales with the scene's own brightness (a multiply), so
     // dark sky barely changes and lit windows behind a glyph give way.
     linear *= 1.0 - RAIN_DARKEN * outline * min(strength * 2.0, 1.0);
-    let row_shade = select(1.0, 0.75, (local.y & 1) == 1);
-    let halo_glow = min(0.045 * near + 0.015 * far, 0.12) * (1.0 - bit);
-    let emission = bit * row_shade + halo_glow;
-    let weight = min(strength * emission, 1.0) * RAIN_MAX_WEIGHT;
-    let tint = mix(RAIN_TAIL_COLOR, RAIN_HEAD_COLOR, select(0.0, 1.0, strength >= 1.0));
+    let row_shade = select(1.0, RAIN_ROW_KEEP, (local.y & 1) == 1);
+    let halo_glow = min(RAIN_HALO_NEAR * near + RAIN_HALO_FAR * far, RAIN_HALO_CAP) * (1.0 - bit);
+    // The refresh beam's flare: strongest just behind the beam, fading
+    // within a few glyph rows (once per sweep, so no flashing).
+    let height = max(post.lines.w, 1.0);
+    let behind = (post.history.w * height - position.y + height) % height;
+    let burst = exp(-behind / (RAIN_BURST_FADE * height));
+    let emission = (bit * row_shade + halo_glow) * (1.0 + RAIN_BURST * burst);
+    let weight = min(strength * emission, 1.0) * mix(RAIN_MAX_WEIGHT, 1.0, burst);
+    let head = select(0.0, 1.0, strength >= 1.0);
+    let tint = mix(RAIN_TAIL_COLOR, RAIN_HEAD_COLOR, max(head, 0.6 * burst));
     linear = vec3<f32>(1.0) - (vec3<f32>(1.0) - linear) * (vec3<f32>(1.0) - tint * weight);
     return encode_srgb(linear);
 }

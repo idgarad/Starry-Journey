@@ -765,6 +765,11 @@
     - there is no Canvas fallback, so no GPU/CPU differences;
     - reduced motion isn't implemented yet (backlog).
   - Checked with snapshots (seed 7, 1280 x 720): sparse columns across the whole scene; tails fade upward; heads pale; alternate rows visible in a 4x crop; a strip at 30 s, 30.25 s, ... 31 s shows a head stepping タ → Q → ヤ → H.
+  - Retuned (owner, 2026-11-05: "strengthen the scanlines and dial up the phosphur glow more. Also if the scanline head hits a glyph we should give them an additional burst in intensity"). All three are deviations from the spec's numbers:
+    - alternate glyph rows keep 50% (spec 75%);
+    - halo weights 0.11 near and 0.05 far, capped at 0.35 (spec 0.045 / 0.015 / 0.12);
+    - beam burst: where the refresh beam has just passed, a glyph's emission grows by up to 150% and the blend may reach full weight (spec maximum 0.7), tinted toward the head color, fading over 4% of the screen height behind the beam. It comes once per 15 s sweep, so there's no flashing.
+    - Checked with a snapshot (Green at 33 s, beam at y ≈ 144): tails just above the beam are brighter than tails elsewhere; rows and glow are visibly stronger.
   - Tests: glyph order and count; atlas slot placement against the bitmaps, MSB left; empty padding slots; the clock's 1/30 s cap. Both shaders validate.
   - `cargo test`: PASS, 330 tests.
   - `cargo fmt --check`: PASS.
