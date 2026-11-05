@@ -209,9 +209,11 @@ impl Layer {
                 base * smoothstep(top - 0.3, top + 0.45, v)
             }
             Layer::High => {
-                // Thickest near the top, dissolving toward its lower edge so
-                // there is no ruler-straight line where it ends.
-                smoothstep(1.0, 0.25, v) * smoothstep(0.0, 0.1, v)
+                // Thickest at the top of the scene, which it runs right up
+                // to (owner, 2026-11-05: overcast left a gap at the top),
+                // dissolving toward its lower edge so there is no
+                // ruler-straight line where it ends.
+                smoothstep(1.0, 0.25, v)
             }
             Layer::Low => {
                 // Dissolving upward from the horizon.

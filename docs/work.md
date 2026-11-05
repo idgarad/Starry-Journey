@@ -427,6 +427,13 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only).
+- **High sheet reaches the top (owner, 2026-11-05):** "for the overcast clouds there is a gap at the top of the scene" (screenshot, Endless overcast).
+  - Cause: `Layer::High`'s profile faded in over the top 10% of its band (`smoothstep(0.0, 0.1, v)`), leaving a dark strip about 15 rows deep.
+  - The fade is gone, so the sheet runs right to the top, as the owner asked earlier ("The top of the background clouds should likely be aligned to the top of the scene").
+  - Checked with snapshots (seed 7, Endless overcast, 90 s), before and after.
+  - `cargo test`: PASS, 272 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
