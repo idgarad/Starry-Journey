@@ -23,7 +23,8 @@ use starry_journey::config::{parse_args, LaunchOptions, USAGE};
 use starry_journey::endless::{buffer_width, decode_srgb, EndlessCity};
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
-use starry_journey::model::city::generate_normal_city;
+use starry_journey::model::building::BuildingProfile;
+use starry_journey::model::city::generate_normal_city_with;
 use starry_journey::model::grid::{CellScaling, Grid};
 use starry_journey::model::palette::{palette_by_key, palettes, Palette, DEFAULT_PALETTE_KEY};
 use starry_journey::moon::{
@@ -314,6 +315,7 @@ impl Scene {
     /// Generates the city for a `width x height` surface and reveals it up
     /// to `progress` (0 for a new city; the old progress after a resize).
     /// `endless` holds the Endless camera position, or `None` for Normal.
+    #[cfg(test)]
     fn new(
         seed: u32,
         width: u32,
@@ -323,10 +325,36 @@ impl Scene {
         scaling: CellScaling,
         endless: Option<f64>,
     ) -> Self {
+        Self::with_profile(
+            seed,
+            width,
+            height,
+            palette,
+            progress,
+            scaling,
+            endless,
+            BuildingProfile::All,
+        )
+    }
+
+    /// Generates the scene with `profile`'s building kinds and footprints
+    /// (`--buildings`).
+    #[allow(clippy::too_many_arguments)]
+    fn with_profile(
+        seed: u32,
+        width: u32,
+        height: u32,
+        palette: &'static Palette,
+        progress: f64,
+        scaling: CellScaling,
+        endless: Option<f64>,
+        profile: BuildingProfile,
+    ) -> Self {
         // Starry Journey extension: Normal mode has the road too, so the
         // grid reserves the seven road rows below the city.
         let grid = Grid::with_scaling(width, height, true, scaling);
-        let city = endless.map(|camera| EndlessCity::with_camera(seed, &grid, palette, camera));
+        let city =
+            endless.map(|camera| EndlessCity::with_profile(seed, &grid, palette, camera, profile));
         // An Endless city is built like a Normal one first (owner request,
         // 2026-11-03), from the buildings its layers show at camera 0.
         let mut buildings = match &city {
@@ -337,7 +365,7 @@ impl Scene {
                 }
                 buildings
             }
-            None => generate_normal_city(seed, &grid),
+            None => generate_normal_city_with(seed, &grid, profile),
         };
         let stars = generate_stars(seed, &grid);
         let ownership = CityRaster::render(&grid, &buildings, &stars, palette);
@@ -880,7 +908,7 @@ impl Renderer {
             .position(|palette| palette.key == DEFAULT_PALETTE_KEY)
             .unwrap_or(0);
         let start = Instant::now();
-        let scene = Scene::new(
+        let scene = Scene::with_profile(
             seed,
             surface_config.width,
             surface_config.height,
@@ -888,6 +916,7 @@ impl Renderer {
             0.0,
             options.cell_scaling(scale_factor),
             options.endless.then_some(0.0),
+            options.buildings,
         );
         let city_texture = create_city_texture(&device, &scene.grid);
         let message_texture = create_message_texture(&device, 1, 1);
@@ -1025,7 +1054,7 @@ impl Renderer {
             // Same seed, same construction progress and Endless camera
             // (Rebuild Prompt: resize preserves progress).
             let progress = self.scene.reveal.progress();
-            self.scene = Scene::new(
+            self.scene = Scene::with_profile(
                 self.scene.seed,
                 size.width,
                 size.height,
@@ -1033,6 +1062,7 @@ impl Renderer {
                 progress,
                 self.scaling(),
                 self.scene.endless_camera(),
+                self.options.buildings,
             );
             self.moon_state = None;
             self.update_moon(self.now());
@@ -1044,7 +1074,7 @@ impl Renderer {
 
     /// Generates a new city with a new seed and restarts construction.
     fn restart(&mut self, seed: u32) {
-        self.scene = Scene::new(
+        self.scene = Scene::with_profile(
             seed,
             self.surface_config.width,
             self.surface_config.height,
@@ -1052,6 +1082,7 @@ impl Renderer {
             0.0,
             self.scaling(),
             self.scene.endless.is_some().then_some(0.0),
+            self.options.buildings,
         );
         // Restart restarts a duration timer (Rebuild Prompt); resizing keeps it.
         self.construction_start = self.now();
@@ -1188,7 +1219,7 @@ impl Renderer {
     fn toggle_endless(&mut self) {
         let endless = self.scene.endless.is_none();
         let progress = self.scene.reveal.progress();
-        self.scene = Scene::new(
+        self.scene = Scene::with_profile(
             self.scene.seed,
             self.surface_config.width,
             self.surface_config.height,
@@ -1196,6 +1227,7 @@ impl Renderer {
             progress,
             self.scaling(),
             endless.then_some(0.0),
+            self.options.buildings,
         );
         self.paused = false;
         self.moon_state = None;

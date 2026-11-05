@@ -5,7 +5,7 @@
 //! intentionally has the tallest general silhouettes; nearer layers are
 //! shorter with wider gaps, so the skyline reads as depth.
 
-use super::building::BuildingKind;
+use super::building::{BuildingKind, BuildingProfile};
 use super::rng::{js_round, Mulberry32};
 
 /// Smallest generated building height in cells.
@@ -101,6 +101,22 @@ impl LayerSpec {
             rng.rand_int(WIDE_RANGE.0, WIDE_RANGE.1) as i32
         } else {
             self.sample_width(rng)
+        }
+    }
+
+    /// Like [`LayerSpec::sample_footprint_width`] for `profile`: the
+    /// baseline uses only the layer's specified range (one RNG value), like
+    /// the Python reference.
+    pub fn sample_footprint_width_in(
+        &self,
+        kind: BuildingKind,
+        layer: u8,
+        profile: BuildingProfile,
+        rng: &mut Mulberry32,
+    ) -> i32 {
+        match profile {
+            BuildingProfile::All => self.sample_footprint_width(kind, layer, rng),
+            BuildingProfile::Baseline => self.sample_width(rng),
         }
     }
 

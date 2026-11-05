@@ -9,7 +9,7 @@
 //! mode uses one independent generator per layer, each with its own seed,
 //! extended ahead of the camera and pruned behind it.
 
-use super::building::{Building, BuildingKind};
+use super::building::{Building, BuildingKind, BuildingProfile};
 use super::decorations::{is_eligible, make_decoration, maybe_decorate};
 use super::grid::Grid;
 use super::layers::LayerSpec;
@@ -40,6 +40,8 @@ pub struct CityGenerator {
     neighbors: Vec<TintNeighbor>,
     light_windows: bool,
     buildings: Vec<Building>,
+    /// Which kinds and footprints to generate (`--buildings`).
+    profile: BuildingProfile,
 }
 
 impl CityGenerator {
@@ -70,7 +72,14 @@ impl CityGenerator {
             neighbors: Vec::new(),
             light_windows,
             buildings: Vec::new(),
+            profile: BuildingProfile::All,
         }
+    }
+
+    /// The same generator using `profile`'s kinds and footprints.
+    pub fn with_profile(mut self, profile: BuildingProfile) -> Self {
+        self.profile = profile;
+        self
     }
 
     /// Buildings generated so far (and not pruned), in generation order.
@@ -120,8 +129,8 @@ impl CityGenerator {
         let spec = LayerSpec::for_layer(usize::from(layer));
         let rng = &mut self.rng;
         let x0 = self.cursors[usize::from(layer)];
-        let picked = BuildingKind::pick(rng, layer);
-        let width = spec.sample_footprint_width(picked, layer, rng);
+        let picked = BuildingKind::pick_in(rng, layer, self.profile);
+        let width = spec.sample_footprint_width_in(picked, layer, self.profile, rng);
         let height = spec.sample_height(rng, self.max_h);
         let (tiers, kind) = build_tiers(picked, x0, width, height, self.max_h, rng);
         let x1 = x0 + width;
@@ -176,7 +185,17 @@ impl CityGenerator {
 /// decorations if generation produced none, and the standard-mode cast
 /// fade is applied.
 pub fn generate_normal_city(seed: u32, grid: &Grid) -> Vec<Building> {
-    let mut generator = CityGenerator::new(seed, &[0, 1, 2, 3], grid.max_h, 0, false);
+    generate_normal_city_with(seed, grid, BuildingProfile::All)
+}
+
+/// [`generate_normal_city`] with `profile`'s kinds and footprints.
+pub fn generate_normal_city_with(
+    seed: u32,
+    grid: &Grid,
+    profile: BuildingProfile,
+) -> Vec<Building> {
+    let mut generator =
+        CityGenerator::new(seed, &[0, 1, 2, 3], grid.max_h, 0, false).with_profile(profile);
     generator.extend_to(grid.cols);
     let mut rng = generator.rng.clone();
     let mut buildings = generator.into_buildings();
@@ -266,6 +285,40 @@ pub fn apply_cast_fade(buildings: &mut [Building]) {
 mod tests {
     use super::*;
     use crate::model::building::{Tier, WindowSet};
+
+    #[test]
+    fn a_baseline_city_has_only_shared_kinds_at_the_layers_widths() {
+        let grid = Grid::new(3840, 1080, false);
+        for seed in 0..5 {
+            let all = generate_normal_city(seed, &grid);
+            let baseline = generate_normal_city_with(seed, &grid, BuildingProfile::Baseline);
+            assert!(
+                all.iter().any(|b| b.kind.is_extension() || b.width() > 18),
+                "seed {seed}: the default keeps extensions"
+            );
+            for building in &baseline {
+                assert!(
+                    !building.kind.is_extension(),
+                    "seed {seed}: {:?}",
+                    building.kind
+                );
+                let (lo, hi) = LayerSpec::for_layer(usize::from(building.layer)).width;
+                assert!(
+                    (lo..=hi).contains(&i64::from(building.width())),
+                    "seed {seed}: {} wide",
+                    building.width()
+                );
+            }
+        }
+        // Endless layers too.
+        let mut generator = endless_layer_generator(3, crate::model::building::NEAR_LAYER, 120)
+            .with_profile(BuildingProfile::Baseline);
+        generator.extend_to(2000);
+        assert!(generator
+            .buildings()
+            .iter()
+            .all(|b| !b.kind.is_extension() && b.width() <= 16));
+    }
 
     fn slab(layer: u8, x0: i32, x1: i32, h: i32) -> Building {
         Building {

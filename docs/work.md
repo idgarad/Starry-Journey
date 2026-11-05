@@ -7,8 +7,8 @@
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
 | `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | Merged |
-| `feature/clouds` | Puffs, banks, and decks; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit, four tones | In review |
-| `feature/cloud-lights` | City glow on cloud undersides; rooftop searchlights with visible beams; sun as a light source (shown with the day/night cycle) | Planned |
+| `feature/clouds` | Procedural clouds in four distance layers; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit and self-shadowed; slow life cycles | Merged |
+| `feature/cloud-lights` | City glow on cloud undersides; ground searchlight shows with beams and cloud pools (the sun waits for a day/night cycle) | Merged |
 | `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | Planned |
 
 ### feature/clouds
@@ -455,9 +455,38 @@
   - `cargo test`: PASS, 280 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Building baseline, first sprint (GitHub issue #2, owner 2026-11-05: "Lets get the building types taken care of"):** `feature/building-baseline`.
+  - Owner decisions:
+    - the Python source isn't available, so build from the issue's spec ("They do not have to be exact");
+    - masts match Python;
+    - the parts catalog stays a Rust table with a JSON export, in a later sprint;
+    - this sprint covers the baseline switch, the gallery, and masts;
+    - from the issue comment: "Key point is they are a shared definition of parts not complete bitmaps."
+  - Already aligned before this sprint: all 19 IDs, weights (143), minimum widths, per-layer footprint ranges and gaps, the 92% dense-window chance, and mast lengths of 4-16.
+  - Masts (`mast.rs`):
+    - the 8 tower kinds always get one when there is headroom (was needle and TV tower only, assumption AS-R003);
+    - "tall" is 45% of `max_h` (was 50%, assumption AS-R004).
+  - Shapes changed to the issue's descriptions (`shapes.rs`):
+    - spire: 1-2 setbacks, and the mast is the spire (was a dark one-cell spike);
+    - twin: two pointed towers and a solid lit bridge (were flat tops and a dark bridge);
+    - onion: a narrower windowed drum under an overhanging dome, and the mast instead of a tip;
+    - clock tower: a clock section overhanging the shaft, then a two-row belfry and a pointed cap;
+    - pagoda: a 3-wide then 1-wide pointed cap under the mast (was a two-row finial).
+    - These shapes draw random numbers differently, so a given `--seed` builds a different city than before.
+  - `--buildings all|baseline` (`BuildingProfile`):
+    - baseline picks only the 19 shared kinds (weights 143 in every layer) at the layer's specified widths: no wide or low-rise footprints, and a factory falls back to the layer range (or a box if too narrow);
+    - threaded through `CityGenerator::with_profile`, `generate_normal_city_with`, `EndlessCity::with_profile`, and `Scene::with_profile`;
+    - `Scene::new` stays as a test-only shorthand for `All`.
+  - Gallery (`src/bin/gallery.rs`): every kind drawn with the real rasterizer, windows lit and masts placed, labelled in three rows (shared at width 13, shared at minimum widths, extensions), into `target/building-gallery/`.
+  - Checked by eye: the gallery, and seed 7 at `--pixel-size spec` with `all` and `baseline` (snapshots).
+  - Tests: mast rules per kind, every tower kind gets a mast, the 45% rule, the spec shapes (spire without a spike, twin roofs and bridge, onion drum and dome, clock overhang and belfry, pagoda cap), baseline picks and weights, baseline cities (Normal and Endless), and option parsing.
+  - Backlog (owner, 2026-11-05: "the catalog we can defer. It's a backlog item really"): the rest of issue #2. That is the versioned parts catalog (a Rust table with a JSON export), portable fixtures, and per-deviation classification tests.
+  - `cargo test`: PASS, 290 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
-  - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
+  - the sun (with a day/night cycle) and lightning (`feature/lightning`); city glow and searchlights are done.
 - **Earlier next steps:**
   - wire the generator into the app;
   - render the strips incrementally, so drifting only computes new columns;
