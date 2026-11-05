@@ -13,6 +13,7 @@ pub mod cloudgen;
 pub mod clouds;
 pub mod config;
 pub mod endless;
+pub mod lightning;
 pub mod message;
 pub mod model;
 pub mod moon;

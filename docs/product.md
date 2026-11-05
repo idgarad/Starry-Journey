@@ -77,7 +77,8 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - Moonlight is self-shadowing and passes through thin cloud, following the Python version's GitHub issue #1.
   - The city's window glow lights cloud undersides.
   - Ground searchlights (`--searchlights`) put on occasional shows of two or three sweeping beams. A show lasts at most 2 minutes; shows are very rare in Endless. Beams pass in front of distant clouds and pool on the near clouds overhead.
-  - The sun and lightning (inside clouds, between clouds, and to the tallest building) are planned.
+  - Lightning in storms (`--lightning auto|off`): mostly flickers inside clouds, some cloud-to-cloud bolts, and rare strikes on the tallest point of the skyline. Flashes are local, soft, and capped: events at least 4 s apart, never more than three flashes a second (WCAG 2.3.1 allows at most three).
+  - The sun is planned with a day/night cycle.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
