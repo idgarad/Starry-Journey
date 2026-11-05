@@ -7,8 +7,8 @@
 | `feature/endless-layers` | `--endless` and `E`; built cell by cell first, then four parallax layers scroll; bounded buffers; `Space` pause; startup quips | Merged |
 | `feature/endless-compositor` | Layers and the moon placed at fractional device-pixel positions and blended in linear light on the GPU (smooth scrolling); one draw order; station radio calls; slower trench run | Merged (with `feature/endless-layers`) |
 | `feature/endless-street` | Road, trees, and traffic scroll with the road camera at sub-pixel positions; cars glide as sprites; headlights keep lighting trees | Merged |
-| `feature/clouds` | Puffs, banks, and decks; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit, four tones | In review |
-| `feature/cloud-lights` | City glow on cloud undersides; rooftop searchlights with visible beams; sun as a light source (shown with the day/night cycle) | Planned |
+| `feature/clouds` | Procedural clouds in four distance layers; six coverage presets (`--clouds`, `C`); both modes; in front of the moon, behind the city; moonlit and self-shadowed; slow life cycles | Merged |
+| `feature/cloud-lights` | City glow on cloud undersides; ground searchlight shows with beams and cloud pools (the sun waits for a day/night cycle) | Merged |
 | `feature/lightning` | Flashes inside clouds, cloud-to-cloud bolts, strikes to the tallest building; flash rate capped for photosensitive viewers | Planned |
 
 ### feature/clouds
@@ -480,13 +480,13 @@
   - Gallery (`src/bin/gallery.rs`): every kind drawn with the real rasterizer, windows lit and masts placed, labelled in three rows (shared at width 13, shared at minimum widths, extensions), into `target/building-gallery/`.
   - Checked by eye: the gallery, and seed 7 at `--pixel-size spec` with `all` and `baseline` (snapshots).
   - Tests: mast rules per kind, every tower kind gets a mast, the 45% rule, the spec shapes (spire without a spike, twin roofs and bridge, onion drum and dome, clock overhang and belfry, pagoda cap), baseline picks and weights, baseline cities (Normal and Endless), and option parsing.
-  - Not done yet (next sprints of issue #2): the versioned parts catalog with JSON export, portable fixtures, and per-deviation classification tests.
+  - Backlog (owner, 2026-11-05: "the catalog we can defer. It's a backlog item really"): the rest of issue #2. That is the versioned parts catalog (a Rust table with a JSON export), portable fixtures, and per-deviation classification tests.
   - `cargo test`: PASS, 290 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
-  - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).
+  - the sun (with a day/night cycle) and lightning (`feature/lightning`); city glow and searchlights are done.
 - **Earlier next steps:**
   - wire the generator into the app;
   - render the strips incrementally, so drifting only computes new columns;
