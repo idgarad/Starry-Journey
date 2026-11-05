@@ -2909,7 +2909,7 @@ fn create_scene_texture(
 /// Seconds the Amber and Green refresh beam takes to sweep the screen
 /// (owner, 2026-11-05: "the scanning beam refreshing the image"; slowed
 /// far below a real 60 Hz so it reads, and never flickers).
-const BEAM_PERIOD: f64 = 5.0;
+const BEAM_PERIOD: f64 = 15.0;
 /// Seconds the CRT power-on takes.
 const POWER_ON_SECONDS: f64 = 0.5;
 /// How fast the Game Boy LCD's ghost fades: it halves every this many

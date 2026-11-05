@@ -95,7 +95,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - `Shift+E` and `Shift+U` send a police car or utility truck at once, and `--events` fires test events at chosen moments.
 - **Palette display effects (Rebuild Prompt; owner decisions, 2026-11-05):** a second pass applies each palette's monitor effect to the finished scene: Amber, Apple II, C64, and both CGAs get screen-fixed scanlines and their own color treatment, and Game Boy an LCD grid. The message box is drawn after the effect, so it stays clear. `D` or `--effects off` turns them off (the Game Boy grid stays). Owner additions (2026-11-05):
   - Game Boy LCD ghosting;
-  - Amber and Green phosphor persistence, message-text bloom, and a slow refresh beam sweeping down the screen every 5 seconds;
+  - Amber and Green phosphor persistence, message-text bloom, and a slow, tight refresh beam sweeping down the screen every 15 seconds;
   - edge convergence error (chromatic aberration) on CGA, C64, and Apple II;
   - a vignette on every CRT palette;
   - a CRT power-on when switching into one;

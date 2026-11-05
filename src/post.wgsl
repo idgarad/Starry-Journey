@@ -64,10 +64,10 @@ const VGA_ROWS: f32 = 0.82;
 // the beam's line is, how much the freshly drawn phosphor behind it starts
 // brighter, how far (a share of the screen's height) that fades over, and
 // how thick the line is in scanline periods.
-const BEAM_LINE: f32 = 0.12;
-const BEAM_TRAIL: f32 = 0.08;
-const BEAM_FADE: f32 = 0.25;
-const BEAM_THICKNESS: f32 = 1.5;
+const BEAM_LINE: f32 = 0.3;
+const BEAM_TRAIL: f32 = 0.18;
+const BEAM_FADE: f32 = 0.08;
+const BEAM_THICKNESS: f32 = 1.0;
 // Phosphor bloom around Amber and Green message text.
 const TEXT_BLOOM: f32 = 0.9;
 

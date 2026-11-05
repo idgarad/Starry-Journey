@@ -727,6 +727,10 @@
     - It is screen-fixed and under the message box; at 0.2 Hz with at most a 20% lift it is a slow wave, not a flash.
     - The phase comes from app seconds in the free `history.w` slot.
     - Checked with a snapshot (Green at 32 s, so the beam is 40% down): rows just above y = 216 are about 15-20% brighter, fading upward.
+    - Retuned (owner: "more pronounced and much slower and tighter band. This is a stylized version"):
+      - one sweep every 15 s;
+      - the line 30% brighter and one scanline period thick;
+      - the trail starting 18% brighter and fading over 8% of the screen height.
   - Backlog: one toggle per effect once there are menu options (owner); `D` switches them all for now.
   - Tests: effect mapping per palette (Green 6, EGA 7, VGA 8; only Game Boy when off); both shaders validate; snapshot names differ for consecutive frames.
   - `cargo test`: PASS, 326 tests.
