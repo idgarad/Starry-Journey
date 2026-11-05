@@ -610,6 +610,35 @@
   - `cargo test`: PASS, 315 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Police cars, utility trucks, flashers, and swaying trees (owner, 2026-11-05):** the second ambience sprint. "add the occasional cop car with palette appropriate flashers. Those flashers should illuminate nearby trees and the nearest buildings ... the occasional utility truck with mono-colored flashers too. Check for trees swaying in the wind."
+  - `traffic.rs`:
+    - `Special { Police, Utility }` on `Vehicle`; police cars about every 300-480 s and utility trucks about every 600-900 s, each taking the place of an entering vehicle;
+    - police cars are quick 5-cell cars; utility trucks are slow 8-cell trucks;
+    - `Traffic::force` sends one in at once, at the entry of a lane (replacing a vehicle off screen, or the one nearest leaving).
+  - Flashers:
+    - a police car's two roof cells alternate (warm for 45% of a second, then cool for 45%); a utility truck's cab beacon blinks every 0.8 s;
+    - each vehicle is offset by its seeded color so two never flash in step; about once a second, under three a second;
+    - `flasher_colors` picks from the palette: warm is the beacon color, cool the bluest color (or, without blue, the brightest other tone), amber the most amber color;
+    - unlit flasher cells show a dim tint of their color on the body.
+  - Light from the flashers:
+    - trees take the stronger of headlight and flasher light, within 10 cells (up to 70%, fading linearly);
+    - the nearest buildings get up to four lit flasher lights in the shader: on still-city pixels, or the near two Endless layers, within 22 cells, `(1 - d²)²`, ×0.35, by building coverage.
+  - Swaying trees (`street.rs`):
+    - every tree cell carries a sway weight (0 for trunks, rising to 1 at the canopy top) and its tree's phase;
+    - `sway_offset` leans it `1.4 × min(|wind| / 9, 1) × (0.65 + 0.35 sin(2πt / 2.6 + phase)) × weight` cells with the wind, rounded;
+    - tree cells mark themselves opaque where they land, and the street is redrawn every frame while the wind is above 1 cell/s.
+  - Test events:
+    - `Shift+E` police car and `Shift+U` utility truck (with `Shift+S`);
+    - `--events name@moment,...` (meteor, police, utility) fires them at moments of the run, for snapshots and testing.
+  - Checked with snapshots (seed 7, 960x540):
+    - `--events police@30s,utility@31s`: a red light bar, red light on the buildings above the police car, and amber light near the utility truck;
+    - tree tint was too weak at first (fading with the square of distance), so it now fades linearly at up to 70%;
+    - storm against calm: canopy tops lean a cell left with the wind.
+  - Tests: specials rarely (6-13 police cars and 3-7 utility trucks an hour) and forced at once; flashers alternate about once a second in two colors and light nearby trees only; warm, cool, and amber colors per palette (distinct in every palette); canopies lean with the wind, trunks stay put, every tree cell has a weight; `--events` parsing.
+  - Not covered by automated tests: the building light and the sway's drawing (GPU and overlay); checked with snapshots.
+  - `cargo test`: PASS, 320 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

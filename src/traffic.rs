@@ -10,6 +10,14 @@
 //! in a lane (a faster vehicle drops back behind a slower one), and are
 //! replaced with fresh ones after leaving the screen.
 //!
+//! **Special vehicles** (owner, 2026-11-05): now and then a police car (about
+//! every 5-8 minutes) or a utility truck (about every 10-15) takes the place
+//! of an entering vehicle. Police cars carry a light bar alternating a warm
+//! and a cool color picked from the palette; utility trucks a single amber
+//! beacon. Both flash about once a second, well under the three-a-second
+//! photosensitive limit, and light the trees and buildings near them
+//! ([`Traffic::flasher_lights`]). [`Traffic::force`] sends one at once.
+//!
 //! Positions are world columns. In Normal mode the view stays at 0, so
 //! world and screen columns agree; in Endless mode [`Traffic::set_view`]
 //! follows the road camera, vehicles drive relative to the road, and they
@@ -109,6 +117,29 @@ impl Lane {
     }
 }
 
+/// A special vehicle's job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Special {
+    /// A police car with a two-color light bar.
+    Police,
+    /// A utility truck with an amber beacon.
+    Utility,
+}
+
+/// Seconds between police cars, and between utility trucks (each drawn
+/// from its range).
+pub const POLICE_EVERY: (f64, f64) = (300.0, 480.0);
+pub const UTILITY_EVERY: (f64, f64) = (600.0, 900.0);
+/// A police light bar's cycle: its warm light, then its cool one, each
+/// for 45% of a second.
+pub const POLICE_CYCLE: f64 = 1.0;
+/// A utility beacon's blink period; it is lit for half of it.
+pub const UTILITY_CYCLE: f64 = 0.8;
+/// How far (cells) a flasher's light reaches the trees.
+pub const FLASHER_TREE_REACH: f64 = 10.0;
+/// The most a flasher tints a tree toward its color.
+pub const FLASHER_TREE_STRENGTH: f64 = 0.7;
+
 /// One vehicle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vehicle {
@@ -124,6 +155,8 @@ pub struct Vehicle {
     pub speed: f64,
     /// Index into the palette's vehicle colors.
     pub color: usize,
+    /// A police car or utility truck, or an ordinary vehicle.
+    pub special: Option<Special>,
 }
 
 impl Vehicle {
@@ -155,6 +188,14 @@ pub struct Traffic {
     view_x: f64,
     /// Vehicles currently on (or approaching) the road.
     pub vehicles: Vec<Vehicle>,
+    /// Seconds of traffic time (with the speed setting), for flashers and
+    /// the special vehicles' schedule.
+    clock: f64,
+    /// When the next police car and utility truck are due.
+    next_police: f64,
+    next_utility: f64,
+    /// Special vehicles asked for by hand, sent with the next entry.
+    forced: Vec<Special>,
 }
 
 impl Traffic {
@@ -166,7 +207,13 @@ impl Traffic {
             cols: cols.max(1),
             view_x: 0.0,
             vehicles: Vec::new(),
+            clock: 0.0,
+            next_police: 0.0,
+            next_utility: 0.0,
+            forced: Vec::new(),
         };
+        traffic.next_police = traffic.wait(POLICE_EVERY);
+        traffic.next_utility = traffic.wait(UTILITY_EVERY);
         let count = vehicle_count(cols);
         for index in 0..count {
             // Alternate lanes so both lanes get traffic.
@@ -195,6 +242,121 @@ impl Traffic {
         self.view_x
     }
 
+    /// A seeded wait from `range` after now.
+    fn wait(&mut self, range: (f64, f64)) -> f64 {
+        self.clock + range.0 + (range.1 - range.0) * self.rng.next_f64()
+    }
+
+    /// Sends a police car or utility truck as soon as possible: it takes
+    /// the place of a vehicle waiting off-screen (or, if every vehicle is
+    /// on screen, the one nearest leaving), entering at once.
+    pub fn force(&mut self, special: Special) {
+        if self.vehicles.is_empty() {
+            return;
+        }
+        let (left, right) = (self.view_x, self.view_x + f64::from(self.cols));
+        let off_screen = |v: &Vehicle| v.x + f64::from(v.length) < left || v.x > right;
+        let index = self
+            .vehicles
+            .iter()
+            .position(off_screen)
+            .unwrap_or_else(|| {
+                // Nearest its exit.
+                (0..self.vehicles.len())
+                    .min_by(|&a, &b| {
+                        let remaining = |v: &Vehicle| match v.lane {
+                            Lane::Upper => v.x - left,
+                            Lane::Lower => right - v.x,
+                        };
+                        remaining(&self.vehicles[a]).total_cmp(&remaining(&self.vehicles[b]))
+                    })
+                    .unwrap_or(0)
+            });
+        let lane = self.vehicles[index].lane;
+        let mut vehicle = self.spawn_special(lane, special);
+        // Right at the entry, with no stagger.
+        vehicle.x = match lane {
+            Lane::Upper => right + 1.0,
+            Lane::Lower => left - f64::from(vehicle.length) - 1.0,
+        };
+        self.vehicles[index] = vehicle;
+        self.keep_gaps();
+    }
+
+    /// The next vehicle to enter `lane`: a forced or due special vehicle,
+    /// or an ordinary one.
+    fn next_vehicle(&mut self, lane: Lane) -> Vehicle {
+        if let Some(special) = self.forced.pop() {
+            return self.spawn_special(lane, special);
+        }
+        if self.clock >= self.next_police {
+            self.next_police = self.wait(POLICE_EVERY);
+            return self.spawn_special(lane, Special::Police);
+        }
+        if self.clock >= self.next_utility {
+            self.next_utility = self.wait(UTILITY_EVERY);
+            return self.spawn_special(lane, Special::Utility);
+        }
+        self.spawn(lane)
+    }
+
+    /// A police car (a quick car) or a utility truck (a slow truck).
+    fn spawn_special(&mut self, lane: Lane, special: Special) -> Vehicle {
+        let mut vehicle = self.spawn(lane);
+        match special {
+            Special::Police => {
+                vehicle.truck = false;
+                vehicle.length = CAR_LENGTH.1 as i32;
+                vehicle.speed = 15.0 + 3.0 * self.rng.next_f64();
+            }
+            Special::Utility => {
+                vehicle.truck = true;
+                vehicle.length = TRUCK_LENGTH.0 as i32 + 1;
+                vehicle.speed = SPEED_RANGE.0 + 2.0 * self.rng.next_f64();
+            }
+        }
+        vehicle.special = Some(special);
+        vehicle
+    }
+
+    /// Each lit flasher now: its world column and row (cell centers), its
+    /// color, and how bright it is (0..1). O(vehicles).
+    pub fn flasher_lights(&self, grid: &Grid, palette: &Palette) -> Vec<(f64, f64, Rgb, f64)> {
+        let colors = flasher_colors(palette);
+        let mut lights = Vec::new();
+        for vehicle in &self.vehicles {
+            for (x, row, color, lit) in flasher_cells(
+                vehicle,
+                grid.ground_row + vehicle.lane.top_offset(),
+                self.clock,
+                colors,
+            ) {
+                if lit {
+                    let offset = vehicle.x - js_round(vehicle.x);
+                    lights.push((
+                        f64::from(x) + offset + 0.5,
+                        f64::from(row) + 0.5,
+                        color,
+                        1.0,
+                    ));
+                }
+            }
+        }
+        lights
+    }
+
+    /// How strongly flashers light the tree cell `(x, row)`, and in which
+    /// color: the strongest within [`FLASHER_TREE_REACH`]. O(vehicles).
+    pub fn flasher_glow(
+        &self,
+        grid: &Grid,
+        palette: &Palette,
+        x: i32,
+        row: i32,
+    ) -> Option<(Rgb, f64)> {
+        glow_from_lights(&self.flasher_lights(grid, palette), x, row)
+    }
+
     /// A fresh vehicle waiting off-screen at the lane's entry, staggered by
     /// up to half a screen so arrivals are spread out.
     fn spawn(&mut self, lane: Lane) -> Vehicle {
@@ -214,6 +376,7 @@ impl Traffic {
             x,
             length,
             truck,
+            special: None,
             speed,
             color,
         }
@@ -224,6 +387,7 @@ impl Traffic {
     /// O(vehicles²), with at most 6 vehicles.
     pub fn step(&mut self, dt: f64, speed: f64) {
         let dt = dt.clamp(0.0, MAX_MOTION_DT);
+        self.clock += dt * speed.max(0.0);
         for vehicle in &mut self.vehicles {
             vehicle.x += vehicle.lane.direction() * vehicle.speed * speed * dt;
         }
@@ -236,7 +400,7 @@ impl Traffic {
             };
             if gone {
                 let lane = vehicle.lane;
-                self.vehicles[index] = self.spawn(lane);
+                self.vehicles[index] = self.next_vehicle(lane);
             }
         }
         self.keep_gaps();
@@ -345,8 +509,14 @@ impl Traffic {
     pub fn sprites(&self, grid: &Grid, palette: &Palette) -> Vec<VehicleSprite> {
         self.vehicles
             .iter()
-            .map(|vehicle| VehicleSprite::new(vehicle, grid, palette))
+            .map(|vehicle| VehicleSprite::new(vehicle, grid, palette, self.clock))
             .collect()
+    }
+
+    /// Whether any flasher is on the road (so sprites change as they
+    /// flash).
+    pub fn has_flashers(&self) -> bool {
+        self.vehicles.iter().any(|v| v.special.is_some())
     }
 }
 
@@ -369,7 +539,7 @@ pub struct VehicleSprite {
 }
 
 impl VehicleSprite {
-    fn new(vehicle: &Vehicle, grid: &Grid, palette: &Palette) -> Self {
+    fn new(vehicle: &Vehicle, grid: &Grid, palette: &Palette, clock: f64) -> Self {
         // A leftward vehicle's beam is to its left, so its body starts after
         // room for the beam.
         let pad = match vehicle.lane {
@@ -392,7 +562,15 @@ impl VehicleSprite {
         };
         Self {
             beam: image(beam_cells(&local, 0, palette)),
-            body: image(body_cells(&local, 0, palette)),
+            body: image({
+                let mut cells = body_cells(&local, 0, palette);
+                let colors = flasher_colors(palette);
+                for (x, row, color, lit) in flasher_cells(&local, 0, clock, colors) {
+                    let body = palette.vehicles[vehicle.color % palette.vehicles.len()];
+                    cells.push((x, row, if lit { color } else { mix(body, color, 0.25) }));
+                }
+                cells
+            }),
             left: vehicle.x - f64::from(pad),
             top_row: grid.ground_row + vehicle.lane.top_offset(),
         }
@@ -443,6 +621,89 @@ fn body_cells(vehicle: &Vehicle, top: i32, palette: &Palette) -> Vec<(i32, i32, 
     cells
 }
 
+/// How strongly the lit flashers `lights` (from [`Traffic::flasher_lights`])
+/// light the tree cell `(x, row)`, and in which color: the strongest
+/// within [`FLASHER_TREE_REACH`]. O(lights).
+pub fn glow_from_lights(lights: &[(f64, f64, Rgb, f64)], x: i32, row: i32) -> Option<(Rgb, f64)> {
+    lights
+        .iter()
+        .filter_map(|&(lx, ly, color, brightness)| {
+            let (dx, dy) = (f64::from(x) + 0.5 - lx, f64::from(row) + 0.5 - ly);
+            let near = 1.0 - (dx * dx + dy * dy).sqrt() / FLASHER_TREE_REACH;
+            (near > 0.0).then_some((color, FLASHER_TREE_STRENGTH * brightness * near))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// The flasher colors for `palette`: a warm and a cool one for police
+/// light bars, and an amber one for utility beacons, picked from the
+/// palette's own colors (owner, 2026-11-05: "palette appropriate"): red and
+/// blue where the palette has them, its tones otherwise.
+pub fn flasher_colors(palette: &Palette) -> [Rgb; 3] {
+    let mut candidates: Vec<Rgb> = palette.vehicles.to_vec();
+    candidates.extend(palette.windows.iter().map(|w| w.color));
+    candidates.extend([
+        palette.beacon,
+        palette.star,
+        palette.headlight,
+        palette.taillight,
+    ]);
+    let score = |c: &Rgb, f: &dyn Fn(i32, i32, i32) -> i32| {
+        let [r, g, b] = c.0.map(i32::from);
+        f(r, g, b)
+    };
+    let best = |f: &dyn Fn(i32, i32, i32) -> i32| {
+        *candidates
+            .iter()
+            .max_by_key(|c| score(c, f))
+            .expect("palettes have colors")
+    };
+    let warm = palette.beacon;
+    let mut cool = best(&|r, g, b| 2 * b - r - g / 2);
+    if cool == warm || score(&cool, &|r, _, b| b - r) < 20 {
+        // A palette without blue: its brightest other tone.
+        cool = best(&|r, g, b| {
+            if [r, g, b] == warm.0.map(i32::from) {
+                -1
+            } else {
+                r + g + b
+            }
+        });
+    }
+    let amber = best(&|r, g, b| 2 * r + g - 3 * b - (r - g).abs() / 2);
+    [warm, cool, amber]
+}
+
+/// A special vehicle's flasher cells `(x, row, color, lit)` with its top
+/// row at `top`: a police car's two light-bar cells on its roof, a utility
+/// truck's beacon on its cab. Each vehicle's flashing is offset by its own
+/// seeded color so two never flash in step. Empty for ordinary vehicles.
+fn flasher_cells(
+    vehicle: &Vehicle,
+    top: i32,
+    clock: f64,
+    colors: [Rgb; 3],
+) -> Vec<(i32, i32, Rgb, bool)> {
+    let left = js_round(vehicle.x) as i32;
+    let offset = (vehicle.color % 97) as f64 / 97.0;
+    match vehicle.special {
+        None => Vec::new(),
+        Some(Special::Police) => {
+            let phase = (clock / POLICE_CYCLE + offset).rem_euclid(1.0);
+            let (first, second) = (phase < 0.45, (0.5..0.95).contains(&phase));
+            vec![
+                (left + 1, top, colors[0], first),
+                (left + vehicle.length - 2, top, colors[1], second),
+            ]
+        }
+        Some(Special::Utility) => {
+            let phase = (clock / UTILITY_CYCLE + offset).rem_euclid(1.0);
+            let cab = vehicle.front() - vehicle.lane.direction() as i32;
+            vec![(cab, top, colors[2], phase < 0.5)]
+        }
+    }
+}
+
 /// Vehicles for a road `cols` wide: `clamp(round(cols / 100), 2, 6)`.
 pub fn vehicle_count(cols: i32) -> usize {
     let wanted = js_round(f64::from(cols) / COLUMNS_PER_VEHICLE) as usize;
@@ -453,7 +714,118 @@ pub fn vehicle_count(cols: i32) -> usize {
 mod tests {
     use super::*;
     use crate::model::grid::CellScaling;
-    use crate::model::palette::palette_by_key;
+    use crate::model::palette::{palette_by_key, palettes};
+
+    #[test]
+    fn special_vehicles_come_rarely_and_can_be_forced() {
+        let grid = grid();
+        let mut traffic = Traffic::new(5, grid.cols);
+        let mut seen = std::collections::HashMap::new();
+        let mut entries: Vec<(Special, f64)> = Vec::new();
+        // An hour of traffic.
+        for _ in 0..(3600 * 30) {
+            traffic.step(1.0 / 30.0, 1.0);
+            for (i, v) in traffic.vehicles.iter().enumerate() {
+                if let Some(special) = v.special {
+                    if seen
+                        .insert(i, (special, v.x))
+                        .is_none_or(|old| old.0 != special || (old.1 - v.x).abs() > 50.0)
+                    {
+                        entries.push((special, traffic.clock));
+                    }
+                } else {
+                    seen.remove(&i);
+                }
+            }
+        }
+        let police = entries.iter().filter(|e| e.0 == Special::Police).count();
+        let utility = entries.iter().filter(|e| e.0 == Special::Utility).count();
+        assert!(
+            (6..=13).contains(&police),
+            "about every 5-8 minutes: {police}"
+        );
+        assert!(
+            (3..=7).contains(&utility),
+            "about every 10-15 minutes: {utility}"
+        );
+        // Forcing sends one in at once.
+        let mut traffic = Traffic::new(6, grid.cols);
+        traffic.force(Special::Utility);
+        assert_eq!(
+            traffic
+                .vehicles
+                .iter()
+                .filter(|v| v.special == Some(Special::Utility))
+                .count(),
+            1
+        );
+        let utility = traffic
+            .vehicles
+            .iter()
+            .find(|v| v.special.is_some())
+            .unwrap();
+        assert!(utility.truck);
+    }
+
+    #[test]
+    fn flashers_alternate_about_once_a_second_and_light_what_is_near() {
+        let grid = grid();
+        let classic = palette_by_key("classic").unwrap();
+        let mut traffic = Traffic::new(7, grid.cols);
+        traffic.vehicles = vec![Vehicle {
+            lane: Lane::Lower,
+            x: 100.0,
+            length: 5,
+            truck: false,
+            speed: 0.0,
+            color: 0,
+            special: Some(Special::Police),
+        }];
+        let mut changes = 0;
+        let mut last = Vec::new();
+        let mut colors = std::collections::HashSet::new();
+        for _ in 0..300 {
+            traffic.step(1.0 / 30.0, 1.0);
+            let lights: Vec<Rgb> = traffic
+                .flasher_lights(&grid, classic)
+                .iter()
+                .map(|l| l.2)
+                .collect();
+            colors.extend(lights.iter().copied());
+            if lights != last {
+                changes += 1;
+                last = lights;
+            }
+        }
+        // 10 s: each light goes on and off once a second (40 changes),
+        // never faster than three flashes a second.
+        assert!((30..=45).contains(&changes), "{changes}");
+        assert_eq!(colors.len(), 2, "two colors");
+        // A tree cell beside the car is tinted; one far away is not.
+        let row = grid.ground_row + 4;
+        let lit_some = (0..60).any(|_| {
+            traffic.step(1.0 / 30.0, 1.0);
+            traffic.flasher_glow(&grid, classic, 102, row - 3).is_some()
+        });
+        assert!(lit_some);
+        assert!(traffic.flasher_glow(&grid, classic, 150, row).is_none());
+    }
+
+    #[test]
+    fn flasher_colors_are_warm_and_cool_where_the_palette_allows() {
+        let classic = palette_by_key("classic").unwrap();
+        let [warm, cool, amber] = flasher_colors(classic);
+        assert!(warm.0[0] > warm.0[2], "warm is reddish");
+        assert!(cool.0[2] > cool.0[0], "cool is bluish");
+        assert!(
+            amber.0[0] >= amber.0[2] && amber.0[1] >= amber.0[2],
+            "amber"
+        );
+        for palette in palettes() {
+            let [warm, cool, _] = flasher_colors(palette);
+            assert_ne!(warm, cool, "{}: two different colors", palette.key);
+        }
+    }
 
     fn grid() -> Grid {
         Grid::with_scaling(1920, 1080, true, CellScaling::Fixed(3))
@@ -470,6 +842,7 @@ mod tests {
                 x: 100.0,
                 length: 5,
                 truck: false,
+                special: None,
                 speed: 10.0,
                 color: 1,
             },
@@ -478,6 +851,7 @@ mod tests {
                 x: 300.0,
                 length: 9,
                 truck: true,
+                special: None,
                 speed: 12.0,
                 color: 2,
             },
@@ -688,6 +1062,7 @@ mod tests {
                 x: 100.0,
                 length: 5,
                 truck: false,
+                special: None,
                 speed: 10.0,
                 color: 0,
             },
@@ -696,6 +1071,7 @@ mod tests {
                 x: 300.0,
                 length: 8,
                 truck: true,
+                special: None,
                 speed: 10.0,
                 color: 1,
             },
@@ -757,6 +1133,7 @@ mod tests {
             x: 100.0,
             length: 5,
             truck: false,
+            special: None,
             speed: 10.0,
             color: 0,
         }];

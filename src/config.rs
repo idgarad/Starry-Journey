@@ -73,6 +73,10 @@ Options:
   --searchlights S   Ground searchlights: auto (now and then a show of two or
                      three sweeping beams for up to 2 minutes, very rarely in
                      Endless; default), always, or off.
+  --events E@T,...   Fire test events at moments T (durations as for
+                     --timer): meteor, police, utility. For example
+                     --events police@30s,meteor@45s. The same as the Shift
+                     test keys, for snapshots.
   --seed N           Build city number N (0-4294967295) instead of a random
                      one. The same seed gives the same city and clouds.
   --snapshot T,...   Open no window: run the app in simulated time and save
@@ -85,7 +89,8 @@ Options:
                      each run gets its own YYYYMMDD-HHMMSS folder.
   -h, --help         Show this help.
 
-Keys: P palette, C clouds, W rain/snow, Shift+S shooting star, R new city, +/- speed, E Normal/Endless, Space pause,
+Keys: P palette, C clouds, W rain/snow; tests: Shift+S shooting star,
+Shift+E police car, Shift+U utility truck; R new city, +/- speed, E Normal/Endless, Space pause,
 F fullscreen, Tab next display, Esc quit.";
 
 /// How big a virtual pixel is.
@@ -129,6 +134,8 @@ pub struct LaunchOptions {
     pub buildings: BuildingProfile,
     /// When ground searchlights appear (`--searchlights`).
     pub searchlights: SearchlightMode,
+    /// Test events to fire at moments of the run (`--events`), in order.
+    pub events: Vec<(TestEvent, f64)>,
     /// The city seed (`--seed`); `None` picks a random one.
     pub seed: Option<u32>,
     /// Snapshot mode (`--snapshot`): the moments to save, in seconds,
@@ -156,6 +163,7 @@ impl Default for LaunchOptions {
             lightning: LightningMode::default(),
             precip: PrecipMode::default(),
             searchlights: SearchlightMode::default(),
+            events: Vec::new(),
             seed: None,
             snapshot: None,
             size: DEFAULT_SNAPSHOT_SIZE,
@@ -338,6 +346,15 @@ where
                 options.searchlights = SearchlightMode::parse(&value)
                     .map_err(|message| format!("--searchlights {message}"))?;
             }
+            "--events" => {
+                if !options.events.is_empty() {
+                    return Err("--events was given more than once".to_string());
+                }
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--events needs events, for example --events police@30s")?;
+                options.events = parse_events(&value)?;
+            }
             "--seed" => {
                 if options.seed.is_some() {
                     return Err("--seed was given more than once".to_string());
@@ -388,6 +405,46 @@ where
         return Err("--size and --snapshot-dir only apply with --snapshot".to_string());
     }
     Ok(options)
+}
+
+/// A test event (the Shift test keys, or `--events`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestEvent {
+    /// A shooting star (Shift+S).
+    Meteor,
+    /// A police car (Shift+E).
+    Police,
+    /// A utility truck (Shift+U).
+    Utility,
+}
+
+/// Parses `--events`: comma-separated `name@moment`, sorted by moment.
+fn parse_events(value: &str) -> Result<Vec<(TestEvent, f64)>, String> {
+    let mut events = Vec::new();
+    for part in value.split(',') {
+        let (name, at) = part.trim().split_once('@').ok_or_else(|| {
+            format!("--events: '{part}' should be name@moment, for example police@30s")
+        })?;
+        let event = match name.trim().to_ascii_lowercase().as_str() {
+            "meteor" => TestEvent::Meteor,
+            "police" => TestEvent::Police,
+            "utility" => TestEvent::Utility,
+            _ => {
+                return Err(format!(
+                    "--events: unknown event '{name}' (meteor, police, utility)"
+                ))
+            }
+        };
+        let at = at.trim();
+        let seconds = if at == "0" {
+            0.0
+        } else {
+            parse_duration(at).map_err(|message| format!("--events: {message}"))?
+        };
+        events.push((event, seconds));
+    }
+    events.sort_by(|a, b| a.1.total_cmp(&b.1));
+    Ok(events)
 }
 
 /// Parses `--snapshot` moments: comma-separated durations (as for
@@ -456,6 +513,29 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn events_parse_in_time_order_and_reject_bad_ones() {
+        let options = parse(&["--events", "meteor@45s, police@30s,utility@1m"]).unwrap();
+        assert_eq!(
+            options.events,
+            vec![
+                (TestEvent::Police, 30.0),
+                (TestEvent::Meteor, 45.0),
+                (TestEvent::Utility, 60.0)
+            ]
+        );
+        assert!(parse(&[]).unwrap().events.is_empty());
+        for bad in [
+            &["--events"][..],
+            &["--events", "police"],
+            &["--events", "parade@30s"],
+            &["--events", "police@soon"],
+            &["--events", "police@1m", "--events", "meteor@2m"],
+        ] {
+            assert!(parse(bad).is_err(), "{bad:?}");
+        }
+    }
 
     #[test]
     fn precip_option_parses_and_defaults_to_rain() {

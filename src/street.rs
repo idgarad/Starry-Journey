@@ -74,6 +74,34 @@ pub struct StreetLayer {
     pub back_trees: CellPaint,
     /// Foreground-verge trees, drawn after traffic.
     pub front: CellPaint,
+    /// For each cell of `back_trees` and of `front`: how much it sways
+    /// (0 for trunks, rising to 1 at the top of the canopy) and its tree's
+    /// sway phase (radians), so the wind can lean the canopies (owner,
+    /// 2026-11-05: "trees swaying in the wind").
+    pub back_sway: Vec<(f32, f32)>,
+    pub front_sway: Vec<(f32, f32)>,
+}
+
+/// How far, in cells, a canopy top leans in the strongest wind.
+pub const MAX_SWAY: f64 = 1.4;
+/// Seconds per sway back and forth.
+pub const SWAY_PERIOD: f64 = 2.6;
+/// The wind (cells per second) at which canopies lean their furthest.
+pub const FULL_SWAY_WIND: f64 = 9.0;
+
+/// The columns a cell that sways `weight` (0..1) leans at `seconds`, for
+/// its tree's `phase` and a `wind` (cells per second, signed): a steady
+/// lean with the wind plus a gusty rock, rounded to whole cells. 0 in calm
+/// air and for trunks. O(1).
+pub fn sway_offset(weight: f32, phase: f32, wind: f64, seconds: f64) -> i32 {
+    if weight <= 0.0 || !wind.is_finite() || !seconds.is_finite() {
+        return 0;
+    }
+    let strength = (wind.abs() / FULL_SWAY_WIND).min(1.0);
+    let rock =
+        0.65 + 0.35 * (std::f64::consts::TAU * seconds / SWAY_PERIOD + f64::from(phase)).sin();
+    let lean = MAX_SWAY * strength * rock * f64::from(weight);
+    (lean.round() as i32) * wind.signum() as i32
 }
 
 impl StreetLayer {
@@ -103,18 +131,29 @@ impl StreetLayer {
         let (tree_left, tree_right) = (left - (TREE_WIDTH - 1), right + (TREE_WIDTH - 1));
         // Background trees stand on the road's top edge.
         let mut back_trees = CellPaint::new();
+        let mut back_sway = Vec::new();
         for tree in trees_in(seed, tree_left, tree_right, false) {
-            paint_tree(&mut back_trees, span, &tree, road_top, palette);
+            paint_tree(
+                &mut back_trees,
+                &mut back_sway,
+                span,
+                &tree,
+                road_top,
+                palette,
+            );
         }
         // Foreground trees stand on the bottom row of the screen.
         let mut front = CellPaint::new();
+        let mut front_sway = Vec::new();
         for tree in trees_in(seed, tree_left, tree_right, true) {
-            paint_tree(&mut front, span, &tree, grid.rows, palette);
+            paint_tree(&mut front, &mut front_sway, span, &tree, grid.rows, palette);
         }
         Self {
             back,
             back_trees,
             front,
+            back_sway,
+            front_sway,
         }
     }
 
@@ -130,29 +169,52 @@ impl StreetLayer {
         apply_paint(&self.front, rgba);
     }
 
-    /// Like [`StreetLayer::apply_back`], but tints background trees toward
-    /// `light` by `glow(x, row)` (0 = unlit, 1 = fully the light color).
-    /// `glow` takes world columns; `span` says which strip `rgba` covers.
+    /// Like [`StreetLayer::apply_back`], but tints background trees by
+    /// `light(x, row)`: the light's color and how far toward it (0 =
+    /// unlit, 1 = fully the light color). `light` takes world columns;
+    /// `span` says which strip `rgba` covers.
     pub fn apply_back_lit(
         &self,
         rgba: &mut [u8],
         span: Span,
-        light: Rgb,
-        glow: impl Fn(i32, i32) -> f64,
+        light: impl Fn(i32, i32) -> (Rgb, f64),
     ) {
-        apply_paint(&self.back, rgba);
-        apply_lit(&self.back_trees, rgba, span, light, &glow);
+        self.apply_back_swaying(rgba, span, light, |_, _| 0);
     }
 
-    /// Like [`StreetLayer::apply_front`], with trees tinted by `glow`.
+    /// Like [`StreetLayer::apply_front`], with trees tinted by `light`.
     pub fn apply_front_lit(
         &self,
         rgba: &mut [u8],
         span: Span,
-        light: Rgb,
-        glow: impl Fn(i32, i32) -> f64,
+        light: impl Fn(i32, i32) -> (Rgb, f64),
     ) {
-        apply_lit(&self.front, rgba, span, light, &glow);
+        self.apply_front_swaying(rgba, span, light, |_, _| 0);
+    }
+
+    /// Like [`StreetLayer::apply_back_lit`], with each tree cell moved
+    /// `sway(weight, phase)` columns (see [`sway_offset`]). Tree cells are
+    /// marked opaque where they land.
+    pub fn apply_back_swaying(
+        &self,
+        rgba: &mut [u8],
+        span: Span,
+        light: impl Fn(i32, i32) -> (Rgb, f64),
+        sway: impl Fn(f32, f32) -> i32,
+    ) {
+        apply_paint(&self.back, rgba);
+        apply_lit(&self.back_trees, &self.back_sway, rgba, span, &light, &sway);
+    }
+
+    /// Like [`StreetLayer::apply_front_lit`], with the trees swaying.
+    pub fn apply_front_swaying(
+        &self,
+        rgba: &mut [u8],
+        span: Span,
+        light: impl Fn(i32, i32) -> (Rgb, f64),
+        sway: impl Fn(f32, f32) -> i32,
+    ) {
+        apply_lit(&self.front, &self.front_sway, rgba, span, &light, &sway);
     }
 }
 
@@ -169,10 +231,25 @@ pub fn road_color(offset: i32, x: i32, palette: &Palette) -> Rgb {
 
 /// Paints one tree whose trunk base sits just above row `ground` (the
 /// sprite's last row is `ground - 1`).
-fn paint_tree(paint: &mut CellPaint, span: Span, tree: &Tree, ground: i32, palette: &Palette) {
+fn paint_tree(
+    paint: &mut CellPaint,
+    sway: &mut Vec<(f32, f32)>,
+    span: Span,
+    tree: &Tree,
+    ground: i32,
+    palette: &Palette,
+) {
     let (leaf, shade, trunk) = tree_colors(tree, palette);
     let sprite = tree.sprite();
     let top = ground - sprite.len() as i32;
+    // The canopy is every row above the first trunk-only row; its top
+    // sways most.
+    let canopy_rows = sprite
+        .iter()
+        .position(|row| row.contains('t'))
+        .unwrap_or(sprite.len())
+        .max(1);
+    let phase = ((tree.slot.rem_euclid(97) as f32) * 0.618).rem_euclid(1.0) * std::f32::consts::TAU;
     for (dy, row) in sprite.iter().enumerate() {
         for (dx, ch) in row.chars().enumerate() {
             let color = match ch {
@@ -181,7 +258,16 @@ fn paint_tree(paint: &mut CellPaint, span: Span, tree: &Tree, ground: i32, palet
                 't' => trunk,
                 _ => continue,
             };
+            let before = paint.len();
             push(paint, span, tree.x + dx as i32, top + dy as i32, color);
+            if paint.len() > before {
+                let weight = if ch == 't' || dy >= canopy_rows {
+                    0.0
+                } else {
+                    1.0 - dy as f32 / canopy_rows as f32
+                };
+                sway.push((weight, phase));
+            }
         }
     }
 }
@@ -192,24 +278,35 @@ fn push(paint: &mut CellPaint, span: Span, x: i32, row: i32, color: Rgb) {
     }
 }
 
-/// Paints cell colors tinted toward `light` by `glow(x, row)`.
+/// Paints tree cells tinted toward `light(x, row)`'s color by its
+/// strength, each moved `sway(weight, phase)` columns, and marks them
+/// opaque where they land (cells moved outside the strip are dropped).
 fn apply_lit(
     paint: &CellPaint,
+    sway_of: &[(f32, f32)],
     rgba: &mut [u8],
     span: Span,
-    light: Rgb,
-    glow: &impl Fn(i32, i32) -> f64,
+    light: &impl Fn(i32, i32) -> (Rgb, f64),
+    sway: &impl Fn(f32, f32) -> i32,
 ) {
-    for &(cell, color) in paint {
+    for (n, &(cell, color)) in paint.iter().enumerate() {
         let (x, row) = span.position(cell);
-        let strength = glow(x, row);
+        let shift = sway_of
+            .get(n)
+            .map_or(0, |&(weight, phase)| sway(weight, phase));
+        let x = x + shift;
+        let Some(cell) = span.index(x, row) else {
+            continue;
+        };
+        let (tint, strength) = light(x, row);
         let color = if strength > 0.0 {
-            crate::raster::mix(color, light, strength)
+            crate::raster::mix(color, tint, strength)
         } else {
             color
         };
-        if let Some(pixel) = rgba.get_mut(cell * 4..cell * 4 + 3) {
-            pixel.copy_from_slice(&color.0);
+        if let Some(pixel) = rgba.get_mut(cell * 4..cell * 4 + 4) {
+            pixel[..3].copy_from_slice(&color.0);
+            pixel[3] = 255;
         }
     }
 }
@@ -377,6 +474,39 @@ mod tests {
         assert_eq!(span.index(7, 0), None);
         assert_eq!(span.index(0, 4), None);
         assert_eq!(span.index(0, -1), None);
+    }
+
+    #[test]
+    fn canopies_lean_with_the_wind_and_trunks_stay_put() {
+        // Calm air and trunks never move.
+        assert_eq!(sway_offset(1.0, 0.0, 0.0, 3.0), 0);
+        assert_eq!(sway_offset(0.0, 0.0, -9.0, 3.0), 0);
+        // A storm leans the canopy top with the wind, by a cell or so.
+        let leans: Vec<i32> = (0..100)
+            .map(|i| sway_offset(1.0, 0.3, -9.0, f64::from(i) * 0.05))
+            .collect();
+        assert!(leans.iter().all(|&dx| (-2..=0).contains(&dx)), "{leans:?}");
+        assert!(leans.contains(&-1), "it leans left with a leftward wind");
+        assert!(
+            sway_offset(1.0, 0.3, 9.0, 1.0) >= 0,
+            "and right with a rightward one"
+        );
+        // Every tree cell has a sway weight; trunks have none.
+        let grid = grid();
+        let classic = palette_by_key("classic").unwrap();
+        let street = StreetLayer::new(&grid, 8, classic);
+        assert_eq!(street.back_sway.len(), street.back_trees.len());
+        assert_eq!(street.front_sway.len(), street.front.len());
+        let trunk = tree_colors(&trees_in(8, 0, grid.cols, false)[0], classic).2;
+        for (&(_, color), &(weight, _)) in street.back_trees.iter().zip(&street.back_sway) {
+            if color == trunk {
+                assert_eq!(weight, 0.0);
+            }
+        }
+        assert!(
+            street.back_sway.iter().any(|&(w, _)| w > 0.9),
+            "canopy tops sway fully"
+        );
     }
 
     #[test]

@@ -33,6 +33,8 @@ cargo run
 | `C` | Cycle the cloud cover (its name shows in the message box) |
 | `W` | Cycle what falls in showers: rain, snow, or nothing |
 | `Shift+S` | Test key: a shooting star now |
+| `Shift+E` | Test key: a police car now (once traffic runs) |
+| `Shift+U` | Test key: a utility truck now (once traffic runs) |
 | `E` | Switch between Normal and Endless mode |
 | `Space` | Pause or resume Endless scrolling |
 | `+` / `-` | Construction speed, 0.25× to 4× |
@@ -92,6 +94,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 15 s after opening on that lap), or `survive`. |
 | `--searchlights S` | Ground searchlights: `auto` (now and then a show of two or three sweeping beams for up to 2 minutes, very rarely in Endless; default), `always`, or `off`. |
+| `--events E@T,...` | Fire test events at moments of the run, as the Shift test keys do: `meteor`, `police`, `utility`. For example `--events police@30s,meteor@45s` (handy with `--snapshot`). |
 | `--seed N` | Build city number N (0 to 4294967295) instead of a random one. The same seed gives the same city and clouds. |
 | `--snapshot T,...` | Open no window; save a PNG of each moment T (durations as for `--timer`, or `0`). See above. |
 | `--size WxH` | Snapshot size in pixels (default `1920x1080`; each side 16 to 8192). Only with `--snapshot`. |
