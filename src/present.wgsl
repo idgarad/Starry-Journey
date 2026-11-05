@@ -9,7 +9,12 @@
 //    near, lit on a background thread, each slid with its own wind and
 //    share of the Endless camera, in front of the moon and behind the city;
 //    the city's glow (src/cityglow.rs) lights them here, every frame, so
-//    it stays under the windows that cast it;
+//    it stays under the windows that cast it. Before the nearest layer
+//    come the ground searchlights' beams (src/searchlights.rs): the beams
+//    rise from our street, so they pass in front of the distant clouds
+//    low in the sky and meet only the nearest layer overhead, which blocks
+//    them and catches their pools of light. The
+//    city, drawn later, hides the beams' feet;
 // 3. the city: in Normal mode and during construction, the still city
 //    (transparent where nothing is built yet); while Endless scrolls, the
 //    four layers, far to near, at fractional positions;
@@ -58,7 +63,26 @@ struct Params {
     cloud_slots: vec4<f32>,
     // City glow: x the ground row in cells; y, z, w unused.
     glow: vec4<f32>,
+    // Searchlights: rgb their color (linear), w how many are on.
+    searchlight_color: vec4<f32>,
+    // Per searchlight: x, y its foot in device pixels on screen; z its lean
+    // from straight up (radians, positive right); w its power (0..1).
+    searchlights: array<vec4<f32>, 3>,
 }
+
+// Searchlight beams: how fast they widen (radians each side) and how wide
+// their foot is (cells); how bright the beam is in the air and how bright
+// its pool on a cloud; how far it reaches (fading over this many heights
+// of the sky); and how many points along the beam are checked for cloud
+// that blocks it.
+const BEAM_SPREAD: f32 = 0.035;
+const BEAM_FOOT: f32 = 1.5;
+const BEAM_AIR: f32 = 0.35;
+const BEAM_POOL: f32 = 0.7;
+const BEAM_REACH: f32 = 2.0;
+const BEAM_STEPS: i32 = 10;
+// How much of the light each step's cloud stops (cloud alpha times this).
+const BEAM_BLOCK: f32 = 0.85;
 
 // How strongly the city glow lights a cloud at the skyline.
 const CITY_GLOW_STRENGTH: f32 = 1.0;
@@ -246,6 +270,61 @@ fn cloud_layer(band: u32, position: vec2<f32>) -> vec4<f32> {
     return cloud;
 }
 
+// The first cloud layer near enough to meet the searchlights: only the
+// nearest, the big heaps overhead. The others, including the low scud
+// along the horizon, are behind the beams.
+const BEAM_FIRST_BAND: u32 = 3u;
+
+// The near cloud layers' combined coverage at `position` (0..1): the
+// clouds a searchlight beam can run into.
+fn cloud_cover(position: vec2<f32>) -> f32 {
+    var clear = 1.0;
+    for (var band = BEAM_FIRST_BAND; band < CLOUD_LAYERS; band++) {
+        if (params.cloud_slots[band] >= 0.0) {
+            clear *= 1.0 - cloud_layer(band, position).a;
+        }
+    }
+    return 1.0 - clear;
+}
+
+// How much of searchlight `light`'s beam reaches `position`, 0..1: its
+// cross-section (soft-edged, widening with distance), fading with
+// distance, times its power. Cloud is not counted here.
+fn beam_shape(light: vec4<f32>, position: vec2<f32>) -> f32 {
+    if (light.w <= 0.0) {
+        return 0.0;
+    }
+    let cell = params.cell.x;
+    let direction = vec2<f32>(sin(light.z), -cos(light.z));
+    let offset = position - light.xy;
+    let along = dot(offset, direction);
+    if (along <= 0.0) {
+        return 0.0;
+    }
+    let across = abs(offset.x * direction.y - offset.y * direction.x);
+    let half_width = 0.5 * BEAM_FOOT * cell + along * BEAM_SPREAD;
+    // A soft (gaussian) cross-section: bright along the middle, fading to
+    // nothing at the edges, like light scattered by the night air.
+    let r = across / half_width;
+    if (r > 1.6) {
+        return 0.0;
+    }
+    let edge = exp(-2.0 * r * r);
+    let sky = max(params.glow.x, 1.0) * cell;
+    return edge * exp(-along / (BEAM_REACH * sky)) * light.w;
+}
+
+// The share of searchlight `light`'s beam that gets past the clouds
+// between its foot and `position` (not counting the cloud at `position`).
+fn beam_through(light: vec4<f32>, position: vec2<f32>) -> f32 {
+    var through = 1.0;
+    for (var step = 1; step <= BEAM_STEPS; step++) {
+        let point = mix(light.xy, position, f32(step) / f32(BEAM_STEPS + 1));
+        through *= 1.0 - BEAM_BLOCK * cloud_cover(point);
+    }
+    return through;
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -269,6 +348,17 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // Each layer cross-fades (in linear light, premultiplied) from its back
     // keyframe to its front one. The city glow then lights it: strongest on
     // undersides (less cloud just below) and low clouds, fading with height.
+    // The searchlights: each beam's light here, past the clouds below.
+    var beam = 0.0;
+    let lights = u32(params.searchlight_color.w);
+    for (var slot = 0u; slot < min(lights, 3u); slot++) {
+        let light = params.searchlights[slot];
+        let shape = beam_shape(light, position.xy);
+        if (shape > 0.002) {
+            beam += shape * beam_through(light, position.xy);
+        }
+    }
+    let beam_light = params.searchlight_color.rgb * beam;
     let glow = city_glow_at(position.xy);
     let ground = params.glow.x;
     let height = max(ground - position.y / cell, 0.0);
@@ -276,6 +366,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let near_below = position.xy + vec2<f32>(0.0, UNDERSIDE_NEAR * cell);
     let far_below = position.xy + vec2<f32>(0.0, UNDERSIDE_FAR * cell);
     for (var band = 0u; band < CLOUD_LAYERS; band++) {
+        if (band == BEAM_FIRST_BAND) {
+            color += beam_light * BEAM_AIR;
+        }
         if (params.cloud_slots[band] < 0.0) {
             continue;
         }
@@ -284,6 +377,10 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
             let open_below = 1.0 - 0.5 * (cloud_layer(band, near_below).a + cloud_layer(band, far_below).a);
             let underside = clamp(open_below, 0.0, 1.0);
             cloud = vec4<f32>(cloud.rgb + glow_light * cloud.a * mix(GLOW_ON_TOPS, 1.0, underside), cloud.a);
+        }
+        // A searchlight's pool where its beam meets this cloud.
+        if (band >= BEAM_FIRST_BAND && cloud.a > 0.0 && beam > 0.0) {
+            cloud = vec4<f32>(cloud.rgb + beam_light * BEAM_POOL * cloud.a, cloud.a);
         }
         color = over(cloud, color);
     }

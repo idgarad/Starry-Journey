@@ -434,6 +434,20 @@
   - `cargo test`: PASS, 272 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Ground searchlights (owner, 2026-11-05: "Lets get the shylight done"):** the owner's choices from 2026-11-04 were beams plus cloud spots, from street level "like a grand opening".
+  - Assumption (the owner didn't say how often): shows come now and then. Each 10-minute stretch has a 60% chance of one show of 70-120 s, with 2 or 3 lights; each switches on and off over 3 s. `--searchlights always` runs one forever; `off` disables them. This is not confirmed yet.
+  - `searchlights::beams_at`: lights spread across the screen as it was when the show started (the renderer keeps that road view), so in Endless they scroll with the street. In `always` mode a light that scrolls off the left comes back on the right. Each sweeps 15-35 degrees each way, every 9-15 s; neighbours start half a sweep apart, so their beams cross.
+  - Shader: each beam has a soft gaussian cross-section that widens 0.035 per pixel of length and fades over 2 sky heights. Its color is the palette's star color.
+  - The beam is drawn just before the nearest cloud layer, and only that layer blocks it (10 steps along the beam, each stopping 85% of the cloud's alpha) and catches its pool (0.7). The beams rise from our street, so they pass in front of the farther layers, including the low scud along the horizon. The city, drawn after, hides their feet.
+  - Tuned with snapshots (seed 7, 960x540; broken, overcast, and storm; Endless at 60 s and 120 s):
+    - blocking with every layer: distant clouds low in the sky swallowed two of three beams;
+    - blocking with layers 2-3: overcast scud at the skyline swallowed them all;
+    - a hard-edged cross-section looked like white sticks.
+  - Tests: shows come about 60% of stretches and last 70-120 s, lights switch smoothly, beams sweep and cross, lights stay put in the world (and wrap in `always`), off and bad times stay dark, and option parsing.
+  - `cargo test`: PASS, 279 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (snapshots only).
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

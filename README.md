@@ -78,6 +78,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 | `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 15 s after opening on that lap), or `survive`. |
+| `--searchlights S` | Ground searchlights: `auto` (now and then a show of two or three sweeping beams, default), `always`, or `off`. |
 | `--seed N` | Build city number N (0 to 4294967295) instead of a random one. The same seed gives the same city and clouds. |
 | `--snapshot T,...` | Open no window; save a PNG of each moment T (durations as for `--timer`, or `0`). See above. |
 | `--size WxH` | Snapshot size in pixels (default `1920x1080`; each side 16 to 8192). Only with `--snapshot`. |
@@ -117,6 +118,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | [src/snapshot.rs](src/snapshot.rs) | Snapshot mode helpers: a dependency-free PNG writer and run folder names. |
 | [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |
 | [src/clouds.rs](src/clouds.rs) | Cloud shapes, coverage presets, wind and parallax, and moonlit four-tone drawing. |
+| [src/searchlights.rs](src/searchlights.rs) | Ground searchlight shows: when they run, where the lights stand, and how they sweep. The shader draws the beams. |
 | [src/cityglow.rs](src/cityglow.rs) | City glow on the clouds: each column's lit-window light, blurred into a glow row the shader reads under every cloud pixel. |
 | [src/endless.rs](src/endless.rs), [src/quips.rs](src/quips.rs) | Endless mode's four scrolling layer cities with bounded buffers, and the startup quips. |
 | [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |

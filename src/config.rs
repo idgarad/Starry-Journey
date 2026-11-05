@@ -14,6 +14,7 @@ use crate::message::parse_message;
 use crate::model::grid::CellScaling;
 use crate::model::rng::js_round;
 use crate::moon::{parse_moon_phase, START_PHASE_STEP};
+use crate::searchlights::SearchlightMode;
 use crate::snapshot::DEFAULT_SNAPSHOT_DIR;
 use crate::station::StationFate;
 
@@ -58,6 +59,8 @@ Options:
   --station-fate F   On the new-moon lap a battle station is under attack:
                      chance (30% it is destroyed, default), destroy (blows up
                      about 15 s after opening on that lap), or survive.
+  --searchlights S   Ground searchlights: auto (now and then a show of two or
+                     three sweeping beams, default), always, or off.
   --seed N           Build city number N (0-4294967295) instead of a random
                      one. The same seed gives the same city and clouds.
   --snapshot T,...   Open no window: run the app in simulated time and save
@@ -106,6 +109,8 @@ pub struct LaunchOptions {
     pub endless: bool,
     /// Cloud cover preset (`--clouds`).
     pub clouds: Cover,
+    /// When ground searchlights appear (`--searchlights`).
+    pub searchlights: SearchlightMode,
     /// The city seed (`--seed`); `None` picks a random one.
     pub seed: Option<u32>,
     /// Snapshot mode (`--snapshot`): the moments to save, in seconds,
@@ -129,6 +134,7 @@ impl Default for LaunchOptions {
             message: None,
             endless: false,
             clouds: Cover::default(),
+            searchlights: SearchlightMode::default(),
             seed: None,
             snapshot: None,
             size: DEFAULT_SNAPSHOT_SIZE,
@@ -176,6 +182,7 @@ where
     let mut clouds_given = false;
     let mut size_given = false;
     let mut dir_given = false;
+    let mut searchlights_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -262,6 +269,17 @@ where
                     .or_else(|| args.next())
                     .ok_or("--message needs text, for example --message \"Back soon\"")?;
                 options.message = parse_message(&value)?;
+            }
+            "--searchlights" => {
+                if searchlights_given {
+                    return Err("--searchlights was given more than once".to_string());
+                }
+                searchlights_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--searchlights needs auto, always, or off")?;
+                options.searchlights = SearchlightMode::parse(&value)
+                    .map_err(|message| format!("--searchlights {message}"))?;
             }
             "--seed" => {
                 if options.seed.is_some() {
@@ -381,6 +399,22 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn searchlight_option_parses_and_defaults_to_auto() {
+        assert_eq!(parse(&[]).unwrap().searchlights, SearchlightMode::Auto);
+        assert_eq!(
+            parse(&["--searchlights", "always"]).unwrap().searchlights,
+            SearchlightMode::Always
+        );
+        assert_eq!(
+            parse(&["--searchlights=off"]).unwrap().searchlights,
+            SearchlightMode::Off
+        );
+        assert!(parse(&["--searchlights"]).is_err());
+        assert!(parse(&["--searchlights", "loud"]).is_err());
+        assert!(parse(&["--searchlights", "off", "--searchlights", "auto"]).is_err());
+    }
 
     #[test]
     fn snapshot_options_parse_moments_size_and_seed() {

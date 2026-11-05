@@ -19,6 +19,7 @@ pub mod moon;
 pub mod quips;
 pub mod raster;
 pub mod reveal;
+pub mod searchlights;
 pub mod skyclouds;
 pub mod snapshot;
 pub mod station;

@@ -20,7 +20,7 @@ use starry_journey::clock::{format_remaining, ConstructionClock};
 use starry_journey::cloudgen::{Light, CLOUD_LAYERS};
 use starry_journey::clouds::Cover;
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
-use starry_journey::endless::{buffer_width, EndlessCity};
+use starry_journey::endless::{buffer_width, decode_srgb, EndlessCity};
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
@@ -33,6 +33,7 @@ use starry_journey::moon::{
 use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
+use starry_journey::searchlights::{beams_at, show_start, Beam, MAX_LIGHTS as SEARCHLIGHTS};
 use starry_journey::skyclouds::{SkyClouds, SLOTS as CLOUD_SLOTS};
 use starry_journey::snapshot::{encode_png, frame_name, run_id};
 use starry_journey::station::{radio_line, StationFate};
@@ -685,6 +686,11 @@ struct Renderer {
     /// Snapshot mode: seconds of simulated time since the start, which
     /// replaces the real clock; `None` runs on real time.
     virtual_elapsed: Option<f64>,
+    /// The running searchlight show's start and the road view then, so its
+    /// lights stay put in the world; `None` between shows.
+    searchlight_anchor: Option<(f64, f64)>,
+    /// The searchlight beams this frame.
+    beams: Vec<Beam>,
 }
 
 /// Opens the device on `adapter`, asking for the adapter's real texture
@@ -959,6 +965,8 @@ impl Renderer {
             options,
             scale_factor,
             virtual_elapsed: None,
+            searchlight_anchor: None,
+            beams: Vec::new(),
         };
         renderer.upload();
         renderer.update_message();
@@ -1080,6 +1088,9 @@ impl Renderer {
 
     /// New clouds for the current scene (same seed and grid).
     fn rebuild_clouds(&mut self) {
+        // The scene changed (resize, restart, or mode): searchlights are
+        // placed afresh against the new view.
+        self.searchlight_anchor = None;
         self.sky_clouds = SkyClouds::new(
             self.scene.seed,
             self.scene.grid.cols,
@@ -1229,6 +1240,7 @@ impl Renderer {
         // The GPU places the layers and the moon, so motion needs only new
         // offsets (and an upload when a layer buffer was rebased).
         self.scene.scroll(motion_dt, self.speed);
+        self.update_searchlights(now);
         let city_changed = self.scene.view.take_dirty() || finished;
         if city_changed {
             self.scene.compose_city();
@@ -1244,6 +1256,34 @@ impl Renderer {
         self.write_params();
         self.update_status(elapsed);
         self.update_message();
+    }
+
+    /// Works out this frame's searchlight beams (`--searchlights`): a show
+    /// keeps the road view from when it started, so its lights stay put in
+    /// the world.
+    fn update_searchlights(&mut self, now: Instant) {
+        let seconds = self.seconds(now);
+        let (seed, mode) = (self.scene.seed, self.options.searchlights);
+        let view = self.scene.road_view();
+        self.searchlight_anchor = match (show_start(seed, mode, seconds), self.searchlight_anchor) {
+            (Some(start), Some((anchored, anchor))) if anchored == start => {
+                Some((anchored, anchor))
+            }
+            (Some(start), _) => Some((start, view)),
+            (None, _) => None,
+        };
+        self.beams = self
+            .searchlight_anchor
+            .map_or_else(Vec::new, |(_, anchor)| {
+                beams_at(
+                    seed,
+                    mode,
+                    seconds,
+                    f64::from(self.scene.grid.cols),
+                    anchor,
+                    view,
+                )
+            });
     }
 
     /// Shows the silly startup lines while an Endless city is being built,
@@ -1510,6 +1550,25 @@ impl Renderer {
         }));
         // City glow: x the ground row (cells).
         params.extend([self.scene.grid.ground_row as f32, 0.0, 0.0, 0.0]);
+        // Searchlights: their color (the palette's star color, linear) and
+        // count, then per slot the beam's foot (device pixels on screen),
+        // lean, and power.
+        let star = palette_at(self.palette_index).star.0;
+        let [r, g, b] = star.map(|c| decode_srgb(f64::from(c) / 255.0) as f32);
+        params.extend([r, g, b, self.beams.len().min(SEARCHLIGHTS) as f32]);
+        let road = self.scene.road_view();
+        let foot_y = f64::from(self.scene.grid.ground_row) * f64::from(cell);
+        for slot in 0..SEARCHLIGHTS {
+            match self.beams.get(slot) {
+                Some(beam) => params.extend([
+                    ((beam.x - road) * f64::from(cell)) as f32,
+                    foot_y as f32,
+                    beam.angle as f32,
+                    beam.power as f32,
+                ]),
+                None => params.extend([0.0; 4]),
+            }
+        }
         let bytes: Vec<u8> = params
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -1917,7 +1976,7 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (12 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 = (13 + SEARCHLIGHTS as u64 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 
