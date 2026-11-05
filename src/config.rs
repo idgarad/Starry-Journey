@@ -85,7 +85,7 @@ Options:
                      each run gets its own YYYYMMDD-HHMMSS folder.
   -h, --help         Show this help.
 
-Keys: P palette, C clouds, W rain/snow, R new city, +/- speed, E Normal/Endless, Space pause,
+Keys: P palette, C clouds, W rain/snow, Shift+S shooting star, R new city, +/- speed, E Normal/Endless, Space pause,
 F fullscreen, Tab next display, Esc quit.";
 
 /// How big a virtual pixel is.

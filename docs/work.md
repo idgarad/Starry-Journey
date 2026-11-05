@@ -576,6 +576,36 @@
   - `cargo test`: PASS, 310 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Ambience (owner, 2026-11-05: "lets round out the ambience"):** the first of three sprints (then emergency and utility vehicles with flashers, and swaying trees, then the rest of the Shift test keys).
+  - Owner decisions:
+    - ambience in both modes (the spec keeps Endless steady);
+    - Shift + letter test keys;
+    - police flashers in palette-tinted red and blue;
+    - rare special vehicles.
+  - `ambience.rs`:
+    - `Flicker`: the spec's Poisson toggles, 0.02 per building per second times speed. A building with too few lit windows turns one on 80% of the time (with too many, off), otherwise either way.
+    - `beacon_lit`: lit 35% of each mast's seeded 1.2-2.5 s period.
+    - `decoration_hue`: `Cycle` outlines turn 36 degrees a second together; `Chase` outlines spread 360 degrees along the outline and travel at the same rate.
+    - `star_fade`: 4% of stars, chosen by a seeded hash, swell between their own fade and 0.85 at a seeded 1.5-4 s pace.
+    - `meteor_at`: the spec's waits (first 4-12 s, then 8-28 s), each a 0.9 s flight across 15-30% of the screen, falling. A forced one (Shift+S) takes precedence.
+  - Renderer (`update_ambience`, once the city is built):
+    - patches only cells whose color changes, into the CPU images and their GPU textures (a 1x1 write each): the sky for twinkles; the still city (view and composed image) in Normal and during Endless construction; each Endless layer's buffer while it scrolls;
+    - each patch checks the cell is still owned by that building (and is its window or mast), so hidden cells stay hidden;
+    - window states live in the buildings, so redraws keep them; beacons, landmarks, and twinkles are functions of time, re-applied after any redraw (a cache is cleared on upload, and per layer when its buffer's revision changes);
+    - the Normal view is drawn with target lighting, so a palette change resets the flicker to targets (accepted);
+    - shooting stars are drawn in the shader behind the clouds: a streak whose trail spans 35% of the flight, fading toward its end, at `sin(pi x progress)` brightness, in the palette's star color.
+  - App: tracks modifiers; `Shift+S` sends a shooting star now (the first test key).
+  - Checked with snapshots (seed 7, 960x540, clear):
+    - Normal, 60 s against 61 s: the changed cells are beacon tips, a landmark outline, a few windows and stars, plus the moon and cars;
+    - 60 s against 90 s: the same, plus the searchlight show;
+    - shooting stars at 40 s and 77 s (one passing behind a tower);
+    - the landmark changed from pink to blue between the two;
+    - Endless changes everywhere because it scrolls, so it was checked only for running cleanly.
+  - Tests: flicker rate (about 1200 toggles for 100 buildings in 10 minutes), settling near target, faster at 4x, none when paused; beacon duty and period; cycle and chase hues; about 4% twinkling, smoothly; the spec's shooting-star waits; and a forced shooting star.
+  - Not covered by automated tests: the renderer's patching and the shooting-star drawing (GPU); checked with snapshots as above.
+  - `cargo test`: PASS, 315 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

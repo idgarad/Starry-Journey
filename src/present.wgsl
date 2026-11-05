@@ -88,7 +88,16 @@ struct Params {
     // streak's half-width or the flake's size (cells; 2 is the spinning
     // cross), z opacity, w the clock (seconds) that spins the big flakes.
     precip_looks: array<vec4<f32>, 4>,
+    // A shooting star: x, y its head and z, w the end of its trail (device
+    // pixels).
+    meteor: vec4<f32>,
+    // x its brightness (0 when there is none).
+    meteor_info: vec4<f32>,
 }
+
+// A shooting star's streak half-width and soft edge, in cells.
+const METEOR_CORE: f32 = 0.35;
+const METEOR_EDGE: f32 = 0.9;
 
 // The precipitation tile hash repeats every this many tiles, matching the
 // wrap of each layer's travel (src/weather.rs, WRAP_TILES).
@@ -501,6 +510,17 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
 
     if (params.moon.z > 0.5) {
         color = over(sharp_sample(moon_sprite, params.moon.xy, position.xy), color);
+    }
+    // A shooting star (src/ambience.rs), behind the clouds: brightest at
+    // its head, its trail fading behind it.
+    if (params.meteor_info.x > 0.0) {
+        let head = params.meteor.xy;
+        let trail = params.meteor.zw - head;
+        let t = clamp(dot(position.xy - head, trail) / max(dot(trail, trail), 1e-6), 0.0, 1.0);
+        let d = length(position.xy - (head + trail * t)) / cell;
+        let along = 1.0 - t;
+        let streak = 1.0 - smoothstep(METEOR_CORE, METEOR_EDGE, d);
+        color += params.searchlight_color.rgb * params.meteor_info.x * streak * along * along;
     }
     // The cloud layers far to near, each at its own fractional offset, lit
     // (including by the moon) on a background thread; they let some of the

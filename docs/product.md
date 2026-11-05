@@ -86,6 +86,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - The wind gusts, slants the fall (snow more than rain), and drives the clouds' drift.
   - Searchlights are never on while anything falls. Lightning comes only in rainstorms; snowstorms are quiet.
   - The cloud cover itself stays as set (`--clouds`, `C`).
+- **Ambience in both modes (owner decision, 2026-11-05; the spec keeps Endless steady):** once the city is built, windows flicker (the spec's Poisson toggles at 0.02 per building per second times speed, steered toward each building's target), beacons blink on their own periods, landmark lights cycle or chase through hues, 4% of stars twinkle, and shooting stars cross (first after 4-12 s, then every 8-28 s). `Shift+S` sends one at once.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 

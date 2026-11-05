@@ -32,6 +32,7 @@ cargo run
 | `R` | New city (construction restarts) |
 | `C` | Cycle the cloud cover (its name shows in the message box) |
 | `W` | Cycle what falls in showers: rain, snow, or nothing |
+| `Shift+S` | Test key: a shooting star now |
 | `E` | Switch between Normal and Endless mode |
 | `Space` | Pause or resume Endless scrolling |
 | `+` / `-` | Construction speed, 0.25× to 4× |
@@ -133,6 +134,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | [src/weather.rs](src/weather.rs) | Rain, snow, and wind: the four precipitation layers' travel and look, gusts, and the slant. The shader draws the drops. |
 | [src/lightning.rs](src/lightning.rs) | Storm lightning: when flashes happen (capped for photosensitive viewers), their kinds, and bolt shapes. The shader draws them. |
 | [src/searchlights.rs](src/searchlights.rs) | Ground searchlight shows: when they run, where the lights stand, and how they sweep. The shader draws the beams. |
+| [src/ambience.rs](src/ambience.rs) | Ambience after construction: window flicker, blinking beacons, landmark light cycles and chases, twinkling stars, and the shooting-star schedule. |
 | [src/cityglow.rs](src/cityglow.rs) | City glow on the clouds: each column's lit-window light, blurred into a glow row the shader reads under every cloud pixel. |
 | [src/endless.rs](src/endless.rs), [src/quips.rs](src/quips.rs) | Endless mode's four scrolling layer cities with bounded buffers, and the startup quips. |
 | [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |

@@ -87,6 +87,11 @@ impl CityGenerator {
         &self.buildings
     }
 
+    /// Buildings generated so far, to change their windows' lit states.
+    pub fn buildings_mut(&mut self) -> &mut [Building] {
+        &mut self.buildings
+    }
+
     /// Consumes the generator, returning its buildings.
     pub fn into_buildings(self) -> Vec<Building> {
         self.buildings
