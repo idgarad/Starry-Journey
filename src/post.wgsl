@@ -40,8 +40,8 @@ struct PostParams {
     // CRT power-on's progress (1 when done); w: where the Amber and Green
     // refresh beam is, 0 at the top of the screen to 1 at the bottom.
     history: vec4<f32>,
-    // x: the Green code rain's clock in seconds; y: device pixels per CSS
-    // pixel (the display scale).
+    // x: the Green code rain's clock in seconds; y, z, w: unused (the rain
+    // takes its size from the cell, `effect.z`).
     rain: vec4<f32>,
 }
 
@@ -84,10 +84,11 @@ const TEXT_BLOOM: f32 = 0.9;
 // The Green code rain (Rebuild Prompt, "Green"): cells in CSS pixels, the
 // glyph's offset in its cell, and the share of columns that rain.
 const RAIN_CELL: vec2<f32> = vec2<f32>(18.0, 20.0);
-// Each glyph pixel is this many device pixels wide (times the display
-// scale): owner, 2026-11-05, "the glyphs need to be a bit bigger ... 3
-// texel wide". The spec's cells, offsets, and halo scale with it.
-const RAIN_PIXEL: f32 = 3.0;
+// Each glyph pixel is this share of a city cell wide, in whole device
+// pixels (owner, 2026-11-05: bigger glyphs that follow the cell size, as
+// they look at `--pixel-size spec` on 1440p: 3 px in 6 px cells). The
+// spec's cells, offsets, and halo scale with it.
+const RAIN_PIXEL_PER_CELL: f32 = 0.5;
 const RAIN_GLYPH_OFFSET: vec2<i32> = vec2<i32>(5, 2);
 const RAIN_COLUMNS: f32 = 0.42;
 const RAIN_GLYPHS: f32 = 157.0;
@@ -260,7 +261,7 @@ fn rain_strength(cell: vec2<f32>, rows: f32) -> f32 {
 // the glyph (alternate rows 25% darker) and a small halo are screen-blended
 // on in linear light.
 fn code_rain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
-    let scale = max(post.rain.y, 0.5) * RAIN_PIXEL;
+    let scale = max(round(post.effect.z * RAIN_PIXEL_PER_CELL), 1.0);
     let css = position / scale;
     let cell = floor(css / RAIN_CELL);
     let rows = ceil(max(post.lines.w, 1.0) / scale / RAIN_CELL.y);

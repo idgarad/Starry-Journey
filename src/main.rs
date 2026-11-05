@@ -2079,7 +2079,7 @@ impl Renderer {
             power_on as f32,
             (now / BEAM_PERIOD).rem_euclid(1.0) as f32,
             self.rain_clock.get() as f32,
-            self.scale_factor.max(0.5) as f32,
+            0.0,
             0.0,
             0.0,
         ]
