@@ -158,11 +158,17 @@ pub struct Meteor {
 fn meteor(seed: u32, n: u32, start: f64) -> (f64, Meteor) {
     let mut rng = Mulberry32::new(seed ^ 0x03e7_e0e5 ^ n.wrapping_mul(0x85eb_ca6b));
     let mut next = || rng.next_f64();
-    let from = (0.1 + 0.8 * next(), 0.05 + 0.3 * next());
+    // Anywhere across the upper sky, either way, from a shallow streak to
+    // a steep fall (owner, 2026-11-05: "from random locations and
+    // directions").
+    let from = (0.05 + 0.9 * next(), 0.02 + 0.45 * next());
     let side = if next() < 0.5 { -1.0 } else { 1.0 };
-    let length = 0.15 + 0.15 * next();
-    let drop = 0.25 + 0.35 * next();
-    let to = (from.0 + side * length, from.1 + length * drop * 1.8);
+    let length = 0.12 + 0.18 * next();
+    let angle = (10.0 + 60.0 * next()).to_radians();
+    let to = (
+        from.0 + side * length * angle.cos(),
+        from.1 + length * angle.sin() * 1.8,
+    );
     (
         start,
         Meteor {
@@ -187,7 +193,10 @@ pub fn meteor_at(seed: u32, seconds: f64, forced: Option<f64>) -> Option<Meteor>
             .then_some(Meteor { progress: t, ..m })
     };
     if let Some(start) = forced {
-        if let Some(m) = within(start, meteor(seed, u32::MAX, start).1) {
+        // Each forced star draws its own place and direction from the
+        // moment it was asked for.
+        let n = (start.to_bits() ^ (start.to_bits() >> 32)) as u32;
+        if let Some(m) = within(start, meteor(seed ^ 0xf0ce_d000, n, start).1) {
             return Some(m);
         }
     }
@@ -358,5 +367,24 @@ mod tests {
         let forced = meteor_at(2, 1.3, Some(1.0)).expect("a forced shooting star");
         assert!((forced.progress - 0.3 / METEOR_SECONDS).abs() < 1e-9);
         assert!(forced.to.1 > forced.from.1, "falls");
+        // Forced stars at different moments start and head differently.
+        let paths: Vec<Meteor> = (0..20)
+            .map(|i| {
+                let start = 100.0 + 3.7 * f64::from(i);
+                meteor_at(2, start + 0.1, Some(start)).unwrap()
+            })
+            .collect();
+        let distinct = |f: fn(&Meteor) -> f64| {
+            let mut values: Vec<f64> = paths.iter().map(f).collect();
+            values.sort_by(f64::total_cmp);
+            values.dedup();
+            values.len()
+        };
+        assert_eq!(distinct(|m| m.from.0), 20, "different places");
+        let lefts = paths.iter().filter(|m| m.to.0 < m.from.0).count();
+        assert!(
+            (3..=17).contains(&lefts),
+            "both directions: {lefts} of 20 go left"
+        );
     }
 }

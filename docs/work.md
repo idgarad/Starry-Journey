@@ -595,6 +595,10 @@
     - the Normal view is drawn with target lighting, so a palette change resets the flicker to targets (accepted);
     - shooting stars are drawn in the shader behind the clouds: a streak whose trail spans 35% of the flight, fading toward its end, at `sin(pi x progress)` brightness, in the palette's star color.
   - App: tracks modifiers; `Shift+S` sends a shooting star now (the first test key).
+  - Varied shooting stars (owner, 2026-11-05): "shoot stars should be from random locations and directions, hitting Shift-S they come from the same spot."
+    - A forced star always used the same slot of the schedule, so it was the same every time. Each now draws its seed from the moment it was asked for.
+    - Every star starts anywhere across the upper sky (5-95% across, 2-47% down), goes either way, and falls at 10-70 degrees below the horizontal (was 25-60% drop over 15-30% across).
+    - Test: 20 forced stars at different moments start in 20 different places and go both ways.
   - Checked with snapshots (seed 7, 960x540, clear):
     - Normal, 60 s against 61 s: the changed cells are beacon tips, a landmark outline, a few windows and stars, plus the moon and cars;
     - 60 s against 90 s: the same, plus the searchlight show;
