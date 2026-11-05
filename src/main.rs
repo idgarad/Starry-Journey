@@ -2056,7 +2056,7 @@ impl Renderer {
             keep(LCD_GHOST_HALF_LIFE),
             keep(PHOSPHOR_HALF_LIFE),
             power_on as f32,
-            0.0,
+            (now / BEAM_PERIOD).rem_euclid(1.0) as f32,
         ]
     }
 
@@ -2906,6 +2906,10 @@ fn create_scene_texture(
     })
 }
 
+/// Seconds the Amber and Green refresh beam takes to sweep the screen
+/// (owner, 2026-11-05: "the scanning beam refreshing the image"; slowed
+/// far below a real 60 Hz so it reads, and never flickers).
+const BEAM_PERIOD: f64 = 5.0;
 /// Seconds the CRT power-on takes.
 const POWER_ON_SECONDS: f64 = 0.5;
 /// How fast the Game Boy LCD's ghost fades: it halves every this many

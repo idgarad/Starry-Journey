@@ -36,7 +36,8 @@ struct PostParams {
     message: vec4<f32>,
     // x: how much of the previous frame a Game Boy pixel keeps (LCD
     // ghosting); y: how much of it a phosphor keeps (persistence); z: the
-    // CRT power-on's progress (1 when done); w unused.
+    // CRT power-on's progress (1 when done); w: where the Amber and Green
+    // refresh beam is, 0 at the top of the screen to 1 at the bottom.
     history: vec4<f32>,
 }
 
@@ -59,6 +60,14 @@ const VIGNETTE: f32 = 0.22;
 // Scanline dark rows keep this much on EGA and VGA.
 const EGA_ROWS: f32 = 0.75;
 const VGA_ROWS: f32 = 0.82;
+// The Amber and Green refresh beam (owner, 2026-11-05): how much brighter
+// the beam's line is, how much the freshly drawn phosphor behind it starts
+// brighter, how far (a share of the screen's height) that fades over, and
+// how thick the line is in scanline periods.
+const BEAM_LINE: f32 = 0.12;
+const BEAM_TRAIL: f32 = 0.08;
+const BEAM_FADE: f32 = 0.25;
+const BEAM_THICKNESS: f32 = 1.5;
 // Phosphor bloom around Amber and Green message text.
 const TEXT_BLOOM: f32 = 0.9;
 
@@ -251,6 +260,18 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> Output {
         if (dark_row(p.y)) {
             color *= select(EGA_ROWS, VGA_ROWS, effect == 8u);
         }
+    }
+    // Amber and Green: the refresh beam sweeping down, the phosphor it has
+    // just drawn a little brighter and fading behind it.
+    if (effect == 1u || effect == 6u) {
+        let height = max(post.lines.w, 1.0);
+        let beam = post.history.w * height;
+        // Rows since the beam passed (wrapping from the bottom to the top).
+        let behind = (beam - position.y + height) % height;
+        let period = max(post.effect.w, 2.0);
+        let line = 1.0 - smoothstep(0.0, BEAM_THICKNESS * period, behind);
+        let trail = exp(-behind / (BEAM_FADE * height));
+        color = min(color * (1.0 + BEAM_LINE * line + BEAM_TRAIL * trail), vec3<f32>(1.0));
     }
     // Every CRT palette: a gentle vignette toward the corners.
     let crt = effect != 0u && effect != 5u;

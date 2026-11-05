@@ -721,6 +721,12 @@
     - Amber and Green text glows;
     - two consecutive frames (30.000 s and 30.033 s) show a faint Game Boy smear and Amber glow behind a moving car;
     - the power-on and the trails' motion are for the owner's eyes.
+  - **Refresh beam (Amber, Green; owner, 2026-11-05):** "a CRT phospur refresh like effect, the scanning beam refreshing the image".
+    - A real 60 Hz sweep can't be seen, or flickers, so it is stylized: one sweep down every 5 s (`BEAM_PERIOD`), wrapping.
+    - The beam's line (1.5 scanline periods) is 12% brighter; behind it the freshly drawn phosphor starts 8% brighter and fades over a quarter of the screen height.
+    - It is screen-fixed and under the message box; at 0.2 Hz with at most a 20% lift it is a slow wave, not a flash.
+    - The phase comes from app seconds in the free `history.w` slot.
+    - Checked with a snapshot (Green at 32 s, so the beam is 40% down): rows just above y = 216 are about 15-20% brighter, fading upward.
   - Backlog: one toggle per effect once there are menu options (owner); `D` switches them all for now.
   - Tests: effect mapping per palette (Green 6, EGA 7, VGA 8; only Game Boy when off); both shaders validate; snapshot names differ for consecutive frames.
   - `cargo test`: PASS, 326 tests.
