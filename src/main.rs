@@ -35,12 +35,18 @@ use starry_journey::moon::{
 use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
-use starry_journey::searchlights::{beams_at, show_start, Beam, MAX_LIGHTS as SEARCHLIGHTS};
+use starry_journey::searchlights::{
+    beams_at, show_start, Beam, SearchlightMode, MAX_LIGHTS as SEARCHLIGHTS,
+};
 use starry_journey::skyclouds::{SkyClouds, SLOTS as CLOUD_SLOTS};
 use starry_journey::snapshot::{encode_png, frame_name, run_id};
 use starry_journey::station::{radio_line, StationFate};
 use starry_journey::street::{mark_opaque, Span, StreetLayer};
 use starry_journey::traffic::{Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH};
+use starry_journey::weather::{
+    fall_direction, wind_now, PrecipKind, PrecipMode, Precipitation, CLOUD_WIND_REFERENCE,
+    PRECIP_LAYERS,
+};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -182,6 +188,11 @@ impl ApplicationHandler for App {
                         KeyCode::KeyP => {
                             if let Some(renderer) = &mut self.renderer {
                                 renderer.next_palette();
+                            }
+                        }
+                        KeyCode::KeyW => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.next_precip();
                             }
                         }
                         KeyCode::KeyC => {
@@ -725,6 +736,14 @@ struct Renderer {
     /// The strike target found when the current strike began (its start
     /// and the point in device pixels), so it stays put while it flashes.
     strike_target: Option<(f64, (f64, f64))>,
+    /// What falls from heavy cloud (`--precip`, cycled with `W`).
+    precip_mode: PrecipMode,
+    /// What is falling now, if anything, and how hard (0..1).
+    precip_now: Option<(PrecipKind, f64)>,
+    /// The precipitation layers' travel.
+    precipitation: Precipitation,
+    /// The wind now, in cells per second (positive blows right).
+    wind: f64,
 }
 
 /// One frame of lightning for the shader, in device pixels.
@@ -1009,6 +1028,7 @@ impl Renderer {
                 palette_at(palette_index),
             ),
             cover: options.clouds,
+            precip_mode: options.precip,
             cloud_texture,
             glow_texture,
             options,
@@ -1018,6 +1038,9 @@ impl Renderer {
             beams: Vec::new(),
             lightning: None,
             strike_target: None,
+            precip_now: None,
+            precipitation: Precipitation::default(),
+            wind: 0.0,
         };
         renderer.upload();
         renderer.update_message();
@@ -1294,6 +1317,7 @@ impl Renderer {
         // The GPU places the layers and the moon, so motion needs only new
         // offsets (and an upload when a layer buffer was rebased).
         self.scene.scroll(motion_dt, self.speed);
+        self.update_weather(now, motion_dt);
         self.update_searchlights(now);
         self.update_lightning(now);
         let city_changed = self.scene.view.take_dirty() || finished;
@@ -1316,13 +1340,42 @@ impl Renderer {
     /// Works out this frame's searchlight beams (`--searchlights`): a show
     /// keeps the road view from when it started, so its lights stay put in
     /// the world.
+    /// Works out this frame's weather: what falls and how hard (from the
+    /// cloud cover and `--precip`), the gusting wind, which slants the
+    /// fall and drives the clouds, and the precipitation's travel.
+    fn update_weather(&mut self, now: Instant, dt: f64) {
+        let seconds = self.seconds(now);
+        let intensity = starry_journey::weather::intensity_for(self.cover);
+        self.precip_now = self
+            .precip_mode
+            .kind_under(self.cover)
+            .map(|kind| (kind, intensity));
+        self.wind = wind_now(self.cover, self.scene.seed, seconds);
+        self.sky_clouds
+            .set_wind_factor(self.wind.abs() / CLOUD_WIND_REFERENCE);
+        if let Some((kind, _)) = self.precip_now {
+            self.precipitation.advance(dt * self.speed, kind, self.wind);
+        }
+    }
+
+    /// Cycles what falls (`W`: rain, snow, off) and names it in the
+    /// message box.
+    fn next_precip(&mut self) {
+        self.precip_mode = self.precip_mode.next();
+        self.notice
+            .flash(self.precip_mode.label(), self.seconds(self.now()));
+    }
+
     /// Works out this frame's lightning (storms only; `--lightning`): the
     /// flash's place and brightness, and the bolt for cloud-to-cloud bolts
     /// and strikes. A strike hits the tallest point on screen when it
     /// begins.
     fn update_lightning(&mut self, now: Instant) {
         let seconds = self.seconds(now);
-        let storm = self.cover == Cover::Storm;
+        // Lightning only in rainstorms (owner, 2026-11-05): snowstorms are
+        // quiet.
+        let snowing = matches!(self.precip_now, Some((PrecipKind::Snow, _)));
+        let storm = self.cover == Cover::Storm && !snowing;
         let Some(event) = event_at(self.scene.seed, self.options.lightning, storm, seconds) else {
             self.lightning = None;
             return;
@@ -1417,10 +1470,14 @@ impl Renderer {
     fn update_searchlights(&mut self, now: Instant) {
         let seconds = self.seconds(now);
         let seed = self.scene.seed;
-        let mode = self
-            .options
-            .searchlights
-            .for_scene(self.scene.endless.is_some());
+        // Never while anything falls (owner, 2026-11-05).
+        let mode = if self.precip_now.is_some() {
+            SearchlightMode::Off
+        } else {
+            self.options
+                .searchlights
+                .for_scene(self.scene.endless.is_some())
+        };
         let view = self.scene.road_view();
         self.searchlight_anchor = match (show_start(seed, mode, seconds), self.searchlight_anchor) {
             (Some(start), Some((anchored, anchor))) if anchored == start => {
@@ -1761,6 +1818,37 @@ impl Renderer {
                 Some([a, b]) => params.extend([a.0 as f32, a.1 as f32, b.0 as f32, b.1 as f32]),
                 None => params.extend([0.0; 4]),
             }
+        }
+        // Precipitation: what falls (0 nothing, 1 rain, 2 snow), how hard,
+        // and the direction it falls; then per layer its travel, tile size,
+        // and density; then its streak length or wobble, size, and opacity.
+        match self.precip_now {
+            Some((kind, intensity)) => {
+                let (dx, dy) = fall_direction(kind, self.wind);
+                let code = if kind == PrecipKind::Rain { 1.0 } else { 2.0 };
+                params.extend([code, intensity as f32, dx as f32, dy as f32]);
+                let layers = self.precipitation.layers(kind, intensity);
+                for layer in &layers {
+                    params.extend([
+                        layer.offset.0 as f32,
+                        layer.offset.1 as f32,
+                        layer.tile as f32,
+                        layer.density as f32,
+                    ]);
+                }
+                // The clock for spinning flakes, wrapped daily so it keeps
+                // its precision in a long run.
+                let spin_clock = self.seconds(self.now()).rem_euclid(86_400.0);
+                for layer in &layers {
+                    params.extend([
+                        layer.length as f32,
+                        layer.size as f32,
+                        layer.alpha as f32,
+                        spin_clock as f32,
+                    ]);
+                }
+            }
+            None => params.extend([0.0; 4 + 8 * PRECIP_LAYERS]),
         }
         let bytes: Vec<u8> = params
             .iter()
@@ -2171,9 +2259,13 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 /// vectors of four floats.
 /// Lightning lights the shader takes (one per flash of an event).
 const FLASH_LIGHTS: usize = 3;
-const PARAMS_BYTES: u64 =
-    (14 + FLASH_LIGHTS as u64 + SEARCHLIGHTS as u64 + BOLT_SEGMENTS as u64 + VEHICLE_SLOTS as u64)
-        * 16;
+const PARAMS_BYTES: u64 = (15
+    + 2 * PRECIP_LAYERS as u64
+    + FLASH_LIGHTS as u64
+    + SEARCHLIGHTS as u64
+    + BOLT_SEGMENTS as u64
+    + VEHICLE_SLOTS as u64)
+    * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 

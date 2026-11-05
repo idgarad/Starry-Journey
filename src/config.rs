@@ -19,6 +19,7 @@ use crate::moon::{parse_moon_phase, START_PHASE_STEP};
 use crate::searchlights::SearchlightMode;
 use crate::snapshot::DEFAULT_SNAPSHOT_DIR;
 use crate::station::StationFate;
+use crate::weather::PrecipMode;
 
 /// Allowed fixed `--pixel-size` values, in logical (unscaled) pixels.
 pub const PIXEL_SIZE_RANGE: (u32, u32) = (1, 16);
@@ -59,6 +60,8 @@ Options:
   --message TEXT     Show TEXT in a box over the city (at most 240 UTF-16
                      units; quote it). Blank text shows no box. Changing the
                      palette shows its name there for 2 seconds.
+  --precip P         What falls from overcast and storm clouds: rain
+                     (default), snow, or off. Press W to cycle it.
   --moon-phase P     Phase the moon opens on: new, waxing-crescent,
                      first-quarter, waxing-gibbous, full, waning-gibbous,
                      last-quarter, waning-crescent (or 0-7). It then advances
@@ -81,7 +84,7 @@ Options:
                      each run gets its own YYYYMMDD-HHMMSS folder.
   -h, --help         Show this help.
 
-Keys: P palette, C clouds, R new city, +/- speed, E Normal/Endless, Space pause,
+Keys: P palette, C clouds, W rain/snow, R new city, +/- speed, E Normal/Endless, Space pause,
 F fullscreen, Tab next display, Esc quit.";
 
 /// How big a virtual pixel is.
@@ -117,6 +120,8 @@ pub struct LaunchOptions {
     pub endless: bool,
     /// Cloud cover preset (`--clouds`).
     pub clouds: Cover,
+    /// What falls from heavy cloud (`--precip`).
+    pub precip: PrecipMode,
     /// Whether storms have lightning (`--lightning`).
     pub lightning: LightningMode,
     /// Which building kinds and footprints (`--buildings`).
@@ -148,6 +153,7 @@ impl Default for LaunchOptions {
             clouds: Cover::default(),
             buildings: BuildingProfile::default(),
             lightning: LightningMode::default(),
+            precip: PrecipMode::default(),
             searchlights: SearchlightMode::default(),
             seed: None,
             snapshot: None,
@@ -199,6 +205,7 @@ where
     let mut searchlights_given = false;
     let mut buildings_given = false;
     let mut lightning_given = false;
+    let mut precip_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -285,6 +292,17 @@ where
                     .or_else(|| args.next())
                     .ok_or("--message needs text, for example --message \"Back soon\"")?;
                 options.message = parse_message(&value)?;
+            }
+            "--precip" => {
+                if precip_given {
+                    return Err("--precip was given more than once".to_string());
+                }
+                precip_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--precip needs rain, snow, or off")?;
+                options.precip =
+                    PrecipMode::parse(&value).map_err(|message| format!("--precip {message}"))?;
             }
             "--lightning" => {
                 if lightning_given {
@@ -437,6 +455,19 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn precip_option_parses_and_defaults_to_rain() {
+        assert_eq!(parse(&[]).unwrap().precip, PrecipMode::Rain);
+        assert_eq!(
+            parse(&["--precip", "snow"]).unwrap().precip,
+            PrecipMode::Snow
+        );
+        assert_eq!(parse(&["--precip=off"]).unwrap().precip, PrecipMode::Off);
+        assert!(parse(&["--precip"]).is_err());
+        assert!(parse(&["--precip", "sleet"]).is_err());
+        assert!(parse(&["--precip", "rain", "--precip", "snow"]).is_err());
+    }
 
     #[test]
     fn lightning_option_parses_and_defaults_to_auto() {

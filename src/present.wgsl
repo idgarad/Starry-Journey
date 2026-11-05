@@ -23,6 +23,8 @@
 // 5. the vehicles, each at its own fractional position: every headlight
 //    beam first, then every body, so a beam never covers the car ahead;
 // 6. the street's front layer (foreground trees);
+// 6b. rain or snow (src/weather.rs) in four layers far to near, in the
+//    foreground over everything;
 // 7. the message box.
 // Buildings hide the moon because they are drawn after it.
 //
@@ -76,7 +78,31 @@ struct Params {
     lightning_info: vec4<f32>,
     // The bolt's segments: x, y one end and z, w the other (device pixels).
     bolt: array<vec4<f32>, 24>,
+    // Precipitation: x what falls (0 nothing, 1 rain, 2 snow), y how hard,
+    // z, w the direction it falls (unit, y down).
+    precip: vec4<f32>,
+    // Per layer, far to near: x, y how far its tiles have moved (cells), z
+    // the tile size (cells), w the share of tiles with a drop.
+    precip_layers: array<vec4<f32>, 4>,
+    // Per layer: x rain's streak length or snow's wobble (cells), y the
+    // streak's half-width or the flake's size (cells; 2 is the spinning
+    // cross), z opacity, w the clock (seconds) that spins the big flakes.
+    precip_looks: array<vec4<f32>, 4>,
 }
+
+// The precipitation tile hash repeats every this many tiles, matching the
+// wrap of each layer's travel (src/weather.rs, WRAP_TILES).
+const PRECIP_WRAP: i32 = 4096;
+// Rain is a little dimmer than the palette's star color; snow is the star
+// color.
+const RAIN_SHADE: f32 = 0.7;
+// A comet drop's tail end, as a share of its head's brightness.
+const RAIN_TAIL: f32 = 0.25;
+// The big flakes' spin: radians per second at their slowest and the extra
+// at their fastest (about one turn every 7-15 s), each flake clockwise or
+// anticlockwise at random (owner, 2026-11-05).
+const FLAKE_SPIN: f32 = 0.42;
+const FLAKE_SPIN_EXTRA: f32 = 0.48;
 
 // Lightning (src/lightning.rs): its color (a cool white, linear); how much
 // it lights clouds near it from inside and the open sky around it; the
@@ -364,6 +390,101 @@ fn bolt_distance(position: vec2<f32>) -> f32 {
     return nearest;
 }
 
+// Three seeded numbers in 0..1 for precipitation tile `id` of layer
+// `layer`.
+fn precip_hash(id: vec2<i32>, layer: u32) -> vec3<f32> {
+    var h = (u32(id.x) * 0x8da6b343u) ^ (u32(id.y) * 0xd8163841u) ^ ((layer + 1u) * 0xcb1ab31fu);
+    h ^= h >> 13u;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15u;
+    let b = (h * 0x27d4eb2du) ^ (h >> 16u);
+    let c = (b * 0x165667b1u) ^ (b >> 15u);
+    return vec3<f32>(f32(h & 0xffffu), f32(b & 0xffffu), f32(c & 0xffffu)) / 65535.0;
+}
+
+// How much of precipitation layer `layer` covers the cell at `cell_pos`
+// (cell units, the cell's center), 0..1. Each tile of the moving grid holds
+// at most one drop: a rain streak along the fall, or a wobbling flake.
+fn precip_alpha(layer: u32, cell_pos: vec2<f32>, pixel: vec2<f32>) -> f32 {
+    let grid = params.precip_layers[layer];
+    let look = params.precip_looks[layer];
+    if (grid.w <= 0.0) {
+        return 0.0;
+    }
+    let tile = max(grid.z, 1.0);
+    let q = cell_pos - grid.xy;
+    let base = vec2<i32>(floor(q / tile));
+    let direction = params.precip.zw;
+    let snow = params.precip.x > 1.5;
+    for (var dy = -1; dy <= 1; dy++) {
+        for (var dx = -1; dx <= 1; dx++) {
+            let id = base + vec2<i32>(dx, dy);
+            let wrapped = ((id % PRECIP_WRAP) + PRECIP_WRAP) % PRECIP_WRAP;
+            let h = precip_hash(wrapped, layer);
+            if (h.x >= grid.w) {
+                continue;
+            }
+            let center = (vec2<f32>(id) + vec2<f32>(0.15 + 0.7 * h.y, 0.15 + 0.7 * h.z)) * tile;
+            var offset = q - center;
+            if (snow) {
+                // A flake drifts side to side as it falls down the screen.
+                // Its size (owner, 2026-11-05): the nearest a 5-cell X, then
+                // one cell, then smaller than a cell, drawn in screen pixels.
+                let wobble = sin(cell_pos.y * 0.18 + h.y * 6.2832) * look.x;
+                let flake = center + grid.xy + vec2<f32>(wobble, 0.0);
+                let from_flake = floor(cell_pos) - floor(flake);
+                if (look.y > 1.5) {
+                    // The big flakes move smoothly and spin slowly (owner,
+                    // 2026-11-05): two crossed bars, 3 cells long and one
+                    // thick (an X or a + as they turn), drawn in screen
+                    // pixels at their exact place, their edges blended
+                    // over a pixel so motion never steps or flickers. The
+                    // wobble follows the flake's own height, not the cell
+                    // being drawn, so it is smooth too.
+                    let cell = params.cell.x;
+                    let smooth_wobble = sin((center.y + grid.y) * 0.18 + h.y * 6.2832) * look.x;
+                    let middle = (center + grid.xy + vec2<f32>(smooth_wobble, 0.0)) * cell;
+                    let turn = select(-1.0, 1.0, h.z < 0.5) * (FLAKE_SPIN + FLAKE_SPIN_EXTRA * h.y);
+                    let angle = h.x * 6.2832 + turn * look.w;
+                    let c = cos(angle);
+                    let s = sin(angle);
+                    let rel = pixel + vec2<f32>(0.5) - middle;
+                    let r = vec2<f32>(c * rel.x + s * rel.y, -s * rel.x + c * rel.y);
+                    let arm = vec2<f32>(1.5, 0.5) * cell;
+                    let bar1 = max(abs(r.x) - arm.x, abs(r.y) - arm.y);
+                    let bar2 = max(abs(r.y) - arm.x, abs(r.x) - arm.y);
+                    let coverage = clamp(0.5 - min(bar1, bar2), 0.0, 1.0);
+                    if (coverage > 0.0) {
+                        return look.z * coverage;
+                    }
+                } else if (look.y >= 1.0) {
+                    if (all(from_flake == vec2<f32>(0.0))) {
+                        return look.z;
+                    }
+                } else {
+                    let cell = params.cell.x;
+                    let size = max(1.0, round(look.y * cell));
+                    let corner = floor(flake * cell);
+                    if (all(pixel >= corner) && all(pixel < corner + vec2<f32>(size))) {
+                        return look.z;
+                    }
+                }
+            } else {
+                // A comet drop (owner, 2026-11-05): one cell wide, its head
+                // (the end it falls toward) brightest and its tail fading
+                // behind it.
+                let along = dot(offset, direction);
+                let across = abs(offset.x * direction.y - offset.y * direction.x);
+                if (abs(along) <= 0.5 * look.x && across <= look.y) {
+                    let toward_head = along / look.x + 0.5;
+                    return look.z * (RAIN_TAIL + (1.0 - RAIN_TAIL) * toward_head * toward_head);
+                }
+            }
+        }
+    }
+    return 0.0;
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -471,6 +592,17 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         color = over(vehicle_sample(slot, true, position.xy), color);
     }
     color = over(sharp_sample(street_front, street_offset, position.xy), color);
+
+    // Rain or snow in the foreground, far layers first, drawn whole cells
+    // at a time like the rest of the pixel art.
+    if (params.precip.x > 0.5) {
+        let shade = select(RAIN_SHADE, 1.0, params.precip.x > 1.5);
+        let drop_color = params.searchlight_color.rgb * shade;
+        let cell_pos = floor(position.xy / cell) + vec2<f32>(0.5);
+        for (var layer = 0u; layer < 4u; layer++) {
+            color = mix(color, drop_color, precip_alpha(layer, cell_pos, floor(position.xy)));
+        }
+    }
 
     // The message box is premultiplied sRGB, blended in sRGB like a browser.
     let local = vec2<i32>(floor(position.xy - params.message.xy));

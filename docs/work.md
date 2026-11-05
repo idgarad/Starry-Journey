@@ -504,6 +504,68 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only).
+- **Rain, snow, and wind, first sprint (owner, 2026-11-05):** "rain and wind so we can complete the storm. We also want snow."
+  - Owner decisions:
+    - the wind sets the angle; precipitation in the foreground only;
+    - 4 layers, scaled slightly, with per-layer density by storm strength;
+    - random weather (next sprint);
+    - wind also drives the clouds;
+    - no searchlights in rain or snow, and lightning only in rainstorms;
+    - nothing on the ground yet.
+  - Plan: this sprint draws precipitation and wind, with the amount following the cloud cover. The next sprint adds weather that drifts on its own, with slow cover cross-fades instead of `C`'s 1.5 s switch.
+  - `weather.rs`:
+    - 4 layers at scales 0.55/0.7/0.85/1.0 with 9-cell tiles at scale 1, at most one seeded drop per tile;
+    - density at full strength 0.36/0.27/0.19/0.13, far to near, scaled by how hard it falls (overcast 0.35, storm 1.0; no precipitation under lighter cover);
+    - rain falls at 220 cells/s and snow at 14 cells/s at scale 1, nearer layers faster;
+    - each layer's travel wraps every 4096 tiles, matching the shader's tile hash, so it never loses precision.
+  - Wind: `wind_for(cover)` runs from 0.5 cells/s (clear) to 9 (storm). Gusts multiply it by 0.55-1.45 with two slow waves (13 s and 5.3 s).
+    - Rain's sideways push is exaggerated ×10 (snow ×1), so a storm slants rain about 22° and snow more.
+    - The clouds' drift scales with wind / 1.5, clamped to 0.1-5×.
+  - Shader: at cell resolution, over everything but the message box. Each pixel checks the 3x3 tiles around it in each layer. Rain is a streak along the fall direction (2.5-6.5 cells long); snow is a 0.35-1-cell flake wobbling sideways as it falls. Colors come from the palette's star color (rain ×0.7).
+  - Rules: searchlights are off while anything falls; lightning needs a storm that is not snowing.
+  - `--precip rain|snow|off` and the `W` key, which names the choice in the message box.
+  - Tuned with snapshots (seed 7, 960x540, storm and overcast, rain and snow):
+    - first pass: storm rain was a solid curtain, so density and opacity came down;
+    - at the real wind, rain was vertical, so its push was raised to 6×, then 10×.
+  - Comet raindrops (owner, 2026-11-05): "they need more of a streak ... a 3 pixel raindrop with a more intense tip and a tail ... comet-style raindrops ... way too dense. It looked more like snow than rain."
+    - Each drop is one cell wide and 3.3-4 cells long (far to near). Brightness runs from 25% at the tail to full at the head, along the fall, falling off with the square of the distance from the head.
+    - Rain has its own density, 0.12/0.09/0.065/0.045 (about a third of before; snow keeps 0.36-0.13), and is brighter (0.6-0.8) now it is sparse.
+    - Checked with snapshots (storm and overcast, and a 4x zoom of the comet shape).
+    - Tests: rain stays one cell wide and 3-4 long at well under half snow's density; far snow flakes are smaller.
+  - Wind direction (owner, 2026-11-05): "the rain direction should match the wind. If the clouds are moving right to left that implies the wind direction":
+    - the clouds drift right to left on screen (their views move right), while the precipitation had been pushed to the right;
+    - `weather::WIND_DIRECTION` (-1) and `wind_now` now give the signed wind, so rain and snow slant and drift left;
+    - the clouds' drift factor uses the wind's strength (`abs`);
+    - a test ties both directions to the clouds' actual on-screen motion.
+  - Snow (owner, 2026-11-05): "at least 75% slower than rain ... the max size of a snowflake is the same as a window size in the city":
+    - snow already fell at 14 cells/s against rain's 220 (94% slower); a build-time check now keeps snow at no more than 25% of rain's speed;
+    - windows are single cells, so every flake is exactly the one cell its center falls in (was up to 2 cells across);
+    - farther flakes read as smaller by being dimmer (0.66-0.95 opacity, far to near);
+    - the side-to-side wobble is unchanged;
+    - checked with snapshots (storm, overcast, and a 4x zoom).
+  - Bigger and smaller flakes (owner, 2026-11-05): "nearer snow flakes to go as big as 5 cell in an X shape ... Could we do a sub-cell size for the smallest flakes?" This replaces the one-cell rule.
+    - `weather::SNOW_FLAKE`, far to near, is 1/3 cell, 2/3 cell, 1 cell, and a 5-cell X (a cell and its four diagonal neighbours).
+    - The far two are squares drawn in screen pixels (`round(size × cell)`, at least one pixel): 1 and 2 pixels at the default 3-pixel cells.
+    - Opacity is 0.75-0.95, far to near.
+    - Checked with snapshots (storm, and a 4x zoom showing the X flakes, single cells, and pixel specks).
+    - Test: flakes grow far to near, the far two are under a cell, then one cell, then the X.
+    - Fewer big flakes (owner, 2026-11-05): "drop the density of the biggest flakes by about 75%". The nearest layer's density is 0.0325 (was 0.13). The rain/snow density test now compares the three farther layers and checks the nearest is a quarter of before.
+    - Smooth, spinning big flakes (owner, 2026-11-05): "the biggest pixels need their motion smoothed out and if possible we should give them a slow rotation either clockwise or anti-clockwise ... we are dealing with subpixels anyway."
+      - The nearest layer's flake is now two crossed bars, 3 cells long and one thick (an X or a + as it turns), drawn in screen pixels at its exact place.
+      - Its edges are blended over one pixel (coverage from the bars' distance), so motion and spin never step.
+      - Its wobble follows the flake's own height, so that is smooth too.
+      - Each flake spins at 0.42-0.9 rad/s (about one turn every 7-15 s), clockwise or anticlockwise at random, from a random start angle.
+      - The spin clock (app seconds, wrapped daily) rides in `precip_looks[k].w`.
+      - The smaller flakes keep their cell or pixel squares.
+      - Checked with snapshots at 40 s and 42 s (a 4x zoom shows the soft, angled crosses). The motion and spin themselves can only be seen running; the shader passes WGSL validation, but there is no automated test of the drawing.
+  - Assumptions to confirm:
+    - rain is the default;
+    - nothing falls from broken or lighter cover.
+  - Tests: precipitation follows cover and mode, far layers smaller/denser/fainter, the slant (snow more than rain, storm rain above 18°), smooth bounded gusts, travel direction, parallax and wrapping, wind driving the clouds, and option parsing.
+  - `cargo test`: PASS, 308 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (snapshots only; motion is not checked).
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.
