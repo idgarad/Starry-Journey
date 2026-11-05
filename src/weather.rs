@@ -1,0 +1,320 @@
+//! Rain, snow, and wind (owner decisions, 2026-11-05: "rain and wind so we
+//! can complete the storm. We also want snow"; precipitation only in the
+//! foreground, in 4 layers scaled slightly, with per-layer density by storm
+//! strength; wind sets the angle it falls at and drives the clouds; no
+//! searchlights while anything falls; lightning only in rainstorms).
+//!
+//! Precipitation is drawn by the GPU every frame (`present.wgsl`) at cell
+//! resolution, so it looks like the rest of the pixel art: each layer is a
+//! grid of tiles moving with the fall and the wind, and each tile holds at
+//! most one seeded drop (a short streak of rain or a flake of snow). This
+//! module keeps each layer's travel (wrapped, so it never loses precision)
+//! and decides its look.
+//!
+//! For now the amount follows the cloud cover (light in overcast, heavy in
+//! storms) and `--precip` / `W` choose rain, snow, or none. A later sprint
+//! lets the weather drift on its own (owner: "Random weather").
+
+use crate::clouds::Cover;
+
+/// Precipitation layers, far to near.
+pub const PRECIP_LAYERS: usize = 4;
+/// Each layer's size (far to near): farther drops are smaller, slower, and
+/// fainter.
+pub const LAYER_SCALE: [f64; PRECIP_LAYERS] = [0.55, 0.7, 0.85, 1.0];
+/// Tile size in cells at scale 1: at most one drop per tile.
+pub const TILE: f64 = 9.0;
+/// Share of tiles holding a drop at full strength, far to near: farther
+/// layers are denser, so the distance reads as a haze of rain.
+pub const DENSITY: [f64; PRECIP_LAYERS] = [0.36, 0.27, 0.19, 0.13];
+/// Fall speeds in cells per second at scale 1.
+pub const RAIN_SPEED: f64 = 220.0;
+pub const SNOW_SPEED: f64 = 14.0;
+/// How much the wind pushes each kind sideways, per cell per second of
+/// wind: rain falls so fast that the real push would leave it vertical, so
+/// it is exaggerated until a storm slants it clearly; snow drifts with
+/// the wind as it is.
+pub const RAIN_WIND_GAIN: f64 = 10.0;
+pub const SNOW_WIND_GAIN: f64 = 1.0;
+/// Tiles after which a layer's travel wraps (the shader's tile hash repeats
+/// with the same period, so wrapping is seamless).
+pub const WRAP_TILES: f64 = 4096.0;
+
+/// What falls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrecipKind {
+    Rain,
+    Snow,
+}
+
+/// What `--precip` and the `W` key choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrecipMode {
+    /// Rain when the clouds call for it (default).
+    #[default]
+    Rain,
+    /// Snow instead.
+    Snow,
+    /// Nothing falls.
+    Off,
+}
+
+impl PrecipMode {
+    /// Parses `rain`, `snow`, or `off` (any case).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message for anything else.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "rain" => Ok(Self::Rain),
+            "snow" => Ok(Self::Snow),
+            "off" => Ok(Self::Off),
+            _ => Err(format!("must be rain, snow, or off, got '{value}'")),
+        }
+    }
+
+    /// The next mode for the `W` key: rain, snow, off, rain...
+    pub fn next(self) -> Self {
+        match self {
+            Self::Rain => Self::Snow,
+            Self::Snow => Self::Off,
+            Self::Off => Self::Rain,
+        }
+    }
+
+    /// The name shown when it changes.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Rain => "Rain",
+            Self::Snow => "Snow",
+            Self::Off => "No precipitation",
+        }
+    }
+
+    /// What falls under `cover`, if anything.
+    pub fn kind_under(self, cover: Cover) -> Option<PrecipKind> {
+        if intensity_for(cover) <= 0.0 {
+            return None;
+        }
+        match self {
+            Self::Rain => Some(PrecipKind::Rain),
+            Self::Snow => Some(PrecipKind::Snow),
+            Self::Off => None,
+        }
+    }
+}
+
+/// How hard it falls under `cover`, 0 (nothing) to 1 (a storm).
+pub fn intensity_for(cover: Cover) -> f64 {
+    match cover {
+        Cover::Clear | Cover::Puffs | Cover::Scattered | Cover::Broken => 0.0,
+        Cover::Overcast => 0.35,
+        Cover::Storm => 1.0,
+    }
+}
+
+/// The steady wind under `cover`, in cells per second (positive blows to
+/// the right): calm in fair weather, strong in storms.
+pub fn wind_for(cover: Cover) -> f64 {
+    match cover {
+        Cover::Clear => 0.5,
+        Cover::Puffs => 1.0,
+        Cover::Scattered => 1.5,
+        Cover::Broken => 2.5,
+        Cover::Overcast => 4.0,
+        Cover::Storm => 9.0,
+    }
+}
+
+/// The wind the clouds' drift speeds were tuned for (the default cover's).
+pub const CLOUD_WIND_REFERENCE: f64 = 1.5;
+
+/// Gusts: a smooth factor of 0.55 to 1.45 on the steady wind at `seconds`,
+/// seeded, changing over several seconds (two slow waves summed). O(1).
+pub fn gust(seed: u32, seconds: f64) -> f64 {
+    let phase = f64::from(seed % 1000) * 0.618;
+    let slow = (seconds * std::f64::consts::TAU / 13.0 + phase).sin();
+    let quick = (seconds * std::f64::consts::TAU / 5.3 + phase * 1.7).sin();
+    1.0 + 0.3 * slow + 0.15 * quick
+}
+
+/// One precipitation layer's state for the shader.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PrecipLayer {
+    /// How far its tiles have moved (cells, wrapped): sideways with the
+    /// wind and down with the fall.
+    pub offset: (f64, f64),
+    /// Tile size in cells.
+    pub tile: f64,
+    /// Share of tiles holding a drop now.
+    pub density: f64,
+    /// Rain: streak length in cells; snow: wobble in cells.
+    pub length: f64,
+    /// Rain: streak half-width; snow: flake radius (cells).
+    pub size: f64,
+    /// Opacity, 0..1.
+    pub alpha: f64,
+}
+
+/// The falling layers' travel, advanced every frame.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Precipitation {
+    offsets: [(f64, f64); PRECIP_LAYERS],
+}
+
+impl Precipitation {
+    /// Moves every layer `dt` seconds with the fall of `kind` and `wind`
+    /// (cells per second). Nearer layers move faster (parallax). O(layers).
+    pub fn advance(&mut self, dt: f64, kind: PrecipKind, wind: f64) {
+        if !dt.is_finite() || dt <= 0.0 || !wind.is_finite() {
+            return;
+        }
+        let speed = fall_speed(kind);
+        let push = wind * wind_gain(kind);
+        for (k, offset) in self.offsets.iter_mut().enumerate() {
+            let scale = LAYER_SCALE[k];
+            let wrap = TILE * scale * WRAP_TILES;
+            offset.0 = (offset.0 + push * scale * dt).rem_euclid(wrap);
+            offset.1 = (offset.1 + speed * scale * dt).rem_euclid(wrap);
+        }
+    }
+
+    /// Each layer's look for `kind` at `intensity` (0..1), far to near.
+    pub fn layers(&self, kind: PrecipKind, intensity: f64) -> [PrecipLayer; PRECIP_LAYERS] {
+        let intensity = intensity.clamp(0.0, 1.0);
+        std::array::from_fn(|k| {
+            let scale = LAYER_SCALE[k];
+            let (length, size, alpha) = match kind {
+                PrecipKind::Rain => (2.5 + 4.0 * scale, 0.25 + 0.3 * scale, 0.12 + 0.25 * scale),
+                PrecipKind::Snow => (0.8 * scale, 0.35 + 0.65 * scale, 0.55 + 0.4 * scale),
+            };
+            PrecipLayer {
+                offset: self.offsets[k],
+                tile: TILE * scale,
+                density: DENSITY[k] * intensity,
+                length,
+                size,
+                alpha,
+            }
+        })
+    }
+}
+
+/// How fast `kind` falls at scale 1, in cells per second.
+pub fn fall_speed(kind: PrecipKind) -> f64 {
+    match kind {
+        PrecipKind::Rain => RAIN_SPEED,
+        PrecipKind::Snow => SNOW_SPEED,
+    }
+}
+
+/// How much the wind pushes `kind` sideways (see [`RAIN_WIND_GAIN`]).
+pub fn wind_gain(kind: PrecipKind) -> f64 {
+    match kind {
+        PrecipKind::Rain => RAIN_WIND_GAIN,
+        PrecipKind::Snow => SNOW_WIND_GAIN,
+    }
+}
+
+/// The direction drops move (and rain streaks lie), as a unit vector with
+/// y down: the wind's push against the fall. Snow slants more than rain.
+pub fn fall_direction(kind: PrecipKind, wind: f64) -> (f64, f64) {
+    let wind = if wind.is_finite() { wind } else { 0.0 };
+    let (x, y) = (wind * wind_gain(kind), fall_speed(kind));
+    let length = (x * x + y * y).sqrt();
+    (x / length, y / length)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precipitation_follows_the_clouds_and_the_mode() {
+        assert_eq!(PrecipMode::Rain.kind_under(Cover::Scattered), None);
+        assert_eq!(
+            PrecipMode::Rain.kind_under(Cover::Storm),
+            Some(PrecipKind::Rain)
+        );
+        assert_eq!(
+            PrecipMode::Snow.kind_under(Cover::Overcast),
+            Some(PrecipKind::Snow)
+        );
+        assert_eq!(PrecipMode::Off.kind_under(Cover::Storm), None);
+        assert!(intensity_for(Cover::Storm) > intensity_for(Cover::Overcast));
+        assert_eq!(PrecipMode::Rain.next().next().next(), PrecipMode::Rain);
+        assert_eq!(PrecipMode::parse("SNOW"), Ok(PrecipMode::Snow));
+        assert!(PrecipMode::parse("hail").is_err());
+    }
+
+    #[test]
+    fn far_layers_are_smaller_denser_and_fainter() {
+        let layers = Precipitation::default().layers(PrecipKind::Rain, 1.0);
+        for pair in layers.windows(2) {
+            let (far, near) = (pair[0], pair[1]);
+            assert!(far.tile < near.tile && far.size < near.size && far.length < near.length);
+            assert!(far.density > near.density && far.alpha < near.alpha);
+        }
+        // Light rain has fewer drops in every layer.
+        let light = Precipitation::default().layers(PrecipKind::Rain, 0.35);
+        assert!(light
+            .iter()
+            .zip(&layers)
+            .all(|(l, h)| l.density < h.density));
+        assert!(Precipitation::default()
+            .layers(PrecipKind::Snow, 0.0)
+            .iter()
+            .all(|l| l.density == 0.0));
+    }
+
+    #[test]
+    fn wind_slants_snow_more_than_rain_and_storms_blow_harder() {
+        let rain = fall_direction(PrecipKind::Rain, 9.0);
+        let snow = fall_direction(PrecipKind::Snow, 9.0);
+        assert!(snow.0 > rain.0, "snow slants more: {snow:?} vs {rain:?}");
+        // A storm slants rain clearly (about 20 degrees from vertical).
+        assert!(rain.0.atan2(rain.1).to_degrees() > 18.0);
+        assert!((rain.0 * rain.0 + rain.1 * rain.1 - 1.0).abs() < 1e-12);
+        assert_eq!(fall_direction(PrecipKind::Rain, 0.0), (0.0, 1.0));
+        assert!(
+            wind_for(Cover::Storm) > wind_for(Cover::Overcast)
+                && wind_for(Cover::Overcast) > wind_for(Cover::Clear)
+        );
+    }
+
+    #[test]
+    fn gusts_vary_smoothly_within_bounds() {
+        let mut previous = gust(3, 0.0);
+        let (mut low, mut high) = (f64::MAX, f64::MIN);
+        for i in 1..6000 {
+            let g = gust(3, f64::from(i) / 60.0);
+            assert!((0.55..=1.45).contains(&g));
+            assert!((g - previous).abs() < 0.01, "smooth at 60 fps");
+            low = low.min(g);
+            high = high.max(g);
+            previous = g;
+        }
+        assert!(high - low > 0.5, "gusts really change: {low}..{high}");
+    }
+
+    #[test]
+    fn layers_move_down_and_with_the_wind_nearer_faster_and_wrap() {
+        let mut p = Precipitation::default();
+        p.advance(0.5, PrecipKind::Rain, 4.0);
+        let layers = p.layers(PrecipKind::Rain, 1.0);
+        assert!(layers[3].offset.1 > layers[0].offset.1 && layers[0].offset.1 > 0.0);
+        assert!(layers[3].offset.0 > layers[0].offset.0 && layers[0].offset.0 > 0.0);
+        for _ in 0..100_000 {
+            p.advance(1.0, PrecipKind::Rain, 9.0);
+        }
+        for (k, layer) in p.layers(PrecipKind::Rain, 1.0).iter().enumerate() {
+            let wrap = TILE * LAYER_SCALE[k] * WRAP_TILES;
+            assert!((0.0..wrap).contains(&layer.offset.0) && (0.0..wrap).contains(&layer.offset.1));
+        }
+        let before = p.clone();
+        p.advance(f64::NAN, PrecipKind::Snow, 1.0);
+        p.advance(-1.0, PrecipKind::Snow, 1.0);
+        assert_eq!(p, before);
+    }
+}

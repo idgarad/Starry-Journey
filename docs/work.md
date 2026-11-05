@@ -504,6 +504,38 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only).
+- **Rain, snow, and wind, first sprint (owner, 2026-11-05):** "rain and wind so we can complete the storm. We also want snow."
+  - Owner decisions:
+    - the wind sets the angle; precipitation in the foreground only;
+    - 4 layers, scaled slightly, with per-layer density by storm strength;
+    - random weather (next sprint);
+    - wind also drives the clouds;
+    - no searchlights in rain or snow, and lightning only in rainstorms;
+    - nothing on the ground yet.
+  - Plan: this sprint draws precipitation and wind, with the amount following the cloud cover. The next sprint adds weather that drifts on its own, with slow cover cross-fades instead of `C`'s 1.5 s switch.
+  - `weather.rs`:
+    - 4 layers at scales 0.55/0.7/0.85/1.0 with 9-cell tiles at scale 1, at most one seeded drop per tile;
+    - density at full strength 0.36/0.27/0.19/0.13, far to near, scaled by how hard it falls (overcast 0.35, storm 1.0; no precipitation under lighter cover);
+    - rain falls at 220 cells/s and snow at 14 cells/s at scale 1, nearer layers faster;
+    - each layer's travel wraps every 4096 tiles, matching the shader's tile hash, so it never loses precision.
+  - Wind: `wind_for(cover)` runs from 0.5 cells/s (clear) to 9 (storm). Gusts multiply it by 0.55-1.45 with two slow waves (13 s and 5.3 s).
+    - Rain's sideways push is exaggerated ×10 (snow ×1), so a storm slants rain about 22° and snow more.
+    - The clouds' drift scales with wind / 1.5, clamped to 0.1-5×.
+  - Shader: at cell resolution, over everything but the message box. Each pixel checks the 3x3 tiles around it in each layer. Rain is a streak along the fall direction (2.5-6.5 cells long); snow is a 0.35-1-cell flake wobbling sideways as it falls. Colors come from the palette's star color (rain ×0.7).
+  - Rules: searchlights are off while anything falls; lightning needs a storm that is not snowing.
+  - `--precip rain|snow|off` and the `W` key, which names the choice in the message box.
+  - Tuned with snapshots (seed 7, 960x540, storm and overcast, rain and snow):
+    - first pass: storm rain was a solid curtain, so density and opacity came down;
+    - at the real wind, rain was vertical, so its push was raised to 6×, then 10×.
+  - Assumptions to confirm:
+    - rain is the default;
+    - nothing falls from broken or lighter cover;
+    - wind blows left to right.
+  - Tests: precipitation follows cover and mode, far layers smaller/denser/fainter, the slant (snow more than rain, storm rain above 18°), smooth bounded gusts, travel direction, parallax and wrapping, wind driving the clouds, and option parsing.
+  - `cargo test`: PASS, 305 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (snapshots only; motion is not checked).
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

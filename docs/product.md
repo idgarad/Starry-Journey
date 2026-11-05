@@ -79,6 +79,12 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - Ground searchlights (`--searchlights`) put on occasional shows of two or three sweeping beams. A show lasts at most 2 minutes; shows are very rare in Endless. Beams pass in front of distant clouds and pool on the near clouds overhead.
   - Lightning in storms (`--lightning auto|off`): mostly flickers inside clouds, some cloud-to-cloud bolts, and rare strikes on the tallest point of the skyline. Flashes are local, soft, and capped: events at least 4 s apart, never more than three flashes a second (WCAG 2.3.1 allows at most three).
   - The sun is planned with a day/night cycle.
+- **Rain, snow, and wind (owner decisions, 2026-11-05):**
+  - Precipitation falls in the foreground only, in four layers of slightly different size: farther layers are smaller, slower, fainter, and denser. Density per layer scales with how hard it falls (light in overcast, heavy in storms).
+  - `--precip rain|snow|off` and `W` choose what falls.
+  - The wind gusts, slants the fall (snow more than rain), and drives the clouds' drift.
+  - Searchlights are never on while anything falls. Lightning comes only in rainstorms; snowstorms are quiet.
+  - Planned next: weather that drifts on its own over time (clouds, precipitation, and wind together).
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
@@ -87,7 +93,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
 These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are deferred until the rebuild baseline is complete and each one is separately approved:
 
 - Natural landscape below a wave-shaped city boundary, distant mountains and forests with palette-tinted depth layers.
-- Weather (rain, wind) and seasonal variation. Rule for rain (owner, 2026-11-05): searchlights are never on while it rains.
+- Seasonal variation.
 - An automatic day/night cycle with a sunrise and sunset (sun on the sky layer, like the moon), including sunset sky gradients.
 - An Atari palette.
 - Android as a later target.

@@ -350,6 +350,10 @@ pub struct SkyClouds {
     /// Snapshot mode: keyframe intervals ignore render times, so a run is
     /// the same on any machine (the caller waits for each keyframe).
     lockstep: bool,
+    /// How hard the wind blows compared with the one the layers' drift
+    /// speeds were tuned for (owner, 2026-11-05: wind "also drives
+    /// clouds").
+    wind_factor: f64,
 }
 
 impl SkyClouds {
@@ -371,6 +375,7 @@ impl SkyClouds {
             next_generation: 0,
             clock: 0.0,
             lockstep: false,
+            wind_factor: 1.0,
             layers: std::array::from_fn(|_| LayerState {
                 urgent: true,
                 ..LayerState::default()
@@ -424,6 +429,14 @@ impl SkyClouds {
                 || (layer.queued.is_none() && layer.fade(self.clock) >= 1.0);
             layer.pending && !arrived && needed
         })
+    }
+
+    /// Sets how hard the wind blows (1 is the tuned drift); the layers'
+    /// drift speeds scale with it, between a tenth and five times.
+    pub fn set_wind_factor(&mut self, factor: f64) {
+        if factor.is_finite() {
+            self.wind_factor = factor.clamp(0.1, 5.0);
+        }
     }
 
     /// Seconds of cloud life so far.
@@ -555,7 +568,7 @@ impl SkyClouds {
         for band in 0..CLOUD_LAYERS {
             let interval = effective_interval(self.cover, band, self.render_seconds(band), speed);
             let layer = &mut self.layers[band];
-            layer.wind += LAYER_WIND[band] * speed.max(0.0) * step;
+            layer.wind += LAYER_WIND[band] * self.wind_factor * speed.max(0.0) * step;
             if camera.is_finite() {
                 layer.view = layer.wind + LAYER_PARALLAX[band] * camera;
             }
@@ -779,6 +792,25 @@ mod tests {
             (sky.clock() - 10.0).abs() < 1e-9,
             "the cloud clock runs with the speed"
         );
+    }
+
+    #[test]
+    fn stronger_wind_drifts_the_layers_faster() {
+        let vga = palette_by_key("vga").unwrap();
+        let mut calm = SkyClouds::new(3, 40, 30, Cover::Broken, vga);
+        let mut gale = SkyClouds::new(3, 40, 30, Cover::Broken, vga);
+        gale.set_wind_factor(4.0);
+        gale.set_wind_factor(f64::NAN);
+        for _ in 0..30 {
+            calm.advance(1.0 / 30.0, 1.0, 0.0, None);
+            gale.advance(1.0 / 30.0, 1.0, 0.0, None);
+        }
+        for band in 0..CLOUD_LAYERS {
+            assert!(
+                (gale.view(band) - 4.0 * calm.view(band)).abs() < 1e-9,
+                "{band}"
+            );
+        }
     }
 
     #[test]
