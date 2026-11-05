@@ -549,6 +549,7 @@
     - Opacity is 0.75-0.95, far to near.
     - Checked with snapshots (storm, and a 4x zoom showing the X flakes, single cells, and pixel specks).
     - Test: flakes grow far to near, the far two are under a cell, then one cell, then the X.
+    - Fewer big flakes (owner, 2026-11-05): "drop the density of the biggest flakes by about 75%". The nearest layer's density is 0.0325 (was 0.13). The rain/snow density test now compares the three farther layers and checks the nearest is a quarter of before.
   - Assumptions to confirm:
     - rain is the default;
     - nothing falls from broken or lighter cover.

@@ -24,9 +24,11 @@ pub const PRECIP_LAYERS: usize = 4;
 pub const LAYER_SCALE: [f64; PRECIP_LAYERS] = [0.55, 0.7, 0.85, 1.0];
 /// Tile size in cells at scale 1: at most one drop per tile.
 pub const TILE: f64 = 9.0;
-/// Share of tiles holding a drop at full strength, far to near: farther
-/// layers are denser, so the distance reads as a haze of rain.
-pub const DENSITY: [f64; PRECIP_LAYERS] = [0.36, 0.27, 0.19, 0.13];
+/// Share of tiles holding a snowflake at full strength, far to near:
+/// farther layers are denser, so the distance reads as a haze. The nearest
+/// layer's big X flakes are kept sparse (owner, 2026-11-05: "drop the
+/// density of the biggest flakes by about 75%"; was 0.13).
+pub const DENSITY: [f64; PRECIP_LAYERS] = [0.36, 0.27, 0.19, 0.0325];
 /// Rain is far sparser than snow: a few comet drops read as rain, many as
 /// a speckle (owner, 2026-11-05: "way too dense. It looked more like snow
 /// than rain"). Share of tiles with a drop at full strength, far to near.
@@ -333,7 +335,13 @@ mod tests {
             p.layers(PrecipKind::Rain, 1.0),
             p.layers(PrecipKind::Snow, 1.0),
         );
-        for (r, s) in rain.iter().zip(&snow) {
+        // Rain is far sparser than snow in the three farther layers; the
+        // nearest snow layer's big X flakes are sparser still.
+        assert!(
+            (snow[3].density - 0.25 * 0.13).abs() < 1e-12,
+            "a quarter of before"
+        );
+        for (r, s) in rain.iter().zip(&snow).take(3) {
             assert!(
                 r.density * 2.5 < s.density,
                 "{} vs {}",
