@@ -735,6 +735,11 @@ struct Renderer {
     last_draw: std::cell::Cell<Option<f64>>,
     /// When the CRT power-on started (switching into a CRT palette).
     power_on_start: Option<f64>,
+    /// The Green code rain's glyph atlas (`starry_journey::rain`).
+    glyph_atlas: wgpu::Texture,
+    /// The Green code rain's clock (seconds): independent of speed, at
+    /// most 1/30 second a frame, frozen when paused or not showing.
+    rain_clock: std::cell::Cell<f64>,
     /// The scene drawn before the display effects (surface-sized).
     scene_texture: wgpu::Texture,
     /// Palette display effects on (`--effects`, `D`).
@@ -1117,13 +1122,17 @@ impl Renderer {
                 surface_format,
             )
         });
+        let glyph_atlas = create_glyph_atlas(&device, &queue);
         let post_bind_groups = create_post_bind_groups(
             &device,
             &post_layout,
-            &scene_texture,
-            &message_texture,
+            &PostTextures {
+                scene: &scene_texture,
+                message: &message_texture,
+                history: &history_textures,
+                glyphs: &glyph_atlas,
+            },
             &post_params,
-            &history_textures,
         );
         let mut renderer = Self {
             surface,
@@ -1135,6 +1144,8 @@ impl Renderer {
             history_parity: std::cell::Cell::new(0),
             last_draw: std::cell::Cell::new(None),
             power_on_start: None,
+            glyph_atlas,
+            rain_clock: std::cell::Cell::new(0.0),
             scene_texture,
             effects: options.effects,
             device,
@@ -1503,6 +1514,13 @@ impl Renderer {
         self.update_searchlights(now);
         self.update_lightning(now);
         self.update_ambience(now, motion_dt);
+        // The Green code rain's clock: real frame time (not the speed
+        // setting), only while the rain shows and Endless is not paused.
+        let raining = display_effect(palette_at(self.palette_index).key, self.effects) == 6.0;
+        if raining && !self.paused {
+            self.rain_clock
+                .set(advance_rain_clock(self.rain_clock.get(), dt));
+        }
         let city_changed = self.scene.view.take_dirty() || finished;
         if city_changed {
             self.scene.compose_city();
@@ -1996,10 +2014,13 @@ impl Renderer {
         self.post_bind_groups = create_post_bind_groups(
             &self.device,
             &self.post_layout,
-            &self.scene_texture,
-            &self.message_texture,
+            &PostTextures {
+                scene: &self.scene_texture,
+                message: &self.message_texture,
+                history: &self.history_textures,
+                glyphs: &self.glyph_atlas,
+            },
             &self.post_params,
-            &self.history_textures,
         );
     }
 
@@ -2018,7 +2039,7 @@ impl Renderer {
     /// The display effect for the current palette (see post.wgsl), and the
     /// pass's parameters: neighbor reach, scanline period and dark rows
     /// from the display scale, and the Game Boy gap from the cell size.
-    fn post_params(&self) -> [f32; 16] {
+    fn post_params(&self) -> [f32; 20] {
         let effect = display_effect(palette_at(self.palette_index).key, self.effects);
         // Trails fade by half every half-life, however often frames come.
         // A first frame, or one long after the last, keeps nothing.
@@ -2057,6 +2078,10 @@ impl Renderer {
             keep(PHOSPHOR_HALF_LIFE),
             power_on as f32,
             (now / BEAM_PERIOD).rem_euclid(1.0) as f32,
+            self.rain_clock.get() as f32,
+            self.scale_factor.max(0.5) as f32,
+            0.0,
+            0.0,
         ]
     }
 
@@ -2879,8 +2904,56 @@ fn display_effect(key: &str, effects: bool) -> f32 {
     }
 }
 
-/// Bytes of the display-effects parameters (post.wgsl): four vec4s.
-const POST_PARAMS_BYTES: u64 = 4 * 16;
+/// Bytes of the display-effects parameters (post.wgsl): five vec4s.
+const POST_PARAMS_BYTES: u64 = 5 * 16;
+
+/// The longest step the Green code rain's clock takes in one frame
+/// (Rebuild Prompt: "advances at most 1/30 second per visible frame").
+const RAIN_MAX_STEP: f64 = 1.0 / 30.0;
+
+/// The Green code rain's clock after a frame `elapsed` seconds after the
+/// last: it advances by at most [`RAIN_MAX_STEP`], so a stall or a first
+/// frame (infinite `elapsed`) never makes the rain jump. O(1).
+fn advance_rain_clock(clock: f64, elapsed: f64) -> f64 {
+    clock + elapsed.clamp(0.0, RAIN_MAX_STEP)
+}
+
+/// The Green code rain's glyph atlas (`starry_journey::rain::atlas`) as a
+/// one-channel texture, uploaded once.
+fn create_glyph_atlas(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+    let (width, height) = starry_journey::rain::ATLAS_SIZE;
+    let size = wgpu::Extent3d {
+        width: width as u32,
+        height: height as u32,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Green code rain glyphs"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &starry_journey::rain::atlas(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width as u32),
+            rows_per_image: Some(height as u32),
+        },
+        size,
+    );
+    texture
+}
 
 /// The scene texture the display-effects pass reads: surface-sized, in the
 /// surface's format.
@@ -2963,6 +3036,7 @@ fn create_post_pipeline(
                 count: None,
             },
             texture(3),
+            texture(4),
         ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -3006,21 +3080,28 @@ fn create_post_pipeline(
     (pipeline, layout)
 }
 
+/// The textures the display-effects pass reads.
+struct PostTextures<'a> {
+    scene: &'a wgpu::Texture,
+    message: &'a wgpu::Texture,
+    history: &'a [wgpu::Texture; 2],
+    glyphs: &'a wgpu::Texture,
+}
+
 /// The display-effects bind groups, one per history parity (group `i`
 /// reads history `i`).
 fn create_post_bind_groups(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    scene: &wgpu::Texture,
-    message: &wgpu::Texture,
+    textures: &PostTextures,
     params: &wgpu::Buffer,
-    history: &[wgpu::Texture; 2],
 ) -> [wgpu::BindGroup; 2] {
     let view =
         |texture: &wgpu::Texture| texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let (scene, message) = (view(scene), view(message));
+    let (scene, message) = (view(textures.scene), view(textures.message));
+    let glyphs = view(textures.glyphs);
     [0, 1].map(|i| {
-        let previous = view(&history[i]);
+        let previous = view(&textures.history[i]);
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Display effect inputs"),
             layout,
@@ -3040,6 +3121,10 @@ fn create_post_bind_groups(
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(&previous),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&glyphs),
                 },
             ],
         })
@@ -3456,6 +3541,15 @@ mod tests {
                 palette.key
             );
         }
+    }
+
+    #[test]
+    fn rain_clock_steps_at_most_a_thirtieth_of_a_second() {
+        // Rebuild Prompt: "advances at most 1/30 second per visible frame".
+        assert!((advance_rain_clock(1.0, 1.0 / 60.0) - (1.0 + 1.0 / 60.0)).abs() < 1e-12);
+        assert!((advance_rain_clock(1.0, 5.0) - (1.0 + RAIN_MAX_STEP)).abs() < 1e-12);
+        assert!((advance_rain_clock(0.0, f64::INFINITY) - RAIN_MAX_STEP).abs() < 1e-12);
+        assert_eq!(advance_rain_clock(2.0, 0.0), 2.0);
     }
 
     #[test]

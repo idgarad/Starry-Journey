@@ -14,7 +14,8 @@
 //                vignette
 //   5 Game Boy   LCD grid and ghosting (always, not the Display Effects
 //                switch)
-//   6 Green      phosphor persistence, vignette, text bloom
+//   6 Green      falling code rain, phosphor persistence, vignette, text
+//                bloom
 //   7 EGA        scanlines, vignette (owner: "get those on the EGA and VGA
 //   8 VGA        palette too"; the spec leaves them unprocessed)
 //   0 none       Classic, ArtDeco, Parchment, or effects switched off
@@ -39,12 +40,18 @@ struct PostParams {
     // CRT power-on's progress (1 when done); w: where the Amber and Green
     // refresh beam is, 0 at the top of the screen to 1 at the bottom.
     history: vec4<f32>,
+    // x: the Green code rain's clock in seconds; y: device pixels per CSS
+    // pixel (the display scale).
+    rain: vec4<f32>,
 }
 
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var message_box: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> post: PostParams;
 @group(0) @binding(3) var previous: texture_2d<f32>;
+// The Green code rain's 128x160 glyph atlas (src/rain.rs): 16 columns of
+// 8x16 slots, 157 GNU Unifont glyphs.
+@group(0) @binding(4) var glyphs: texture_2d<f32>;
 
 // Color bleed is stronger than the Rebuild Prompt's (owner, 2026-11-05:
 // "color bleed effects in some of palettes could be a little stronger"):
@@ -74,6 +81,22 @@ const PHOSPHOR_BLOOM: f32 = 0.05;
 const BEAM_BLOOM: f32 = 0.12;
 // Phosphor bloom around Amber and Green message text.
 const TEXT_BLOOM: f32 = 0.9;
+// The Green code rain (Rebuild Prompt, "Green"): cells in CSS pixels, the
+// glyph's offset in its cell, and the share of columns that rain.
+const RAIN_CELL: vec2<f32> = vec2<f32>(18.0, 20.0);
+const RAIN_GLYPH_OFFSET: vec2<i32> = vec2<i32>(5, 2);
+const RAIN_COLUMNS: f32 = 0.42;
+const RAIN_GLYPHS: f32 = 157.0;
+// Tails last this many rows; the wrap adds this many rows below the screen.
+const RAIN_TAIL: f32 = 9.0;
+const RAIN_WRAP: f32 = 12.0;
+// Tails are the palette's green (#33ff66) and heads pale green, linear.
+const RAIN_TAIL_COLOR: vec3<f32> = vec3<f32>(0.0331, 1.0, 0.1329);
+const RAIN_HEAD_COLOR: vec3<f32> = vec3<f32>(0.4, 1.0, 0.45);
+// The screen blend's heaviest weight, and how much the scene darkens
+// under a glyph and in its one-pixel outline.
+const RAIN_MAX_WEIGHT: f32 = 0.7;
+const RAIN_DARKEN: f32 = 0.6;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -175,6 +198,83 @@ fn box_texel(local: vec2<i32>) -> vec4<f32> {
     return textureLoad(message_box, local, 0);
 }
 
+// The spec's hash: `fract(sin(value*12.9898)*43758.5453)`.
+fn rain_hash(value: f32) -> f32 {
+    return fract(sin(value * 12.9898) * 43758.5453);
+}
+
+// Glyph `index`'s bit (0 or 1) at `local` (pixels in its 8x16 slot; 0
+// outside it).
+fn glyph_bit(index: u32, local: vec2<i32>) -> f32 {
+    if (any(local < vec2<i32>(0)) || local.x >= 8 || local.y >= 16) {
+        return 0.0;
+    }
+    let slot = vec2<i32>(i32(index % 16u) * 8, i32(index / 16u) * 16);
+    return textureLoad(glyphs, slot + local, 0).r;
+}
+
+// How strongly rain cell `cell` (column, row) is lit, 0 when it is not:
+// 1 at a column's head, its tail fading `0.5*(1-d/9)^2` over the nine rows
+// above. Heads fall 3 to 6 rows a second by column, wrapping over the
+// visible rows plus 12.
+fn rain_strength(cell: vec2<f32>, rows: f32) -> f32 {
+    let column = cell.x + 1.0;
+    if (rain_hash(column) >= RAIN_COLUMNS) {
+        return 0.0;
+    }
+    let phase = rain_hash(column + 0.371);
+    let speed = 3.0 + 3.0 * phase;
+    let span = rows + RAIN_WRAP;
+    let head = floor((post.rain.x * speed + rain_hash(column + 0.713) * span) % span);
+    let d = head - cell.y;
+    if (d < 0.0 || d >= RAIN_TAIL) {
+        return 0.0;
+    }
+    if (d == 0.0) {
+        return 1.0;
+    }
+    let fade = 1.0 - d / RAIN_TAIL;
+    return 0.5 * fade * fade;
+}
+
+// The Green code rain over the encoded sRGB `color` at device position
+// `position`; returns encoded sRGB. Only pixels in a lit cell change: the
+// scene darkens under the glyph and in a one-pixel outline round it, then
+// the glyph (alternate rows 25% darker) and a small halo are screen-blended
+// on in linear light.
+fn code_rain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
+    let scale = max(post.rain.y, 0.5);
+    let css = position / scale;
+    let cell = floor(css / RAIN_CELL);
+    let rows = ceil(max(post.lines.w, 1.0) / scale / RAIN_CELL.y);
+    let strength = rain_strength(cell, rows);
+    if (strength <= 0.0) {
+        return color;
+    }
+    let pick = rain_hash(cell.x * 31.7 + cell.y * 1.913 + 0.37);
+    let index = u32(min(floor(pick * RAIN_GLYPHS), RAIN_GLYPHS - 1.0));
+    let local = vec2<i32>(floor(css - cell * RAIN_CELL)) - RAIN_GLYPH_OFFSET;
+    let bit = glyph_bit(index, local);
+    // The four axial neighbors one and two pixels away (written out: a
+    // loop over a vector array fails to compile on DX12, error X3500).
+    let dx = vec2<i32>(1, 0);
+    let dy = vec2<i32>(0, 1);
+    let near = glyph_bit(index, local + dx) + glyph_bit(index, local - dx) + glyph_bit(index, local + dy) + glyph_bit(index, local - dy);
+    let far = glyph_bit(index, local + 2 * dx) + glyph_bit(index, local - 2 * dx) + glyph_bit(index, local + 2 * dy) + glyph_bit(index, local - 2 * dy);
+    let outline = max(bit, min(near, 1.0));
+    var linear = decode_srgb(color);
+    // Darkening scales with the scene's own brightness (a multiply), so
+    // dark sky barely changes and lit windows behind a glyph give way.
+    linear *= 1.0 - RAIN_DARKEN * outline * min(strength * 2.0, 1.0);
+    let row_shade = select(1.0, 0.75, (local.y & 1) == 1);
+    let halo_glow = min(0.045 * near + 0.015 * far, 0.12) * (1.0 - bit);
+    let emission = bit * row_shade + halo_glow;
+    let weight = min(strength * emission, 1.0) * RAIN_MAX_WEIGHT;
+    let tint = mix(RAIN_TAIL_COLOR, RAIN_HEAD_COLOR, select(0.0, 1.0, strength >= 1.0));
+    linear = vec3<f32>(1.0) - (vec3<f32>(1.0) - linear) * (vec3<f32>(1.0) - tint * weight);
+    return encode_srgb(linear);
+}
+
 struct Output {
     // What the screen shows.
     @location(0) screen: vec4<f32>,
@@ -189,6 +289,11 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> Output {
     let effect = u32(post.effect.x);
     let reach = max(i32(post.effect.y), 1);
     var color = source(p);
+    // Green: the falling code rain, before persistence so the phosphor
+    // keeps a trace of each glyph as the heads move on.
+    if (effect == 6u) {
+        color = code_rain(color, position.xy);
+    }
     // Ghosting (Game Boy's slow LCD) and phosphor persistence (Amber,
     // Green), from the previous frame.
     let before = encode_srgb(textureLoad(previous, p, 0).rgb);

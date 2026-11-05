@@ -32,7 +32,7 @@ cargo run
 | `R` | New city (construction restarts) |
 | `C` | Cycle the cloud cover (its name shows in the message box) |
 | `W` | Cycle what falls in showers: rain, snow, or nothing |
-| `D` | Toggle the palette display effects (scanlines, color bleed, RGB stripes, phosphor trails, convergence error, vignette, CRT power-on; the Game Boy grid and ghosting always stay) |
+| `D` | Toggle the palette display effects (scanlines, color bleed, RGB stripes, phosphor trails, Green's code rain, convergence error, vignette, CRT power-on; the Game Boy grid and ghosting always stay) |
 | `Shift+S` | Test key: a shooting star now |
 | `Shift+E` | Test key: a police car now (once traffic runs) |
 | `Shift+U` | Test key: a utility truck now (once traffic runs) |
@@ -137,7 +137,8 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 
 | Path | Contents |
 | --- | --- |
-| [src/post.wgsl](src/post.wgsl) | The display-effects pass: each palette's monitor effect (scanlines and color for Amber, Apple II, C64, CGA, EGA, and VGA; the Game Boy grid and ghosting; phosphor trails, convergence error, vignette, and the CRT power-on), then the message box. |
+| [src/post.wgsl](src/post.wgsl) | The display-effects pass: each palette's monitor effect (scanlines and color for Amber, Apple II, C64, CGA, EGA, and VGA; the Game Boy grid and ghosting; Green's falling code rain; phosphor trails, convergence error, vignette, and the CRT power-on), then the message box. |
+| [src/rain.rs](src/rain.rs), [src/rain_glyph_data.rs](src/rain_glyph_data.rs) | The Green code rain's 128 x 160 glyph atlas, built from 157 GNU Unifont 16.0.04 bitmaps (SIL OFL 1.1, notice in `src/fonts/unifont-OFL.txt`). |
 | [src/main.rs](src/main.rs), [src/present.wgsl](src/present.wgsl) | Window, input, fullscreen/monitor handling, and GPU presentation of the city buffer; also snapshot mode's offscreen rendering on simulated time. |
 | [src/snapshot.rs](src/snapshot.rs) | Snapshot mode helpers: a dependency-free PNG writer and run folder names. |
 | [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |

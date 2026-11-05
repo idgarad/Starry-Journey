@@ -45,7 +45,7 @@ Write the message as what the commit *does*: `feat: add building generator`, not
 ## To-do (decisions waiting on you)
 
 - [ ] **Native UI for controls:** an immediate-mode library such as `egui` (full toolbar, dial, message editing) or keyboard-only controls. The message box itself is done (fontdue + Noto Sans), but editing it in the app waits on this decision.
-- [ ] **Green Terminal glyphs:** source GNU Unifont 16.0.04 bitmaps (SIL OFL 1.1 licence) before the display-effects step.
+- [x] **Green Terminal glyphs:** GNU Unifont 16.0.04 downloaded (owner's choice, 2026-11-05); 157 glyphs bundled with the OFL 1.1 notice.
 - [ ] **Background music:** pick an audio crate and decide on controls (mute, volume, track choice). Deferred until the rebuild baseline is done.
 - [ ] **AGENTS.md process:** decide whether to adopt the rest of it for this project (`Docs/` capitalization, backlog, decision log) or keep the lighter `docs/work.md` approach.
 - [ ] **Battle-station easter egg:** it's a homage to the Death Star (Lucasfilm's design), and its radio calls quote two short lines from the film. Decide whether it stays on by default if the repo or builds go public.

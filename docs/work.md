@@ -744,6 +744,31 @@
   - `cargo test`: PASS, 326 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Green Terminal code rain (owner, 2026-11-05: "lets move on to finish green's glyphs"; branch `feature/green-rain`):**
+  - Glyphs: the owner chose to download GNU Unifont. The agent fetched Unifont 16.0.04 (`unifont-16.0.04.hex.gz`) from unifoundry.com and extracted the spec's 157 entries (U+0021..007E, U+FF61..FF9F; all 8 pixels wide, checked) into [src/rain_glyph_data.rs](../src/rain_glyph_data.rs) as 16 bytes each, MSB left. The extraction script lives outside the repo; the file says it is generated.
+  - Licence: [src/fonts/unifont-OFL.txt](../src/fonts/unifont-OFL.txt) is Unifont's own `OFL-1.1.txt` with an attribution header (Roman Czyborra, Paul Hardy, and contributors; Unifont is dual-licensed OFL 1.1 / GPLv2+ with the font embedding exception, used here under OFL 1.1).
+  - [src/rain.rs](../src/rain.rs) packs them into the spec's 128 x 160 atlas (16 columns of 8 x 16 slots, the last 3 empty), uploaded once as an `R8Unorm` texture at binding 4 of the display-effects pass. No font is loaded at run time.
+  - [src/post.wgsl](../src/post.wgsl) `code_rain`, effect 6 only, as the spec gives it:
+    - 18 x 20 CSS-pixel cells (device pixels / display scale), glyph at (5, 2);
+    - 42% of columns rain, using the spec's `fract(sin(v*12.9898)*43758.5453)` hash;
+    - heads fall 3 to 6 rows a second by column, wrapping over the visible rows + 12; tails 9 rows at `0.5*(1-d/9)^2`;
+    - glyphs stable by cell; heads pale green, tails the palette green;
+    - the scene darkens under the glyph and in a 1-pixel outline (a multiply, so it scales with the scene's own brightness), then a linear-light screen blend with weight at most 0.7;
+    - alternate glyph rows 25% darker; halo of 4 neighbors at 1 CSS px x 0.045 and 4 at 2 px x 0.015, capped at 0.12;
+    - no whole-city dimming or pulses.
+  - The rain is drawn before phosphor persistence, so it also gets Amber/Green's persistence, beam, and bloom. The message box stays clear of it.
+  - Clock: `rain_clock` advances in `advance()` by real frame time, at most 1/30 s a frame (`advance_rain_clock`). It ignores the speed setting and freezes when paused, when effects are off, in other palettes, and when the window isn't redrawing. It first advanced at draw time, but snapshot mode only draws on capture frames, so the rain barely moved there.
+  - Fix during the sprint: a loop over a `vec2` array in the shader failed to compile on DX12 (`error X3500: array reference cannot be used as an l-value`) and crashed the NVIDIA Vulkan driver. The neighbors are now written out. `naga` validation passed both ways, so only a real snapshot run caught it.
+  - Deviations, documented:
+    - the darkening strength (60% at full) and the head color are the agent's choices; the spec gives neither number;
+    - the halo stays inside each cell (it reaches 2 px; the glyph leaves 5 px and 2 px of margin);
+    - there is no Canvas fallback, so no GPU/CPU differences;
+    - reduced motion isn't implemented yet (backlog).
+  - Checked with snapshots (seed 7, 1280 x 720): sparse columns across the whole scene; tails fade upward; heads pale; alternate rows visible in a 4x crop; a strip at 30 s, 30.25 s, ... 31 s shows a head stepping タ → Q → ヤ → H.
+  - Tests: glyph order and count; atlas slot placement against the bitmaps, MSB left; empty padding slots; the clock's 1/30 s cap. Both shaders validate.
+  - `cargo test`: PASS, 330 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.
