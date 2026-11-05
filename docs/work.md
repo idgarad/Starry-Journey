@@ -639,6 +639,16 @@
   - `cargo test`: PASS, 320 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **The rest of the test keys (owner, 2026-11-05):** "on-demand strikes might make diagnosing and tuning the lightning easier."
+  - `Shift+L` strike, `Shift+B` cloud-to-cloud bolt, `Shift+I` in-cloud flicker, and `Shift+R` shower, also as `--events` names: `strike`, `bolt`, `flicker`, `shower`.
+  - `lightning::make_event` now builds one event from a random stream. The schedule uses it with the same draws, so seeds keep their lightning. `forced_event` builds one from the moment it was asked for, so each is new. A forced event ignores the cover and `--lightning`, for tuning.
+  - A forced shower eases in at once for the usual 1 + 5 minutes, at the cover's strength or at least overcast's (0.35), so one shows under light cover too.
+  - `--snapshot` and `--events` moments accept decimal seconds (`30.15s`). A flash rises over 0.08 s from its start, so a frame at the exact moment of a forced event shows nothing.
+  - Checked with snapshots (seed 7, broken, 960x540): a strike on the tallest spire at 30.15 s, a cloud-to-cloud bolt at 40.15 s, an in-cloud flicker at 50.15 s, and a forced shower under scattered cloud 65 s after it began. The bolts are still smooth lines; the owner wants them more pixel-art next.
+  - Tests: forced events come at once in their kind and differ; the schedule is unchanged; event names and decimal moments parse; bad moments are rejected.
+  - `cargo test`: PASS, 321 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

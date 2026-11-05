@@ -157,37 +157,7 @@ pub fn events_in(seed: u32, slot: i64) -> Vec<Event> {
         } else {
             BoltKind::Strike
         };
-        // One to three flashes, each fainter than the first, at least
-        // MIN_FLASH_SPACING apart.
-        let count = 1 + (next() * 2.99) as usize;
-        let (lo, hi) = match kind {
-            BoltKind::InCloud => (0.45, 0.75),
-            BoltKind::CloudToCloud => (0.75, 0.95),
-            BoltKind::Strike => (0.9, 1.0),
-        };
-        let at = (0.1 + 0.8 * next(), 0.1 + 0.3 * next());
-        let mut flashes = vec![(0.0, lo + (hi - lo) * next(), at.0)];
-        for _ in 1..count {
-            let last = flashes.last().map_or(0.0, |(at, _, _)| *at);
-            let time = last + MIN_FLASH_SPACING + 0.25 * next();
-            let peak = flashes[0].1 * (0.5 + 0.4 * next());
-            // Nearby along the cloud band.
-            let x = (at.0 + 0.4 * (next() - 0.5)).clamp(0.0, 1.0);
-            flashes.push((time, peak, x));
-        }
-        let span = (0.15 + 0.25 * next()) * if next() < 0.5 { -1.0 } else { 1.0 };
-        let to = (
-            (at.0 + span).clamp(0.02, 0.98),
-            (at.1 + 0.15 * (next() - 0.5)).clamp(0.05, 0.5),
-        );
-        let event = Event {
-            start: time,
-            kind,
-            flashes,
-            at,
-            to,
-            seed: (next() * f64::from(u32::MAX)) as u32,
-        };
+        let event = make_event(&mut next, time, kind);
         if event.end() > slot_start + SLOT {
             break;
         }
@@ -195,6 +165,52 @@ pub fn events_in(seed: u32, slot: i64) -> Vec<Event> {
         events.push(event);
     }
     events
+}
+
+/// One event of `kind` starting at `start`, its flashes, place, and bolt
+/// drawn from `next`.
+fn make_event(next: &mut impl FnMut() -> f64, start: f64, kind: BoltKind) -> Event {
+    // One to three flashes, each fainter than the first, at least
+    // MIN_FLASH_SPACING apart.
+    let count = 1 + (next() * 2.99) as usize;
+    let (lo, hi) = match kind {
+        BoltKind::InCloud => (0.45, 0.75),
+        BoltKind::CloudToCloud => (0.75, 0.95),
+        BoltKind::Strike => (0.9, 1.0),
+    };
+    let at = (0.1 + 0.8 * next(), 0.1 + 0.3 * next());
+    let mut flashes = vec![(0.0, lo + (hi - lo) * next(), at.0)];
+    for _ in 1..count {
+        let last = flashes.last().map_or(0.0, |(at, _, _)| *at);
+        let time = last + MIN_FLASH_SPACING + 0.25 * next();
+        let peak = flashes[0].1 * (0.5 + 0.4 * next());
+        // Nearby along the cloud band.
+        let x = (at.0 + 0.4 * (next() - 0.5)).clamp(0.0, 1.0);
+        flashes.push((time, peak, x));
+    }
+    let span = (0.15 + 0.25 * next()) * if next() < 0.5 { -1.0 } else { 1.0 };
+    let to = (
+        (at.0 + span).clamp(0.02, 0.98),
+        (at.1 + 0.15 * (next() - 0.5)).clamp(0.05, 0.5),
+    );
+    Event {
+        start,
+        kind,
+        flashes,
+        at,
+        to,
+        seed: (next() * f64::from(u32::MAX)) as u32,
+    }
+}
+
+/// An event of `kind` asked for by hand at `start` (the Shift test keys, or
+/// `--events`): its place and bolt are drawn from the moment, so each is
+/// new. It ignores the cover and `--lightning`, for testing and tuning.
+pub fn forced_event(seed: u32, kind: BoltKind, start: f64) -> Event {
+    let bits = start.to_bits();
+    let mut rng = Mulberry32::new(seed ^ 0x0f0c_e000u32.wrapping_add((bits ^ (bits >> 32)) as u32));
+    let mut next = || rng.next_f64();
+    make_event(&mut next, start, kind)
 }
 
 /// The event lighting the sky at `seconds`, if any.
@@ -373,6 +389,23 @@ mod tests {
                 .any(|s| (s[0].0 - 100.0 - (s[0].1 - 50.0) * 40.0 / 350.0).abs() > 2.0));
         }
         assert!(bolt_path(1, (5.0, 5.0), (5.0, 5.0)).is_empty());
+    }
+
+    #[test]
+    fn forced_events_come_at_once_in_their_kind_and_differ() {
+        for kind in [BoltKind::InCloud, BoltKind::CloudToCloud, BoltKind::Strike] {
+            let event = forced_event(3, kind, 12.5);
+            assert_eq!((event.kind, event.start), (kind, 12.5));
+            assert!(
+                event.intensity(12.5 + RISE) > 0.4,
+                "{kind:?} flashes at once"
+            );
+        }
+        let a = forced_event(3, BoltKind::Strike, 10.0);
+        let b = forced_event(3, BoltKind::Strike, 20.0);
+        assert_ne!(a.at, b.at, "each forced strike is new");
+        // The schedule is unchanged by the refactor: same events every run.
+        assert_eq!(events_in(9, 3), events_in(9, 3));
     }
 
     #[test]

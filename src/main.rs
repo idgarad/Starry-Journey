@@ -25,7 +25,9 @@ use starry_journey::cloudgen::{Light, CLOUD_LAYERS};
 use starry_journey::clouds::Cover;
 use starry_journey::config::{parse_args, LaunchOptions, TestEvent, USAGE};
 use starry_journey::endless::{buffer_width, decode_srgb, EndlessCity};
-use starry_journey::lightning::{bolt_path, event_at, BoltKind, MAX_SEGMENTS as BOLT_SEGMENTS};
+use starry_journey::lightning::{
+    bolt_path, event_at, forced_event, BoltKind, MAX_SEGMENTS as BOLT_SEGMENTS,
+};
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::building::BuildingProfile;
@@ -54,7 +56,7 @@ use starry_journey::traffic::{
 };
 use starry_journey::weather::{
     fall_direction, shower_target, wind_now, PrecipKind, PrecipMode, Precipitation, Shower,
-    CLOUD_WIND_REFERENCE, PRECIP_LAYERS,
+    CLOUD_WIND_REFERENCE, PRECIP_LAYERS, SHOWER_HOLD, SHOWER_RAMP,
 };
 use winit::{
     application::ApplicationHandler,
@@ -209,6 +211,22 @@ impl ApplicationHandler for App {
                             }
                             KeyCode::KeyU => {
                                 renderer.force_special(Special::Utility);
+                                true
+                            }
+                            KeyCode::KeyL => {
+                                renderer.fire(TestEvent::Strike);
+                                true
+                            }
+                            KeyCode::KeyB => {
+                                renderer.fire(TestEvent::Bolt);
+                                true
+                            }
+                            KeyCode::KeyI => {
+                                renderer.fire(TestEvent::Flicker);
+                                true
+                            }
+                            KeyCode::KeyR => {
+                                renderer.fire(TestEvent::Shower);
                                 true
                             }
                             _ => false,
@@ -804,6 +822,10 @@ struct Renderer {
     forced_meteor: Option<f64>,
     /// `--events` not yet fired, in time order.
     pending_events: Vec<(TestEvent, f64)>,
+    /// A lightning event asked for by hand, shown until it ends.
+    forced_lightning: Option<starry_journey::lightning::Event>,
+    /// When a shower was asked for by hand (weather clock seconds).
+    forced_shower: Option<f64>,
     /// The shooting star in flight now.
     meteor: Option<Meteor>,
 }
@@ -1109,6 +1131,8 @@ impl Renderer {
             ambience_revisions: [0; 4],
             forced_meteor: None,
             pending_events: Vec::new(),
+            forced_lightning: None,
+            forced_shower: None,
             meteor: None,
             wind: 0.0,
         };
@@ -1423,8 +1447,15 @@ impl Renderer {
         // 2026-11-05), on weather time.
         let step = dt * self.speed;
         self.weather_clock += step;
+        // A shower asked for by hand (Shift+R) eases in at once at the
+        // cover's strength (at least overcast's) for its usual length.
+        let forced = self.forced_shower.is_some_and(|start| {
+            (start..start + SHOWER_RAMP + SHOWER_HOLD).contains(&self.weather_clock)
+        });
         let target = if self.precip_mode == PrecipMode::Off {
             0.0
+        } else if forced {
+            starry_journey::weather::intensity_for(self.cover).max(FORCED_SHOWER)
         } else {
             shower_target(self.scene.seed, self.cover, self.weather_clock)
         };
@@ -1450,7 +1481,18 @@ impl Renderer {
             TestEvent::Meteor => self.force_meteor(),
             TestEvent::Police => self.force_special(Special::Police),
             TestEvent::Utility => self.force_special(Special::Utility),
+            TestEvent::Strike => self.force_lightning(BoltKind::Strike),
+            TestEvent::Bolt => self.force_lightning(BoltKind::CloudToCloud),
+            TestEvent::Flicker => self.force_lightning(BoltKind::InCloud),
+            TestEvent::Shower => self.forced_shower = Some(self.weather_clock),
         }
+    }
+
+    /// Starts a lightning event of `kind` now, whatever the cover (test
+    /// keys Shift+L, Shift+B, Shift+I).
+    fn force_lightning(&mut self, kind: BoltKind) {
+        let seconds = self.seconds(self.now());
+        self.forced_lightning = Some(forced_event(self.scene.seed, kind, seconds));
     }
 
     /// Sends a police car or utility truck now (test keys Shift+E and
@@ -1633,7 +1675,13 @@ impl Renderer {
         // quiet.
         let snowing = matches!(self.precip_now, Some((PrecipKind::Snow, _)));
         let storm = self.cover == Cover::Storm && !snowing;
-        let Some(event) = event_at(self.scene.seed, self.options.lightning, storm, seconds) else {
+        // A forced event (test keys) wins while it lasts.
+        let forced = self
+            .forced_lightning
+            .clone()
+            .filter(|event| (event.start..event.end()).contains(&seconds));
+        let scheduled = || event_at(self.scene.seed, self.options.lightning, storm, seconds);
+        let Some(event) = forced.or_else(scheduled) else {
             self.lightning = None;
             return;
         };
@@ -2591,6 +2639,9 @@ const PARAMS_BYTES: u64 = (17
     + BOLT_SEGMENTS as u64
     + VEHICLE_SLOTS as u64)
     * 16;
+/// The least strength of a shower asked for by hand (an overcast
+/// shower's), so one shows even under light cover.
+const FORCED_SHOWER: f64 = 0.35;
 /// The wind (cells per second) above which the street is redrawn every
 /// frame so the trees can sway (below it no canopy leans a whole cell).
 const SWAY_WIND: f64 = 1.0;
