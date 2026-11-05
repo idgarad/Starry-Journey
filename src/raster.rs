@@ -149,6 +149,30 @@ impl Default for RasterOptions {
     }
 }
 
+/// The color the rasterizer gives window `w` of `building` in its current
+/// lit state: its tone (faded by its shade) when lit, the body when dark.
+/// `endless` picks the Endless layers' body tint. For animating windows
+/// without redrawing the city.
+pub fn window_cell_color(building: &Building, w: usize, palette: &Palette, endless: bool) -> Rgb {
+    let body = if endless {
+        endless_body_color(building, palette)
+    } else {
+        body_color(building, palette)
+    };
+    if building.windows.lit.get(w).copied().unwrap_or(false) {
+        let lit = palette.window_color(building.windows.tone[w]);
+        mix(lit, body, shade_from_level(building.windows.shade[w]))
+    } else {
+        body
+    }
+}
+
+/// A star's color with `fade` toward the background, as the rasterizer
+/// paints it.
+pub fn star_color(fade: f64, palette: &Palette) -> Rgb {
+    mix(palette.star, palette.bg, fade)
+}
+
 /// Landmark light color: the palette's fixed decor color, or the
 /// decoration's hue at the palette's decor lightness.
 pub fn decoration_color(hue: f64, palette: &Palette) -> Rgb {

@@ -9,12 +9,16 @@
 //! and drawn over the city at device resolution.
 
 use std::{
+    collections::HashMap,
     error::Error,
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use starry_journey::ambience::{
+    beacon_lit, decoration_hue, meteor_at, star_fade, twinkles, Flicker, Meteor,
+};
 use starry_journey::cityglow::{glow_rgba, glow_row};
 use starry_journey::clock::{format_remaining, ConstructionClock};
 use starry_journey::cloudgen::{Light, CLOUD_LAYERS};
@@ -33,7 +37,10 @@ use starry_journey::moon::{
     STATION_SPRITE_REACH,
 };
 use starry_journey::quips::quip_at;
-use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
+use starry_journey::raster::{
+    decoration_color, generate_stars, star_color, window_cell_color, CityRaster, RasterOptions,
+    Star, WindowLighting, WINDOW_MAST,
+};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
 use starry_journey::searchlights::{
     beams_at, show_start, Beam, SearchlightMode, MAX_LIGHTS as SEARCHLIGHTS,
@@ -82,6 +89,8 @@ struct App {
     fullscreen: bool,
     monitor_index: usize,
     options: LaunchOptions,
+    /// Which modifier keys are held (Shift selects the test keys).
+    modifiers: winit::keyboard::ModifiersState,
 }
 
 impl App {
@@ -177,9 +186,20 @@ impl ApplicationHandler for App {
                     renderer.resize(window.inner_size());
                 }
             }
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && !event.repeat =>
             {
+                // Test keys (owner, 2026-11-05): Shift + a letter forces an
+                // event, so it can be checked without waiting for it.
+                if self.modifiers.shift_key() {
+                    if let (PhysicalKey::Code(KeyCode::KeyS), Some(renderer)) =
+                        (event.physical_key, &mut self.renderer)
+                    {
+                        renderer.force_meteor();
+                        return;
+                    }
+                }
                 if let PhysicalKey::Code(key) = event.physical_key {
                     match key {
                         KeyCode::Escape => event_loop.exit(),
@@ -749,6 +769,19 @@ struct Renderer {
     weather_clock: f64,
     /// The wind now, in cells per second (positive blows right).
     wind: f64,
+    /// Window flicker after construction (`ambience`).
+    flicker: Flicker,
+    /// The colors last patched into each animated cell, keyed by image (0
+    /// sky, 1 still city, 2 + layer) and cell, so unchanged cells are not
+    /// rewritten. Cleared whenever the images are redrawn.
+    ambience_cache: HashMap<(u8, i32, i32), [u8; 3]>,
+    /// Each Endless layer buffer's revision when last patched: a new one
+    /// (a rebase or redraw) means its animated cells must be redone.
+    ambience_revisions: [u64; 4],
+    /// When a shooting star was asked for by hand (Shift+S).
+    forced_meteor: Option<f64>,
+    /// The shooting star in flight now.
+    meteor: Option<Meteor>,
 }
 
 /// One frame of lightning for the shader, in device pixels.
@@ -1047,6 +1080,11 @@ impl Renderer {
             precipitation: Precipitation::default(),
             shower: Shower::default(),
             weather_clock: 0.0,
+            flicker: Flicker::new(seed),
+            ambience_cache: HashMap::new(),
+            ambience_revisions: [0; 4],
+            forced_meteor: None,
+            meteor: None,
             wind: 0.0,
         };
         renderer.upload();
@@ -1327,6 +1365,7 @@ impl Renderer {
         self.update_weather(now, motion_dt);
         self.update_searchlights(now);
         self.update_lightning(now);
+        self.update_ambience(now, motion_dt);
         let city_changed = self.scene.view.take_dirty() || finished;
         if city_changed {
             self.scene.compose_city();
@@ -1373,6 +1412,151 @@ impl Renderer {
             .set_wind_factor(self.wind.abs() / CLOUD_WIND_REFERENCE);
         if let Some((kind, _)) = self.precip_now {
             self.precipitation.advance(dt * self.speed, kind, self.wind);
+        }
+    }
+
+    /// Starts a shooting star now (test key Shift+S).
+    fn force_meteor(&mut self) {
+        self.forced_meteor = Some(self.seconds(self.now()));
+    }
+
+    /// The city's ambience once it is built, in both modes (owner,
+    /// 2026-11-05): windows flicker, beacons blink, landmark lights cycle
+    /// or chase, stars twinkle, and shooting stars cross. Only cells whose
+    /// color changes are patched, into the CPU images and their GPU
+    /// textures.
+    fn update_ambience(&mut self, now: Instant, dt: f64) {
+        let seconds = self.seconds(now);
+        let seed = self.scene.seed;
+        self.meteor = meteor_at(seed, seconds, self.forced_meteor);
+        if !self.scene.reveal.is_complete() {
+            return;
+        }
+        let palette = palette_at(self.palette_index);
+        let grid = self.scene.grid;
+        let cols = grid.cols.max(1) as usize;
+        // Twinkling stars, in the sky image.
+        for (i, star) in self.scene.stars.iter().enumerate() {
+            if !twinkles(seed, i) {
+                continue;
+            }
+            let color = star_color(star_fade(seed, i, star.fade, seconds), palette);
+            let cell = star.row as usize * cols + star.x as usize;
+            if cell * 4 + 4 > self.scene.sky.len() {
+                continue;
+            }
+            patch_cell(
+                &mut self.ambience_cache,
+                &self.queue,
+                &self.city_texture,
+                (0, star.x, star.row),
+                (star.x as u32, star.row as u32),
+                &mut [&mut self.scene.sky],
+                cell,
+                color.0,
+            );
+        }
+        let step = dt * self.speed;
+        if !self.scene.city.is_empty() {
+            // The still city (Normal, and Endless while it is built).
+            let endless_tint = self.scene.endless.is_some();
+            let ownership = &self.scene.ownership;
+            let changed = self.flicker.step(&mut self.scene.buildings, step, 1.0);
+            let mut patches = Vec::new();
+            for (b, w) in changed {
+                let building = &self.scene.buildings[b];
+                let (x, row) = (
+                    building.windows.x[w],
+                    grid.row_for_height(building.windows.h[w]),
+                );
+                if let Some(i) = ownership.index(x, row) {
+                    if ownership.owner[i] == b as i32 && ownership.window_index[i] == w as i32 {
+                        patches.push((
+                            x,
+                            row,
+                            i,
+                            window_cell_color(building, w, palette, endless_tint),
+                        ));
+                    }
+                }
+            }
+            for (b, building) in self.scene.buildings.iter().enumerate() {
+                for (x, row, color) in animated_lights(building, &grid, palette, seconds) {
+                    if let Some(i) = ownership.index(x, row) {
+                        let mast = color.1;
+                        let ok = ownership.owner[i] == b as i32
+                            && (!mast || ownership.window_index[i] == WINDOW_MAST);
+                        if ok {
+                            patches.push((x, row, i, color.0));
+                        }
+                    }
+                }
+            }
+            for (x, row, i, color) in patches {
+                patch_cell(
+                    &mut self.ambience_cache,
+                    &self.queue,
+                    &self.still_texture,
+                    (1, x, row),
+                    (x as u32, row as u32),
+                    &mut [&mut self.scene.view.rgba, &mut self.scene.city],
+                    i,
+                    color.0,
+                );
+            }
+        } else if let Some(city) = self.scene.endless.as_mut() {
+            // The scrolling layers: their buffers, in buffer cells.
+            for layer in 0..4 {
+                let (buildings, raster, revision) = city.layer_mut(layer);
+                let image = 2 + layer as u8;
+                if self.ambience_revisions[layer] != revision {
+                    self.ambience_cache.retain(|key, _| key.0 != image);
+                    self.ambience_revisions[layer] = revision;
+                }
+                let changed = self.flicker.step(buildings, step, 1.0);
+                let mut patches = Vec::new();
+                for (b, w) in changed {
+                    let building = &buildings[b];
+                    let (x, row) = (
+                        building.windows.x[w],
+                        grid.row_for_height(building.windows.h[w]),
+                    );
+                    if let Some(i) = raster.index(x, row) {
+                        if raster.owner[i] == b as i32 && raster.window_index[i] == w as i32 {
+                            patches.push((
+                                x,
+                                row,
+                                i,
+                                window_cell_color(building, w, palette, true),
+                            ));
+                        }
+                    }
+                }
+                for (b, building) in buildings.iter().enumerate() {
+                    for (x, row, color) in animated_lights(building, &grid, palette, seconds) {
+                        if let Some(i) = raster.index(x, row) {
+                            let ok = raster.owner[i] == b as i32
+                                && (!color.1 || raster.window_index[i] == WINDOW_MAST);
+                            if ok {
+                                patches.push((x, row, i, color.0));
+                            }
+                        }
+                    }
+                }
+                let width = raster.width.max(1);
+                for (x, row, i, color) in patches {
+                    patch_cell(
+                        &mut self.ambience_cache,
+                        &self.queue,
+                        &self.layer_textures[layer],
+                        (image, x, row),
+                        ((i % width) as u32, (i / width) as u32),
+                        &mut [&mut raster.rgba],
+                        i,
+                        color.0,
+                    );
+                }
+            }
         }
     }
 
@@ -1868,6 +2052,26 @@ impl Renderer {
             }
             None => params.extend([0.0; 4 + 8 * PRECIP_LAYERS]),
         }
+        // A shooting star: its head and the end of its trail (device
+        // pixels), then its brightness.
+        match self.meteor {
+            Some(meteor) => {
+                let (width, _) = self.surface_size();
+                let width = f64::from(width);
+                let sky = f64::from(self.scene.grid.ground_row) * f64::from(cell);
+                let at = |t: f64| {
+                    let x = meteor.from.0 + (meteor.to.0 - meteor.from.0) * t;
+                    let y = meteor.from.1 + (meteor.to.1 - meteor.from.1) * t;
+                    (x * width, y * sky)
+                };
+                let head = at(meteor.progress);
+                let tail = at((meteor.progress - METEOR_TRAIL).max(0.0));
+                let brightness = (std::f64::consts::PI * meteor.progress).sin();
+                params.extend([head.0 as f32, head.1 as f32, tail.0 as f32, tail.1 as f32]);
+                params.extend([brightness as f32, 0.0, 0.0, 0.0]);
+            }
+            None => params.extend([0.0; 8]),
+        }
         let bytes: Vec<u8> = params
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -1951,6 +2155,9 @@ impl Renderer {
     /// city, the overlay, and any changed layer, recreating the grid-sized
     /// textures only when the grid dimensions change.
     fn upload(&mut self) {
+        // Every image is redrawn, so every animated cell must be redone.
+        self.ambience_cache.clear();
+        self.ambience_revisions = [0; 4];
         let width = self.scene.grid.cols.max(1) as u32;
         let height = self.scene.grid.rows.max(1) as u32;
         let size = self.city_texture.size();
@@ -2277,13 +2484,103 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 /// vectors of four floats.
 /// Lightning lights the shader takes (one per flash of an event).
 const FLASH_LIGHTS: usize = 3;
-const PARAMS_BYTES: u64 = (15
+const PARAMS_BYTES: u64 = (17
     + 2 * PRECIP_LAYERS as u64
     + FLASH_LIGHTS as u64
     + SEARCHLIGHTS as u64
     + BOLT_SEGMENTS as u64
     + VEHICLE_SLOTS as u64)
     * 16;
+/// How much of a shooting star's flight its trail spans.
+const METEOR_TRAIL: f64 = 0.35;
+
+/// The animated lights of `building` at `seconds`: its beacon (lit or the
+/// antenna color) and its landmark lights, as `(x, row, (color, is the
+/// beacon))`. O(decoration points).
+fn animated_lights(
+    building: &Building,
+    grid: &Grid,
+    palette: &Palette,
+    seconds: f64,
+) -> Vec<(i32, i32, (starry_journey::model::palette::Rgb, bool))> {
+    let mut lights = Vec::new();
+    if let Some(mast) = &building.mast {
+        let color = if beacon_lit(mast, seconds) {
+            palette.beacon
+        } else {
+            palette.antenna
+        };
+        lights.push((mast.x, grid.row_for_height(mast.h1 - 1), (color, true)));
+    }
+    if let Some(decoration) = &building.decoration {
+        for (index, (x, h)) in decoration.iter_points().enumerate() {
+            let hue = decoration_hue(decoration, index, seconds);
+            lights.push((
+                x,
+                grid.row_for_height(h),
+                (decoration_color(hue, palette), false),
+            ));
+        }
+    }
+    lights
+}
+
+/// Patches one animated cell: unless the cache says it already has
+/// `color`, writes it into cell `cell` of each CPU image and into texel
+/// `texel` of `texture` (keeping the first image's alpha). O(1).
+#[allow(clippy::too_many_arguments)]
+fn patch_cell(
+    cache: &mut HashMap<(u8, i32, i32), [u8; 3]>,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    key: (u8, i32, i32),
+    texel: (u32, u32),
+    images: &mut [&mut Vec<u8>],
+    cell: usize,
+    color: [u8; 3],
+) {
+    if cache.get(&key) == Some(&color) {
+        return;
+    }
+    cache.insert(key, color);
+    let mut alpha = 255;
+    for (n, image) in images.iter_mut().enumerate() {
+        if let Some(pixel) = image.get_mut(cell * 4..cell * 4 + 4) {
+            pixel[..3].copy_from_slice(&color);
+            if n == 0 {
+                alpha = pixel[3];
+            }
+        }
+    }
+    let size = texture.size();
+    if texel.0 >= size.width || texel.1 >= size.height {
+        return;
+    }
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: texel.0,
+                y: texel.1,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[color[0], color[1], color[2], alpha],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 

@@ -338,6 +338,19 @@ impl EndlessCity {
         }
     }
 
+    /// Layer `layer`'s buildings, its drawn buffer, and the buffer's
+    /// revision, for animating lights in place (window flicker, beacons,
+    /// landmark lights). Changes to the buffer are not re-uploaded by
+    /// revision; the caller patches the GPU copy itself.
+    pub fn layer_mut(&mut self, layer: usize) -> (&mut [Building], &mut CityRaster, u64) {
+        let layer = &mut self.layers[layer];
+        (
+            layer.generator.buildings_mut(),
+            &mut layer.raster,
+            layer.revision,
+        )
+    }
+
     /// How far into `layer`'s buffer the screen's left edge is, in device
     /// pixels: `(viewX - originX) * cell`. Fractional; computed in f64 so it
     /// stays exact however far the camera has gone.
