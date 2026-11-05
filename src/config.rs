@@ -60,8 +60,9 @@ Options:
   --message TEXT     Show TEXT in a box over the city (at most 240 UTF-16
                      units; quote it). Blank text shows no box. Changing the
                      palette shows its name there for 2 seconds.
-  --precip P         What falls from overcast and storm clouds: rain
-                     (default), snow, or off. Press W to cycle it.
+  --precip P         What falls in showers from overcast (10% chance every
+                     10 minutes) and storm clouds (60%): rain (default),
+                     snow, or off. Press W to cycle it.
   --moon-phase P     Phase the moon opens on: new, waxing-crescent,
                      first-quarter, waxing-gibbous, full, waning-gibbous,
                      last-quarter, waning-crescent (or 0-7). It then advances

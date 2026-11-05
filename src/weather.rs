@@ -11,9 +11,12 @@
 //! module keeps each layer's travel (wrapped, so it never loses precision)
 //! and decides its look.
 //!
-//! For now the amount follows the cloud cover (light in overcast, heavy in
-//! storms) and `--precip` / `W` choose rain, snow, or none. A later sprint
-//! lets the weather drift on its own (owner: "Random weather").
+//! **Showers** (owner, 2026-11-05: "Weather should be a bit random derived
+//! from cloud coverage"): every [`SHOWER_SLOT`] seconds the cover gets one
+//! roll for a shower (10% overcast, 60% storm, never lighter). A shower
+//! eases in over [`SHOWER_RAMP`], holds for [`SHOWER_HOLD`], and eases back
+//! out over [`SHOWER_RAMP`]; its full strength comes from the cover.
+//! `--precip` / `W` choose rain, snow, or none.
 
 use crate::clouds::Cover;
 
@@ -121,7 +124,88 @@ impl PrecipMode {
     }
 }
 
-/// How hard it falls under `cover`, 0 (nothing) to 1 (a storm).
+/// Seconds in each stretch that gets one roll for a shower.
+pub const SHOWER_SLOT: f64 = 600.0;
+/// Seconds a shower takes to ease in, and again to ease out.
+pub const SHOWER_RAMP: f64 = 60.0;
+/// Seconds a shower holds at full strength.
+pub const SHOWER_HOLD: f64 = 300.0;
+
+/// The chance each stretch under `cover` brings a shower.
+pub fn shower_chance(cover: Cover) -> f64 {
+    match cover {
+        Cover::Clear | Cover::Puffs | Cover::Scattered | Cover::Broken => 0.0,
+        Cover::Overcast => 0.1,
+        Cover::Storm => 0.6,
+    }
+}
+
+/// The shower stretch `slot` holds for the run `seed`, if its roll under
+/// `cover` comes up: when it starts (seconds) and when it starts easing
+/// out. It always ends, ramp included, before the stretch does.
+pub fn shower_in(seed: u32, slot: i64, cover: Cover) -> Option<(f64, f64)> {
+    let mut rng = crate::model::rng::Mulberry32::new(
+        seed ^ 0x5b0e_7a11 ^ (slot as u32).wrapping_mul(0x9e37_79b9),
+    );
+    if rng.next_f64() >= shower_chance(cover) {
+        return None;
+    }
+    let length = 2.0 * SHOWER_RAMP + SHOWER_HOLD;
+    let start = slot as f64 * SHOWER_SLOT + (SHOWER_SLOT - length) * rng.next_f64();
+    Some((start, start + SHOWER_RAMP + SHOWER_HOLD))
+}
+
+/// How hard it should be falling at `seconds` under `cover` (0 between
+/// showers): the cover's full strength from a shower's start until it
+/// starts easing out. [`Shower`] eases toward this.
+pub fn shower_target(seed: u32, cover: Cover, seconds: f64) -> f64 {
+    if !seconds.is_finite() {
+        return 0.0;
+    }
+    let slot = (seconds / SHOWER_SLOT).floor() as i64;
+    match shower_in(seed, slot, cover) {
+        Some((start, ease_out)) if (start..ease_out).contains(&seconds) => intensity_for(cover),
+        _ => 0.0,
+    }
+}
+
+/// How hard it is falling now, easing toward the target so a shower
+/// takes [`SHOWER_RAMP`] to come and to go, however strong it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Shower {
+    level: f64,
+    /// The strongest this shower has been asked to fall: it sets the
+    /// easing rate, so easing in and out are straight minute-long ramps.
+    peak: f64,
+}
+
+impl Shower {
+    /// How hard it is falling, 0..1.
+    pub fn level(self) -> f64 {
+        self.level
+    }
+
+    /// Eases `dt` seconds toward `target` at a steady rate: the shower's
+    /// peak strength every [`SHOWER_RAMP`]. O(1).
+    pub fn ease(&mut self, target: f64, dt: f64) {
+        if !dt.is_finite() || dt <= 0.0 || !target.is_finite() {
+            return;
+        }
+        self.peak = self.peak.max(target);
+        let step = self.peak / SHOWER_RAMP * dt;
+        self.level = if self.level < target {
+            (self.level + step).min(target)
+        } else {
+            (self.level - step).max(target)
+        };
+        if self.level <= 0.0 {
+            // The shower is over; the next sets its own pace.
+            self.peak = target;
+        }
+    }
+}
+
+/// How hard it falls under `cover` at most, 0 (nothing) to 1 (a storm).
 pub fn intensity_for(cover: Cover) -> f64 {
     match cover {
         Cover::Clear | Cover::Puffs | Cover::Scattered | Cover::Broken => 0.0,
@@ -267,6 +351,60 @@ pub fn fall_direction(kind: PrecipKind, wind: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn showers_come_by_chance_with_the_cover() {
+        let count = |cover: Cover| {
+            (0..2000)
+                .filter(|&slot| shower_in(4, slot, cover).is_some())
+                .count()
+        };
+        let (overcast, storm) = (count(Cover::Overcast), count(Cover::Storm));
+        assert!((140..260).contains(&overcast), "about 10%: {overcast}");
+        assert!((1120..1280).contains(&storm), "about 60%: {storm}");
+        assert_eq!(count(Cover::Broken), 0);
+        for slot in 0..200 {
+            if let Some((start, ease_out)) = shower_in(4, slot, Cover::Storm) {
+                let slot_start = slot as f64 * SHOWER_SLOT;
+                assert!(start >= slot_start);
+                assert!(ease_out + SHOWER_RAMP <= slot_start + SHOWER_SLOT + 1e-9);
+                assert!((ease_out - start - SHOWER_RAMP - SHOWER_HOLD).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn a_shower_eases_in_over_a_minute_holds_five_and_eases_out_over_a_minute() {
+        let (start, ease_out) = (0..100)
+            .find_map(|slot| shower_in(9, slot, Cover::Storm))
+            .expect("a storm shower");
+        let mut shower = Shower::default();
+        let mut t = start - 10.0;
+        let mut samples = Vec::new();
+        while t < ease_out + 120.0 {
+            shower.ease(shower_target(9, Cover::Storm, t), 0.5);
+            samples.push((t, shower.level()));
+            t += 0.5;
+        }
+        let at = |time: f64| samples.iter().find(|(s, _)| *s >= time).unwrap().1;
+        assert_eq!(at(start - 5.0), 0.0);
+        assert!((0.4..0.6).contains(&at(start + 30.0)), "halfway in");
+        assert_eq!(at(start + 61.0), 1.0, "fully in after a minute");
+        assert_eq!(at(ease_out - 1.0), 1.0, "held");
+        assert!((0.4..0.6).contains(&at(ease_out + 30.0)), "halfway out");
+        assert_eq!(at(ease_out + 61.0), 0.0, "gone after a minute");
+        // Never a jump.
+        assert!(samples
+            .windows(2)
+            .all(|w| (w[1].1 - w[0].1).abs() <= 0.5 / SHOWER_RAMP + 1e-9));
+        // A lighter shower also takes a minute to come in.
+        let mut light = Shower::default();
+        for _ in 0..60 {
+            light.ease(0.35, 0.5);
+        }
+        assert!(light.level() < 0.35, "still easing in after 30 s");
+        assert_eq!(shower_target(9, Cover::Clear, start + 10.0), 0.0);
+    }
 
     #[test]
     fn precipitation_follows_the_clouds_and_the_mode() {

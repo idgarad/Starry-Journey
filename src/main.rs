@@ -44,8 +44,8 @@ use starry_journey::station::{radio_line, StationFate};
 use starry_journey::street::{mark_opaque, Span, StreetLayer};
 use starry_journey::traffic::{Traffic, VehicleSprite, Verge, SPRITE_ROWS, SPRITE_WIDTH};
 use starry_journey::weather::{
-    fall_direction, wind_now, PrecipKind, PrecipMode, Precipitation, CLOUD_WIND_REFERENCE,
-    PRECIP_LAYERS,
+    fall_direction, shower_target, wind_now, PrecipKind, PrecipMode, Precipitation, Shower,
+    CLOUD_WIND_REFERENCE, PRECIP_LAYERS,
 };
 use winit::{
     application::ApplicationHandler,
@@ -742,6 +742,11 @@ struct Renderer {
     precip_now: Option<(PrecipKind, f64)>,
     /// The precipitation layers' travel.
     precipitation: Precipitation,
+    /// How hard the current shower falls, easing in and out.
+    shower: Shower,
+    /// Seconds of weather time: runs with the speed setting and stops on
+    /// pause, like the clouds.
+    weather_clock: f64,
     /// The wind now, in cells per second (positive blows right).
     wind: f64,
 }
@@ -1040,6 +1045,8 @@ impl Renderer {
             strike_target: None,
             precip_now: None,
             precipitation: Precipitation::default(),
+            shower: Shower::default(),
+            weather_clock: 0.0,
             wind: 0.0,
         };
         renderer.upload();
@@ -1345,11 +1352,22 @@ impl Renderer {
     /// fall and drives the clouds, and the precipitation's travel.
     fn update_weather(&mut self, now: Instant, dt: f64) {
         let seconds = self.seconds(now);
-        let intensity = starry_journey::weather::intensity_for(self.cover);
-        self.precip_now = self
-            .precip_mode
-            .kind_under(self.cover)
-            .map(|kind| (kind, intensity));
+        // Showers come by chance with the cover, easing in and out (owner,
+        // 2026-11-05), on weather time.
+        let step = dt * self.speed;
+        self.weather_clock += step;
+        let target = if self.precip_mode == PrecipMode::Off {
+            0.0
+        } else {
+            shower_target(self.scene.seed, self.cover, self.weather_clock)
+        };
+        self.shower.ease(target, step);
+        let level = self.shower.level();
+        self.precip_now = match self.precip_mode {
+            PrecipMode::Rain if level > 0.0 => Some((PrecipKind::Rain, level)),
+            PrecipMode::Snow if level > 0.0 => Some((PrecipKind::Snow, level)),
+            _ => None,
+        };
         self.wind = wind_now(self.cover, self.scene.seed, seconds);
         self.sky_clouds
             .set_wind_factor(self.wind.abs() / CLOUD_WIND_REFERENCE);
