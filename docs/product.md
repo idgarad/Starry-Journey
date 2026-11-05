@@ -93,6 +93,14 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - The flashers light nearby trees and the nearest buildings.
   - Tree canopies lean and rock with the wind.
   - `Shift+E` and `Shift+U` send a police car or utility truck at once, and `--events` fires test events at chosen moments.
+- **Palette display effects (Rebuild Prompt; owner decisions, 2026-11-05):** a second pass applies each palette's monitor effect to the finished scene: Amber, Apple II, C64, and both CGAs get screen-fixed scanlines and their own color treatment, and Game Boy an LCD grid. The message box is drawn after the effect, so it stays clear. `D` or `--effects off` turns them off (the Game Boy grid stays). Owner additions (2026-11-05):
+  - Game Boy LCD ghosting;
+  - Amber and Green phosphor persistence, message-text bloom, and a slow, tight refresh beam sweeping down the screen every 15 seconds;
+  - edge convergence error (chromatic aberration) on CGA, C64, and Apple II;
+  - a vignette on every CRT palette;
+  - a CRT power-on when switching into one;
+  - scanlines on EGA and VGA (the spec leaves them unprocessed).
+  - Classic and Parchment stay unprocessed. Still to come: ArtDeco's sheen material, Green Terminal's falling code (with Unifont glyphs), and Amber's message animation.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
@@ -118,6 +126,7 @@ These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are 
     - flat, self-shadowed tones in the palette's pale paper colors stack in layers with a slightly darker underside, like layered paper with depth.
     - (`cloudgen::heap_field`, `fractal(..., billow)`, `dithered_alpha`, and `tone_ramp`.)
   - **For buildings:** tear the top edge of each layer's silhouette (or each building) with the same billow-noise roughening and dithered rim, add a faint paper-colored shadow under each layer, and keep the windows inside. Probably only on paper-like palettes (Ink on Parchment), or as a palette effect.
+- Separate toggles for each display effect (ghosting, persistence, convergence error, vignette, power-on, bloom, scanlines) once the app has menu options (owner, 2026-11-05). For now `D` switches them all.
 - The building parts catalog (the rest of GitHub issue #2): a versioned catalog of the shared kinds as parts (a Rust table with a JSON export), portable fixtures, and per-deviation classification tests. Deferred by the owner on 2026-11-05.
 - Background music. The Rebuild Prompt specifies no sound, so this is a deliberate addition. Users supply their own tracks in `Sounds/Music/`, which is gitignored; the app ships no music. Playback needs an audio dependency and a decision on controls (mute, volume, track choice).
 

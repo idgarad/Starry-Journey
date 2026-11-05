@@ -25,7 +25,8 @@
 // 6. the street's front layer (foreground trees);
 // 6b. rain or snow (src/weather.rs) in four layers far to near, in the
 //    foreground over everything;
-// 7. the message box.
+// 7. the message box, in the display-effects pass (post.wgsl), after the
+//    palette's effect.
 // Buildings hide the moon because they are drawn after it.
 //
 // Moving images are reconstructed as the spec describes: treat the image as
@@ -699,13 +700,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
     }
 
-    // The message box is premultiplied sRGB, blended in sRGB like a browser.
-    let local = vec2<i32>(floor(position.xy - params.message.xy));
-    let size = vec2<i32>(params.message.zw);
-    if (params.message.z > 0.0 && all(local >= vec2<i32>(0, 0)) && all(local < size)) {
-        let box_color = textureLoad(message_box, local, 0);
-        let blended = box_color.rgb + encode_srgb(color) * (1.0 - box_color.a);
-        color = decode_srgb(blended);
-    }
+    // The message box is drawn by the display-effects pass (post.wgsl), over
+    // any effect.
     return vec4<f32>(color, 1.0);
 }

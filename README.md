@@ -32,6 +32,7 @@ cargo run
 | `R` | New city (construction restarts) |
 | `C` | Cycle the cloud cover (its name shows in the message box) |
 | `W` | Cycle what falls in showers: rain, snow, or nothing |
+| `D` | Toggle the palette display effects (scanlines, color bleed, RGB stripes, phosphor trails, convergence error, vignette, CRT power-on; the Game Boy grid and ghosting always stay) |
 | `Shift+S` | Test key: a shooting star now |
 | `Shift+E` | Test key: a police car now (once traffic runs) |
 | `Shift+U` | Test key: a utility truck now (once traffic runs) |
@@ -99,6 +100,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 15 s after opening on that lap), or `survive`. |
 | `--searchlights S` | Ground searchlights: `auto` (now and then a show of two or three sweeping beams for up to 2 minutes, very rarely in Endless; default), `always`, or `off`. |
+| `--effects E` | Palette display effects: `on` (default) or `off`. `D` toggles them. |
 | `--events E@T,...` | Fire test events at moments of the run, as the Shift test keys do: `meteor`, `police`, `utility`, `strike`, `bolt`, `flicker`, `shower`. For example `--events strike@30s --snapshot 30.15s` (moments here and in `--snapshot` may be decimal seconds, such as `30.15s`, to catch a flash). |
 | `--seed N` | Build city number N (0 to 4294967295) instead of a random one. The same seed gives the same city and clouds. |
 | `--snapshot T,...` | Open no window; save a PNG of each moment T (durations as for `--timer`, or `0`). See above. |
@@ -135,6 +137,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 
 | Path | Contents |
 | --- | --- |
+| [src/post.wgsl](src/post.wgsl) | The display-effects pass: each palette's monitor effect (scanlines and color for Amber, Apple II, C64, CGA, EGA, and VGA; the Game Boy grid and ghosting; phosphor trails, convergence error, vignette, and the CRT power-on), then the message box. |
 | [src/main.rs](src/main.rs), [src/present.wgsl](src/present.wgsl) | Window, input, fullscreen/monitor handling, and GPU presentation of the city buffer; also snapshot mode's offscreen rendering on simulated time. |
 | [src/snapshot.rs](src/snapshot.rs) | Snapshot mode helpers: a dependency-free PNG writer and run folder names. |
 | [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |

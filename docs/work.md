@@ -671,6 +671,79 @@
   - `cargo test`: PASS, 323 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Display effects, first sprint (owner, 2026-11-05: "get our palette specific shaders added"):**
+  - Owner decisions:
+    - the `D` key and `--effects`;
+    - download Unifont 16.0.04 for Green later;
+    - order: screen effects, then ArtDeco, then Green, then Amber's message.
+  - The renderer now draws in two passes. The scene goes into a surface-sized `scene_texture`, then `post.wgsl` applies the palette's effect and draws the message box (moved out of `present.wgsl`) on top, so text stays clear of every effect.
+  - The effects follow the Rebuild Prompt, in encoded sRGB on device pixels, screen-fixed. Period is `max(2, round(2 x scale))`; dark rows are `max(1, round(scale))`; neighbor reach is `max(1, round(scale))`; edges are clamped.
+    - **Amber:** dark rows keep 75%.
+    - **Apple II:** YIQ with chroma 0.4/0.24/0.06 across reach and twice the reach, luma 0.84/0.08, an alternating-column fringe of `[0.12, 0.08] x (rightY - leftY) x phase`; dark rows keep 70%.
+    - **C64:** chroma 0.7/0.15, luma unchanged, plus a four-neighbor highlight halo (`smoothstep(0.55, 0.85, max) x 0.045`, decoded, screen-blended); dark rows keep 80%.
+    - **CGA (both):** halo at 0.012, then reach-wide R/G/B stripes (matching channel 100%, others 96%); dark rows keep 75%.
+    - **Game Boy:** `rgba(3, 19, 3, 0.55)` gaps of `max(1, round(cell x 0.2))` at the end of each cell, across and down, compounding where they cross. It is always on.
+  - `display_effect(key, effects)` maps palettes to effects. A test checks that each palette gets only its own effect, and that only Game Boy's stays when switched off.
+  - Checked with snapshots (seed 7, 960x540, scale 1, `--message "Back soon"`), against the spec's GPU checks:
+    - Amber 255/208/112 → 191/156/84 (75%);
+    - Apple II white 255 → 178;
+    - C64 217 → 173 (80%);
+    - CGA white → 255/245/245 stripes rotating across columns, dark rows 191/184/184;
+    - Game Boy grid rows every third pixel at 3-pixel cells;
+    - Classic unchanged;
+    - the message box crisp in every palette;
+    - `--effects off`: Amber's rows equal, the Game Boy grid kept.
+  - Not done yet: ArtDeco material, Green Terminal code rain (Unifont), and Amber's message grapheme animation; the spec's "fallback" paths are for the browser's 2D canvas and do not apply.
+  - Stronger color bleed (owner, 2026-11-05: "color bleed effects in some of palettes could be a little stronger"; a deliberate deviation from the spec):
+    - chroma is sampled twice as far (`BLEED_SPREAD`);
+    - Apple II chroma weights are 0.3 center, 0.22 each at 2x reach, 0.13 each at 4x (spec: 0.4/0.24/0.06 at 1x/2x);
+    - C64 is 0.5 center, 0.25 each at 2x reach (spec: 0.7/0.15 at 1x);
+    - luma keeps the spec's weights, so edges stay readable;
+    - CGA keeps none, as the spec's crisp RGB monitor;
+    - checked with before/after crops.
+  - `cargo test`: PASS, 326 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+- **More period effects (owner, 2026-11-05):** "Lets add your 1-6. Later when we have menu options we can add specific toggles to those. I do like how the scanlines look so lets get those on the EGA and VGA palette too."
+  - The effect pass keeps the previous frame: two history textures swap every frame. The pass writes a second output, this frame before the message box, and reads the other.
+  - Trails fade by half-life in seconds (`0.5^(elapsed / half_life)`), so they look the same at any frame rate. A first frame, or one long after the last, keeps nothing.
+  1. **Game Boy LCD ghosting:** `mix(now, previous, keep)` with a 35 ms half-life (about half a frame's worth at 60 fps). It is always on, with the grid.
+  2. **Amber and Green phosphor persistence:** `max(now, previous x keep)`, 60 ms half-life. Green now has effect 6 (persistence, vignette, bloom; its code rain comes later).
+  3. **Convergence error (CGA, C64, Apple II):** red and blue are sampled 1.5 x reach apart at the screen's sides, nothing at the center, growing linearly. It is sub-pixel, interpolated between texels, and applied where the scene is read, so the bleed and halo see it too.
+  4. **Vignette (every CRT palette):** corners darken up to 22% (`1 - 0.22 x (r²/2)²`).
+  5. **CRT power-on:** switching into a CRT palette with effects on (`is_crt`) opens the picture out of a line through the middle over 0.5 s, brighter at first. It plays once; it can't be snapshotted (it needs `P`).
+  6. **Message bloom (Amber, Green):** eight samples of the box at 2 and 4 reaches; only bright text glows (×0.9; at 0.35 it was invisible).
+  - **EGA and VGA scanlines:** effects 7 and 8, with dark rows keeping 75% and 82% (VGA monitors were finer), plus the vignette. This is a deviation from the spec, which leaves them unprocessed.
+  - Snapshot names now carry milliseconds (`t000030.033s.png`): consecutive frames had overwritten each other at one decimal. The name test was updated.
+  - Checked with snapshots:
+    - EGA 254 → 190 and VGA 232 → 190 on dark rows;
+    - CGA's left edge shows red/blue convergence fringes;
+    - Amber and Green text glows;
+    - two consecutive frames (30.000 s and 30.033 s) show a faint Game Boy smear and Amber glow behind a moving car;
+    - the power-on and the trails' motion are for the owner's eyes.
+  - **Refresh beam (Amber, Green; owner, 2026-11-05):** "a CRT phospur refresh like effect, the scanning beam refreshing the image".
+    - A real 60 Hz sweep can't be seen, or flickers, so it is stylized: one sweep down every 5 s (`BEAM_PERIOD`), wrapping.
+    - The beam's line (1.5 scanline periods) is 12% brighter; behind it the freshly drawn phosphor starts 8% brighter and fades over a quarter of the screen height.
+    - It is screen-fixed and under the message box; at 0.2 Hz with at most a 20% lift it is a slow wave, not a flash.
+    - The phase comes from app seconds in the free `history.w` slot.
+    - Checked with a snapshot (Green at 32 s, so the beam is 40% down): rows just above y = 216 are about 15-20% brighter, fading upward.
+    - Retuned (owner: "more pronounced and much slower and tighter band. This is a stylized version"):
+      - one sweep every 15 s;
+      - the line 30% brighter and one scanline period thick;
+      - the trail starting 18% brighter and fading over 8% of the screen height.
+    - Phosphor bloom (owner, 2026-11-05, with a photo of a real amber terminal: "There should be a little bloom to the active pixels as the scan refreshes them"):
+      - Amber and Green lit pixels glow into the dark around them: two highlight halos at 1 and 2 reaches (the second at half weight), screen-blended;
+      - each of the four neighbors weighs 0.05 at rest, plus 0.12 where the beam's line or fresh trail is;
+      - checked with before/after crops: windows glow fuller, filling the scanline gaps, and hotter in the band the beam just refreshed.
+    - Refreshed band shaped like a real one (owner, 2026-11-05, with a photo of a green terminal's refresh pass: "we want ours a little tighter"):
+      - a hard leading edge at the beam and a band behind it starting 30% brighter, fading over 15% of the screen height (the photo's is about 40%);
+      - the separate beam line is down to 12%, so the band carries the effect;
+      - checked with a snapshot (Green at 36 s): the buildings above the beam are visibly brighter, with an edge at the beam's row.
+  - Backlog: one toggle per effect once there are menu options (owner); `D` switches them all for now.
+  - Tests: effect mapping per palette (Green 6, EGA 7, VGA 8; only Game Boy when off); both shaders validate; snapshot names differ for consecutive frames.
+  - `cargo test`: PASS, 326 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.
