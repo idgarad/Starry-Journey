@@ -109,6 +109,41 @@ pub const KIND_WEIGHTS: [(BuildingKind, u32); 28] = [
 /// [`KIND_WEIGHTS`]).
 pub const SPEC_KIND_COUNT: usize = 19;
 
+/// Which building kinds and footprints a city uses (`--buildings`; GitHub
+/// issue #2: "Provide a baseline profile without the extension
+/// widths/kinds for comparison").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuildingProfile {
+    /// Every kind, with the Starry Journey extensions and wide footprints
+    /// (default).
+    #[default]
+    All,
+    /// Only the 19 kinds shared with the Python reference, at the layers'
+    /// specified widths: no extension kinds, no wide or low-rise
+    /// footprints.
+    Baseline,
+}
+
+impl BuildingProfile {
+    /// Parses `all` or `baseline` (any case).
+    ///
+    /// # Errors
+    ///
+    /// Returns a message for anything else.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "all" => Ok(Self::All),
+            "baseline" => Ok(Self::Baseline),
+            _ => Err(format!("must be all or baseline, got '{value}'")),
+        }
+    }
+
+    /// Whether this profile generates `kind`.
+    pub fn allows(self, kind: BuildingKind) -> bool {
+        self == Self::All || !kind.is_extension()
+    }
+}
+
 /// Index of the nearest (road-side) layer.
 pub const NEAR_LAYER: u8 = 3;
 
@@ -144,9 +179,14 @@ impl BuildingKind {
 
     /// Sum of the weights of kinds allowed in `layer`.
     pub fn total_weight(layer: u8) -> u32 {
+        Self::total_weight_in(layer, BuildingProfile::All)
+    }
+
+    /// Sum of the weights of kinds `profile` allows in `layer`.
+    pub fn total_weight_in(layer: u8, profile: BuildingProfile) -> u32 {
         KIND_WEIGHTS
             .iter()
-            .filter(|(kind, _)| kind.allowed_in_layer(layer))
+            .filter(|(kind, _)| kind.allowed_in_layer(layer) && profile.allows(*kind))
             .map(|(_, weight)| weight)
             .sum()
     }
@@ -154,11 +194,17 @@ impl BuildingKind {
     /// Picks a kind allowed in `layer` by weight, consuming one RNG value.
     /// O(number of kinds).
     pub fn pick(rng: &mut Mulberry32, layer: u8) -> Self {
-        let target = rng.next_f64() * f64::from(Self::total_weight(layer));
+        Self::pick_in(rng, layer, BuildingProfile::All)
+    }
+
+    /// Picks a kind `profile` allows in `layer` by weight, consuming one
+    /// RNG value. O(number of kinds).
+    pub fn pick_in(rng: &mut Mulberry32, layer: u8, profile: BuildingProfile) -> Self {
+        let target = rng.next_f64() * f64::from(Self::total_weight_in(layer, profile));
         let mut cumulative = 0.0;
         let mut last = BuildingKind::Box;
         for (kind, weight) in KIND_WEIGHTS {
-            if !kind.allowed_in_layer(layer) {
+            if !kind.allowed_in_layer(layer) || !profile.allows(kind) {
                 continue;
             }
             cumulative += f64::from(weight);
@@ -573,6 +619,38 @@ mod tests {
         for _ in 0..5_000 {
             assert!(!BuildingKind::pick(&mut rng, 0).is_low_rise());
         }
+    }
+
+    #[test]
+    fn baseline_profile_picks_only_the_shared_kinds_by_their_weights() {
+        assert_eq!(
+            BuildingKind::total_weight_in(NEAR_LAYER, BuildingProfile::Baseline),
+            143
+        );
+        assert_eq!(
+            BuildingKind::total_weight_in(0, BuildingProfile::Baseline),
+            143
+        );
+        let mut rng = Mulberry32::new(11);
+        let mut counts = std::collections::HashMap::new();
+        for _ in 0..14_300 {
+            let kind = BuildingKind::pick_in(&mut rng, NEAR_LAYER, BuildingProfile::Baseline);
+            assert!(!kind.is_extension(), "{kind:?}");
+            *counts.entry(kind).or_insert(0) += 1;
+        }
+        // Box (18 of 143) about 1800 times; Tvtower (3) about 300.
+        assert!((1600..2000).contains(&counts[&BuildingKind::Box]));
+        assert!((220..380).contains(&counts[&BuildingKind::Tvtower]));
+        assert_eq!(counts.len(), SPEC_KIND_COUNT);
+        assert!(BuildingProfile::All.allows(BuildingKind::Warehouse));
+        assert!(!BuildingProfile::Baseline.allows(BuildingKind::Warehouse));
+        assert!(BuildingProfile::Baseline.allows(BuildingKind::Pagoda));
+        assert_eq!(
+            BuildingProfile::parse("Baseline"),
+            Ok(BuildingProfile::Baseline)
+        );
+        assert_eq!(BuildingProfile::parse("all"), Ok(BuildingProfile::All));
+        assert!(BuildingProfile::parse("python").is_err());
     }
 
     #[test]

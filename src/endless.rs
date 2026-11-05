@@ -22,6 +22,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::model::building::Building;
+use crate::model::building::BuildingProfile;
 use crate::model::city::{endless_layer_generator, CityGenerator};
 use crate::model::grid::Grid;
 use crate::model::palette::Palette;
@@ -156,8 +157,8 @@ pub struct LayerImage<'a> {
 }
 
 impl EndlessLayer {
-    fn new(seed: u32, layer: u8, grid: &Grid, palette: &Palette) -> Self {
-        let mut generator = endless_layer_generator(seed, layer, grid.max_h);
+    fn new(seed: u32, layer: u8, grid: &Grid, palette: &Palette, profile: BuildingProfile) -> Self {
+        let mut generator = endless_layer_generator(seed, layer, grid.max_h).with_profile(profile);
         generator.extend_to(ORIGIN_START + buffer_width(grid.cols) + GENERATE_AHEAD);
         let raster = Self::draw(&generator, ORIGIN_START, grid, palette);
         Self {
@@ -245,11 +246,22 @@ impl EndlessCity {
     /// (used after a resize). Generation is deterministic, so the buildings
     /// match a city that scrolled the whole way.
     pub fn with_camera(seed: u32, grid: &Grid, palette: &Palette, camera: f64) -> Self {
+        Self::with_profile(seed, grid, palette, camera, BuildingProfile::All)
+    }
+
+    /// [`EndlessCity::with_camera`] with `profile`'s kinds and footprints.
+    pub fn with_profile(
+        seed: u32,
+        grid: &Grid,
+        palette: &Palette,
+        camera: f64,
+        profile: BuildingProfile,
+    ) -> Self {
         let mut city = Self {
             grid: *grid,
             camera: camera.max(0.0),
             layers: (0..4)
-                .map(|layer| EndlessLayer::new(seed, layer, grid, palette))
+                .map(|layer| EndlessLayer::new(seed, layer, grid, palette, profile))
                 .collect(),
         };
         city.ensure_covered(palette);

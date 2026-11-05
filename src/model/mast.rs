@@ -1,10 +1,13 @@
 //! Rooftop masts and beacons (Rebuild Prompt, "Deterministic Generation",
 //! masts paragraph).
 //!
-//! Explicit tower kinds always get a mast. Other tall buildings get one 30%
-//! of the time. Factories and the low-rise extension kinds never do. A mast
-//! is 4 to 16 cells long, clipped to the headroom under `max_h`, and is
-//! centered over the highest tier.
+//! The tower kinds the Python reference gives a structural mast (spire,
+//! pointed, needle, TV tower, twin, onion, clock tower, pagoda) always get
+//! one; other buildings at least 45% of `max_h` tall get one 30% of the
+//! time (GitHub issue #2; owner decision, 2026-11-05: match Python).
+//! Factories and the low-rise extension kinds never do. A mast is 4 to 16
+//! cells long, clipped to the headroom under `max_h`, and is centered over
+//! the highest tier.
 
 use super::building::{BuildingKind, Mast, Tier};
 use super::rng::Mulberry32;
@@ -12,8 +15,8 @@ use super::rng::Mulberry32;
 /// Chance that an eligible tall building gets a mast.
 pub const MAST_CHANCE: f64 = 0.3;
 /// A building is "tall" when its roof reaches this fraction of `max_h`
-/// (assumption AS-R004).
-pub const TALL_FRACTION: f64 = 0.5;
+/// (the Python reference's 45%; was 50% under assumption AS-R004).
+pub const TALL_FRACTION: f64 = 0.45;
 /// Inclusive mast length range in cells, before clipping to headroom.
 pub const MAST_LENGTH: (i64, i64) = (4, 16);
 /// Beacon blink period range in seconds.
@@ -30,11 +33,12 @@ pub enum MastRule {
     Never,
 }
 
-/// Mast rule for a kind. Needles and TV towers are the explicit tower kinds
-/// (assumption AS-R003).
+/// Mast rule for a kind: the Python reference's tower kinds always get one
+/// (replacing assumption AS-R003, which had only needles and TV towers).
 pub fn mast_rule(kind: BuildingKind) -> MastRule {
+    use BuildingKind::*;
     match kind {
-        BuildingKind::Needle | BuildingKind::Tvtower => MastRule::Always,
+        Spire | Pointed | Needle | Tvtower | Twin | Onion | Clocktower | Pagoda => MastRule::Always,
         BuildingKind::Factory => MastRule::Never,
         kind if kind.is_low_rise() => MastRule::Never,
         _ => MastRule::WhenTall,
@@ -93,13 +97,53 @@ mod tests {
 
     #[test]
     fn rules_follow_spec_and_extensions() {
-        assert_eq!(mast_rule(BuildingKind::Needle), MastRule::Always);
-        assert_eq!(mast_rule(BuildingKind::Tvtower), MastRule::Always);
+        use BuildingKind::*;
+        for kind in [
+            Spire, Pointed, Needle, Tvtower, Twin, Onion, Clocktower, Pagoda,
+        ] {
+            assert_eq!(mast_rule(kind), MastRule::Always, "{kind:?}");
+        }
+        for kind in [
+            Stepped, Ziggurat, Gable, Arch, Slant, Crownblock, Watertank, Invpyramid, Jenga,
+        ] {
+            assert_eq!(mast_rule(kind), MastRule::WhenTall, "{kind:?}");
+        }
         assert_eq!(mast_rule(BuildingKind::Factory), MastRule::Never);
         assert_eq!(mast_rule(BuildingKind::Warehouse), MastRule::Never);
         assert_eq!(mast_rule(BuildingKind::FiveOverOne), MastRule::Never);
         assert_eq!(mast_rule(BuildingKind::Taper), MastRule::WhenTall);
         assert_eq!(mast_rule(BuildingKind::Box), MastRule::WhenTall);
+    }
+
+    #[test]
+    fn every_tower_kind_gets_a_mast_when_there_is_headroom() {
+        use BuildingKind::*;
+        for kind in [
+            Spire, Pointed, Needle, Tvtower, Twin, Onion, Clocktower, Pagoda,
+        ] {
+            for seed in 0..10 {
+                let mut rng = Mulberry32::new(seed);
+                let (tiers, used) = build_tiers(kind, 0, 13, 40, 120, &mut rng);
+                assert_eq!(used, kind);
+                let mast = plan_mast(kind, &tiers, 120, &mut rng).expect("a mast");
+                let roof = tiers.iter().map(|t| t.h1).max().unwrap();
+                assert_eq!(mast.h0, roof, "{kind:?} on its top");
+                assert!((4..=16).contains(&(mast.h1 - mast.h0)), "{kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn tall_means_45_percent_of_max_height() {
+        // A 45-row box under max 100 may get a mast; a 44-row one never.
+        let roll = |height: i32| {
+            (0..200).any(|seed| {
+                let tiers = vec![Tier::new(0, 9, 0, height).unwrap()];
+                plan_mast(BuildingKind::Box, &tiers, 100, &mut Mulberry32::new(seed)).is_some()
+            })
+        };
+        assert!(roll(45));
+        assert!(!roll(44));
     }
 
     #[test]

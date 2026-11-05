@@ -50,6 +50,14 @@ To preview a whole generated city as text:
 cargo run --bin city -- 160 60 1    # columns, rows, seed
 ```
 
+To see every building kind side by side (GitHub issue #2), labelled, in three rows: the 19 kinds shared with the Python version at a typical width, the same at their minimum widths, and the 9 Starry Journey extensions:
+
+```powershell
+cargo run --release --bin gallery -- 1 classic 3   # seed, palette, screen pixels per cell
+```
+
+It writes `target/building-gallery/gallery-<seed>-<palette>.png` and prints the path. To compare whole skylines with the Python version, run the app with `--buildings baseline --pixel-size spec`.
+
 To preview the procedural clouds as an image (BMP, opens in Windows Photos):
 
 ```powershell
@@ -73,6 +81,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 | `--pixel-size N` | Each virtual pixel is N screen pixels (1–16, times display scaling). Default 3. Bigger windows show more city and more sky. |
 | `--pixel-size spec` | Scale pixels with screen height instead, so every screen shows about 240 virtual rows (the Rebuild Prompt formula). |
 | `--timer D`, `--deadline D` | Finish building the city in exactly D, whatever the speed. A bare number is minutes; `90s`, `25m`, `1h30m` also work. |
+| `--buildings B` | Building kinds: `all` (default), or `baseline`: only the 19 kinds shared with the Python version, at its per-layer widths (no extension kinds, no wide footprints), for comparing the two. |
 | `--clouds C` | Cloud cover: `clear`, `puffs`, `scattered` (default), `broken`, `overcast`, or `storm`. |
 | `--endless` | Endless mode: the city is built, then scrolls forever in four parallax layers. Silly status lines show while it builds (unless `--message` is set). Works with `--timer`. |
 | `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
@@ -124,6 +133,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |
 | [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind), `mast`, `tint`, `windows`, `decorations`, and `city` (the generator that assembles them). |
 | [src/bin/shapes.rs](src/bin/shapes.rs), [src/bin/city.rs](src/bin/city.rs) | Text previews of building shapes and of a whole generated city. |
+| [src/bin/gallery.rs](src/bin/gallery.rs) | The building gallery: every kind drawn with the real rasterizer, labelled, as a PNG. |
 | [tests/](tests/) | Integration tests. |
 | [docs/Rebuild Prompt.md](docs/Rebuild%20Prompt.md) | Primary behavioral specification, carried over from the Python/browser version. |
 | [docs/product.md](docs/product.md) | Product scope, Rust-specific deviations, and deferred extensions. |

@@ -185,17 +185,22 @@ fn stepped(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     }
 }
 
-/// Setbacks crowned by a thin dark spire.
+/// A base with one or two setbacks; the spire itself is its structural
+/// mast (see `mast.rs`), as in the Python reference (GitHub issue #2).
 fn spire(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     let base = portion(h, frac(rng, 0.5, 0.65), 2, h - 3);
     stack.push(x0, x0 + w, 0, base);
     let mid_w = match_parity(w - 4, w, 3);
     let (a, b) = centered(x0, w, mid_w);
     let mid_top = base + ((h - base) / 2).max(1);
-    stack.push(a, b, base, mid_top);
-    let spire_w = match_parity(1, w, 1);
-    let (sa, sb) = centered(x0, w, spire_w);
-    stack.push_dark(sa, sb, mid_top, h);
+    let top_w = match_parity(mid_w - 4, w, 1);
+    if rng.next_f64() < 0.5 && top_w >= 3 {
+        stack.push(a, b, base, mid_top);
+        let (ta, tb) = centered(x0, w, top_w);
+        stack.push(ta, tb, mid_top, h);
+    } else {
+        stack.push(a, b, base, h);
+    }
 }
 
 /// Body with a stepped roof that insets one column per side every
@@ -319,7 +324,25 @@ fn tvtower(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     stack.push_dark(sa, sb, sphere_floor + rows, h);
 }
 
-/// Two towers joined by a sky bridge; one tower may be shorter.
+/// A windowed body from `floor` to `top` over `[a, b)` with a steep dark
+/// roof (one column in per side every two rows), as on a pointed tower.
+fn pointed_top(stack: &mut Stack, a: i32, b: i32, floor: i32, top: i32) {
+    let w = b - a;
+    let roof_rows = ((w - 1) / 2 * 2).min((top - floor) / 3).max(1);
+    let body_top = top - roof_rows;
+    stack.push(a, b, floor, body_top);
+    for row in 0..roof_rows {
+        let inset = row / 2 + 1;
+        if w - 2 * inset < 1 {
+            break;
+        }
+        stack.push_dark(a + inset, b - inset, body_top + row, body_top + row + 1);
+    }
+}
+
+/// Two separate pointed towers joined by a lit sky bridge; one tower may
+/// be shorter (GitHub issue #2: "Two separate pointed towers joined by a
+/// solid lit skybridge").
 fn twin(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     let gap = rng.rand_int(1, 3) as i32;
     let tower = (w - gap) / 2;
@@ -334,29 +357,34 @@ fn twin(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     let bridge = portion(h, frac(rng, 0.4, 0.6), 2, left_top.min(right_top) - 3);
     stack.push(left.0, left.1, 0, bridge);
     stack.push(right.0, right.1, 0, bridge);
-    stack.push_dark(x0, x0 + w, bridge, bridge + 2);
-    stack.push(left.0, left.1, bridge + 2, left_top);
-    stack.push(right.0, right.1, bridge + 2, right_top);
+    stack.push_solid(x0, x0 + w, bridge, bridge + 2);
+    pointed_top(stack, left.0, left.1, bridge + 2, left_top);
+    pointed_top(stack, right.0, right.1, bridge + 2, right_top);
 }
 
-/// Body topped by an onion dome and a thin tip.
+/// Body, a narrower windowed drum, and a rounded dome overhanging the
+/// drum; the tip is the mast (GitHub issue #2: "Base, narrower drum,
+/// rounded overhanging dome and mast").
 fn onion(stack: &mut Stack, x0: i32, w: i32, h: i32) {
     let dome_w = match_parity((w - 2).min(9), w, 3);
+    let drum_w = match_parity(dome_w - 4, w, 1).max(1);
     let mut widths = vec![dome_w - 2, dome_w, dome_w, dome_w - 2];
     let mut next = dome_w - 4;
     while next >= 1 {
         widths.push(next);
         next -= 2;
     }
-    let tip = match_parity(1, w, 1);
-    widths.push(tip);
+    let drum_rows = 2;
     let max_rows = (h * 9) / 20;
-    widths.truncate(max_rows.max(1) as usize);
-    let body_top = h - widths.len() as i32;
-    stack.push(x0, x0 + w, 0, body_top);
+    widths.truncate((max_rows - drum_rows).max(1) as usize);
+    let dome_floor = h - widths.len() as i32;
+    let drum_floor = (dome_floor - drum_rows).max(1);
+    stack.push(x0, x0 + w, 0, drum_floor);
+    let (da, db) = centered(x0, w, drum_w);
+    stack.push(da, db, drum_floor, dome_floor);
     for (row, row_w) in widths.iter().enumerate() {
         let (a, b) = centered(x0, w, (*row_w).max(1));
-        let row = body_top + row as i32;
+        let row = dome_floor + row as i32;
         stack.push_dark(a, b, row, row + 1);
     }
 }
@@ -393,24 +421,32 @@ fn invpyramid(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) 
     stack.push(x0, x0 + w, floor, h);
 }
 
-/// Body, narrower tower with a lit clock band, and a pointed cap.
+/// Body, a narrower shaft, a lit clock section overhanging the shaft, a
+/// belfry, and a pointed cap with the mast above (GitHub issue #2).
 fn clocktower(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     let inset = if w >= 9 { rng.rand_int(1, 2) as i32 } else { 1 };
     let tower_w = (w - 2 * inset).max(3);
     let (ta, tb) = centered(x0, w, tower_w);
-    let cap_rows = ((tower_w - 1) / 2).min(h / 5).max(1);
-    let clock_floor = h - cap_rows - 3;
+    let clock_w = (tower_w + 2).min(w);
+    let (ca, cb) = centered(x0, w, clock_w);
+    let belfry_w = match_parity(tower_w - 2, w, 1).max(1);
+    let (ba, bb) = centered(x0, w, belfry_w);
+    let belfry_rows = 2;
+    let cap_rows = ((belfry_w - 1) / 2).min(h / 6).max(1);
+    let clock_floor = h - cap_rows - belfry_rows - 3;
     let body_top = portion(h, frac(rng, 0.35, 0.5), 2, clock_floor - 1);
     stack.push(x0, x0 + w, 0, body_top);
     stack.push(ta, tb, body_top, clock_floor);
-    stack.push_solid(ta, tb, clock_floor, clock_floor + 3);
+    stack.push_solid(ca, cb, clock_floor, clock_floor + 3);
+    let belfry_floor = clock_floor + 3;
+    stack.push(ba, bb, belfry_floor, belfry_floor + belfry_rows);
     for row in 0..cap_rows {
         let row_inset = row + 1;
-        if tower_w - 2 * row_inset < 1 {
+        if belfry_w - 2 * row_inset < 1 {
             break;
         }
-        let floor = clock_floor + 3 + row;
-        stack.push_dark(ta + row_inset, tb - row_inset, floor, floor + 1);
+        let floor = belfry_floor + belfry_rows + row;
+        stack.push_dark(ba + row_inset, bb - row_inset, floor, floor + 1);
     }
 }
 
@@ -457,7 +493,8 @@ fn factory(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     stack.push_dark(chimney_x, chimney_x + chimney_w, body_top, chimney_top);
 }
 
-/// Stacked storeys, each with wider dark eaves, and a thin finial.
+/// Stacked storeys, each with wider dark eaves, and a small pointed cap
+/// under the mast (GitHub issue #2: "pointed cap and mast").
 fn pagoda(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
     let mut body_w = w - 2;
     let mut floor = 0;
@@ -474,9 +511,12 @@ fn pagoda(stack: &mut Stack, x0: i32, w: i32, h: i32, rng: &mut Mulberry32) {
         floor += rows + 1;
         body_w -= 2;
     }
+    let cap = match_parity(3, w, 1);
+    let (ca, cb) = centered(x0, w, cap);
+    stack.push_dark(ca, cb, floor, (floor + 1).min(h));
     let tip = match_parity(1, w, 1);
     let (ta, tb) = centered(x0, w, tip);
-    stack.push_dark(ta, tb, floor, (floor + 2).min(h));
+    stack.push_dark(ta, tb, floor + 1, (floor + 2).min(h));
 }
 
 // ----- Starry Journey extensions (docs/product.md, "Expanded buildings") -----
@@ -748,6 +788,86 @@ pub fn ascii_rows(tiers: &[Tier], x0: i32, width: i32, height: i32) -> Vec<Strin
 mod tests {
     use super::*;
     use crate::model::building::{Building, WindowSet, KIND_WEIGHTS};
+
+    /// Tiers for `kind` at `width x height`, from a fixed seed.
+    fn shape(kind: BuildingKind, width: i32, height: i32, seed: u32) -> Vec<Tier> {
+        let mut rng = Mulberry32::new(seed);
+        let (tiers, used) = build_tiers(kind, 0, width, height, 200, &mut rng);
+        assert_eq!(used, kind, "{kind:?} fits {width}x{height}");
+        tiers
+    }
+
+    #[test]
+    fn spires_have_no_dark_spike_their_mast_is_the_spire() {
+        for seed in 0..20 {
+            let tiers = shape(BuildingKind::Spire, 11, 60, seed);
+            assert!(tiers.iter().all(|t| !t.dark), "seed {seed}");
+            assert!((2..=3).contains(&tiers.len()), "1-2 setbacks: {tiers:?}");
+            assert_eq!(tiers.iter().map(|t| t.h1).max(), Some(60));
+        }
+    }
+
+    #[test]
+    fn twin_towers_are_pointed_and_joined_by_a_lit_bridge() {
+        for seed in 0..20 {
+            let tiers = shape(BuildingKind::Twin, 15, 60, seed);
+            let bridge: Vec<&Tier> = tiers.iter().filter(|t| t.solid).collect();
+            assert_eq!(bridge.len(), 1, "seed {seed}");
+            assert_eq!((bridge[0].x0, bridge[0].x1), (0, 15), "spans both towers");
+            // Each tower ends in dark roof rows narrowing to its middle.
+            for half in [0..7, 8..15] {
+                let roof: Vec<&Tier> = tiers
+                    .iter()
+                    .filter(|t| t.dark && half.contains(&t.x0))
+                    .collect();
+                assert!(roof.len() >= 2, "seed {seed}: {tiers:?}");
+                assert!(roof.windows(2).all(|r| r[1].width() <= r[0].width()));
+            }
+        }
+    }
+
+    #[test]
+    fn onion_domes_overhang_a_narrower_drum() {
+        let tiers = shape(BuildingKind::Onion, 11, 50, 1);
+        let dome_widest = tiers
+            .iter()
+            .filter(|t| t.dark)
+            .map(Tier::width)
+            .max()
+            .unwrap();
+        let drum = tiers
+            .iter()
+            .filter(|t| !t.dark && t.width() < 11)
+            .min_by_key(|t| t.width())
+            .expect("a drum");
+        assert!(dome_widest > drum.width(), "the dome overhangs the drum");
+        let top = tiers.iter().max_by_key(|t| t.h1).unwrap();
+        assert!(top.dark && top.width() >= 1);
+    }
+
+    #[test]
+    fn clock_sections_overhang_the_shaft_under_a_belfry() {
+        for seed in 0..10 {
+            let tiers = shape(BuildingKind::Clocktower, 11, 60, seed);
+            let clock = tiers.iter().find(|t| t.solid).expect("a clock section");
+            let below = tiers.iter().find(|t| t.h1 == clock.h0).expect("the shaft");
+            let above = tiers.iter().find(|t| t.h0 == clock.h1).expect("the belfry");
+            assert!(
+                clock.width() > below.width(),
+                "seed {seed}: overhangs the shaft"
+            );
+            assert!(above.width() < clock.width() && !above.dark && !above.solid);
+        }
+    }
+
+    #[test]
+    fn pagodas_end_in_a_small_pointed_cap() {
+        let tiers = shape(BuildingKind::Pagoda, 13, 40, 2);
+        let mut top: Vec<&Tier> = tiers.iter().filter(|t| t.dark).collect();
+        top.sort_by_key(|t| t.h0);
+        let (cap, tip) = (top[top.len() - 2], top[top.len() - 1]);
+        assert_eq!((cap.width(), tip.width(), tip.h0), (3, 1, cap.h1));
+    }
 
     fn as_building(tiers: Vec<Tier>, kind: BuildingKind, x0: i32, width: i32) -> Building {
         Building {

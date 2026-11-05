@@ -11,6 +11,7 @@
 use crate::clock::{parse_duration, ConstructionClock};
 use crate::clouds::Cover;
 use crate::message::parse_message;
+use crate::model::building::BuildingProfile;
 use crate::model::grid::CellScaling;
 use crate::model::rng::js_round;
 use crate::moon::{parse_moon_phase, START_PHASE_STEP};
@@ -35,6 +36,9 @@ pub const USAGE: &str = "\
 Usage: starry-journey [options]
 
 Options:
+  --buildings B      Building kinds: all (default), or baseline: only the 19
+                     kinds shared with the Python version, at its widths, for
+                     comparing the two.
   --clouds C         Cloud cover: clear, puffs, scattered (default), broken,
                      overcast, or storm. Press C to cycle it.
   --endless          Endless mode: the city is built, then scrolls forever in
@@ -110,6 +114,8 @@ pub struct LaunchOptions {
     pub endless: bool,
     /// Cloud cover preset (`--clouds`).
     pub clouds: Cover,
+    /// Which building kinds and footprints (`--buildings`).
+    pub buildings: BuildingProfile,
     /// When ground searchlights appear (`--searchlights`).
     pub searchlights: SearchlightMode,
     /// The city seed (`--seed`); `None` picks a random one.
@@ -135,6 +141,7 @@ impl Default for LaunchOptions {
             message: None,
             endless: false,
             clouds: Cover::default(),
+            buildings: BuildingProfile::default(),
             searchlights: SearchlightMode::default(),
             seed: None,
             snapshot: None,
@@ -184,6 +191,7 @@ where
     let mut size_given = false;
     let mut dir_given = false;
     let mut searchlights_given = false;
+    let mut buildings_given = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -270,6 +278,17 @@ where
                     .or_else(|| args.next())
                     .ok_or("--message needs text, for example --message \"Back soon\"")?;
                 options.message = parse_message(&value)?;
+            }
+            "--buildings" => {
+                if buildings_given {
+                    return Err("--buildings was given more than once".to_string());
+                }
+                buildings_given = true;
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--buildings needs all or baseline")?;
+                options.buildings = BuildingProfile::parse(&value)
+                    .map_err(|message| format!("--buildings {message}"))?;
             }
             "--searchlights" => {
                 if searchlights_given {
@@ -400,6 +419,18 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buildings_option_parses_and_defaults_to_all() {
+        assert_eq!(parse(&[]).unwrap().buildings, BuildingProfile::All);
+        assert_eq!(
+            parse(&["--buildings", "baseline"]).unwrap().buildings,
+            BuildingProfile::Baseline
+        );
+        assert!(parse(&["--buildings"]).is_err());
+        assert!(parse(&["--buildings", "python"]).is_err());
+        assert!(parse(&["--buildings", "all", "--buildings", "all"]).is_err());
+    }
 
     #[test]
     fn searchlight_option_parses_and_defaults_to_auto() {
