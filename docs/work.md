@@ -414,6 +414,47 @@
   - `cargo test`: PASS, 267 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **City glow on the clouds (owner, 2026-11-04):** the first cloud-lighting slice. The owner chose glow plus searchlights for this sprint (sunlight waits for a day cycle), ground searchlights, and glow "from the windows".
+  - `cityglow::glow_row` sums each column's window cells (decoded to linear light; unlit windows are dark and add little), box-blurs the sums 16 cells either side, and scales them so 30 window cells is full glow.
+  - The renderer keeps a linear `Rgba8Unorm` glow texture with 5 rows: row 0 is the still city, rewritten whenever it is uploaded; rows 1-4 are the Endless layers, rewritten when a layer buffer changes. It is bound at binding 13; `Params.glow.x` is the ground row.
+  - The shader lights each cloud layer every frame, so the glow stays under the windows that cast it while Endless scrolls. It adds `glow × CITY_GLOW_STRENGTH (1.0) × exp(-height / (0.45 × ground row))`, scaled by cloud alpha, and more on undersides. "Underside" is the open sky 3 and 8 rows below the pixel in the same layer; tops and middles get 12%.
+  - Endless layers are weighted 0.1/0.15/0.3/0.75 (far to near). Each layer is a whole city with windows hidden behind nearer ones; summed at full weight, the Endless sky went olive.
+  - Tuned with snapshots (seed 7, 960x540, `--timer 10s`, 40 s; broken and overcast; Endless at 90 s), compared against `main` rendered from a worktree:
+    - with a single "underside" sample 3 rows down, the glow drew stripes wherever heaps overlap inside a mass; two reaches made it a soft wash up from cloud bottoms.
+  - Looks: with the default palette's yellow windows, the glow on gray cloud reads as a warm olive-khaki. This is waiting for owner review.
+  - Tests: glow color and spread, denser columns brighter and capped at full, only shown window cells glow, size checks, and byte encoding.
+  - `cargo test`: PASS, 272 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (snapshots only).
+- **High sheet reaches the top (owner, 2026-11-05):** "for the overcast clouds there is a gap at the top of the scene" (screenshot, Endless overcast).
+  - Cause: `Layer::High`'s profile faded in over the top 10% of its band (`smoothstep(0.0, 0.1, v)`), leaving a dark strip about 15 rows deep.
+  - The fade is gone, so the sheet runs right to the top, as the owner asked earlier ("The top of the background clouds should likely be aligned to the top of the scene").
+  - Checked with snapshots (seed 7, Endless overcast, 90 s), before and after.
+  - `cargo test`: PASS, 272 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+- **Ground searchlights (owner, 2026-11-05: "Lets get the shylight done"):** the owner's choices from 2026-11-04 were beams plus cloud spots, from street level "like a grand opening".
+  - Assumption (the owner didn't say how often): shows come now and then. Each 10-minute stretch has a 60% chance of one show of 70-120 s, with 2 or 3 lights; each switches on and off over 3 s. `--searchlights always` runs one forever; `off` disables them. This is not confirmed yet.
+  - `searchlights::beams_at`: lights spread across the screen as it was when the show started (the renderer keeps that road view), so in Endless they scroll with the street. In `always` mode a light that scrolls off the left comes back on the right. Each sweeps 15-35 degrees each way, every 9-15 s; neighbours start half a sweep apart, so their beams cross.
+  - Shader: each beam has a soft gaussian cross-section that widens 0.035 per pixel of length and fades over 2 sky heights. Its color is the palette's star color.
+  - The beam is drawn just before the nearest cloud layer, and only that layer blocks it (10 steps along the beam, each stopping 85% of the cloud's alpha) and catches its pool (0.7). The beams rise from our street, so they pass in front of the farther layers, including the low scud along the horizon. The city, drawn after, hides their feet.
+  - Tuned with snapshots (seed 7, 960x540; broken, overcast, and storm; Endless at 60 s and 120 s):
+    - blocking with every layer: distant clouds low in the sky swallowed two of three beams;
+    - blocking with layers 2-3: overcast scud at the skyline swallowed them all;
+    - a hard-edged cross-section looked like white sticks.
+  - Tests: shows come about 60% of stretches and last 70-120 s, lights switch smoothly, beams sweep and cross, lights stay put in the world (and wrap in `always`), off and bad times stay dark, and option parsing.
+  - `cargo test`: PASS, 279 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (snapshots only).
+- **Searchlight frequency and rules (owner, 2026-11-05):** "In endless mode I would assume they are very rare. ... when we get to weather they should never be on if it is raining ... At most 2 mins duration once they turn on."
+  - Endless: `SearchlightMode::for_scene` turns `Auto` into `Rare`, a 10% chance per 10-minute stretch (about one show every hour and forty minutes). Normal stays at 60% (assumption reviewed by the owner: "Looks great").
+  - Duration: shows were already 70-120 s including switching on and off. A test now checks no show exceeds 120 s.
+  - Rain: there is no weather yet. The rule is recorded in the module header and in `docs/product.md` under Weather, for the weather sprint.
+  - `cargo test`: PASS, 280 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

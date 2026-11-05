@@ -7,6 +7,7 @@
 //! also without graphics dependencies. The binary (`main.rs`) owns windowing
 //! and GPU presentation.
 
+pub mod cityglow;
 pub mod clock;
 pub mod cloudgen;
 pub mod clouds;
@@ -18,6 +19,7 @@ pub mod moon;
 pub mod quips;
 pub mod raster;
 pub mod reveal;
+pub mod searchlights;
 pub mod skyclouds;
 pub mod snapshot;
 pub mod station;

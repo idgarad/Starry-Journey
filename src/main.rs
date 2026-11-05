@@ -15,11 +15,12 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use starry_journey::cityglow::{glow_rgba, glow_row};
 use starry_journey::clock::{format_remaining, ConstructionClock};
 use starry_journey::cloudgen::{Light, CLOUD_LAYERS};
 use starry_journey::clouds::Cover;
 use starry_journey::config::{parse_args, LaunchOptions, USAGE};
-use starry_journey::endless::EndlessCity;
+use starry_journey::endless::{buffer_width, decode_srgb, EndlessCity};
 use starry_journey::message::{message_font, render_message_box, MessageImage, Notice};
 use starry_journey::model::building::Building;
 use starry_journey::model::city::generate_normal_city;
@@ -32,6 +33,7 @@ use starry_journey::moon::{
 use starry_journey::quips::quip_at;
 use starry_journey::raster::{generate_stars, CityRaster, RasterOptions, Star, WindowLighting};
 use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
+use starry_journey::searchlights::{beams_at, show_start, Beam, MAX_LIGHTS as SEARCHLIGHTS};
 use starry_journey::skyclouds::{SkyClouds, SLOTS as CLOUD_SLOTS};
 use starry_journey::snapshot::{encode_png, frame_name, run_id};
 use starry_journey::station::{radio_line, StationFate};
@@ -676,11 +678,19 @@ struct Renderer {
     cover: Cover,
     /// The cloud strip image, lit by the moon.
     cloud_texture: wgpu::Texture,
+    /// The city glow rows (linear RGB per column; see `cityglow`): row 0
+    /// for the still city, rows 1-4 for the Endless layers far to near.
+    glow_texture: wgpu::Texture,
     options: LaunchOptions,
     scale_factor: f64,
     /// Snapshot mode: seconds of simulated time since the start, which
     /// replaces the real clock; `None` runs on real time.
     virtual_elapsed: Option<f64>,
+    /// The running searchlight show's start and the road view then, so its
+    /// lights stay put in the world; `None` between shows.
+    searchlight_anchor: Option<(f64, f64)>,
+    /// The searchlight beams this frame.
+    beams: Vec<Beam>,
 }
 
 /// Opens the device on `adapter`, asking for the adapter's real texture
@@ -802,9 +812,9 @@ impl Renderer {
             label: Some("City presentation shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("present.wgsl").into()),
         });
-        // Binding 1 is the uniform buffer; 0 and 2..=12 are textures (see
+        // Binding 1 is the uniform buffer; 0 and 2..=13 are textures (see
         // present.wgsl).
-        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..13)
+        let entries: Vec<wgpu::BindGroupLayoutEntry> = (0..14)
             .map(|binding| wgpu::BindGroupLayoutEntry {
                 binding,
                 visibility: wgpu::ShaderStages::FRAGMENT,
@@ -885,6 +895,7 @@ impl Renderer {
         let front_texture = create_city_texture(&device, &scene.grid);
         let vehicle_texture = create_vehicle_texture(&device);
         let cloud_texture = create_layer_texture(&device, 1, 1);
+        let glow_texture = create_glow_texture(&device, glow_width(&scene.grid));
         let grid_for_clouds = scene.grid;
         let still_texture = create_city_texture(&device, &scene.grid);
         let moon_texture = create_layer_texture(&device, 1, 1);
@@ -902,6 +913,7 @@ impl Renderer {
                 front: &front_texture,
                 vehicles: &vehicle_texture,
                 clouds: &cloud_texture,
+                glow: &glow_texture,
             },
             &params,
         );
@@ -949,9 +961,12 @@ impl Renderer {
             ),
             cover: options.clouds,
             cloud_texture,
+            glow_texture,
             options,
             scale_factor,
             virtual_elapsed: None,
+            searchlight_anchor: None,
+            beams: Vec::new(),
         };
         renderer.upload();
         renderer.update_message();
@@ -1073,6 +1088,9 @@ impl Renderer {
 
     /// New clouds for the current scene (same seed and grid).
     fn rebuild_clouds(&mut self) {
+        // The scene changed (resize, restart, or mode): searchlights are
+        // placed afresh against the new view.
+        self.searchlight_anchor = None;
         self.sky_clouds = SkyClouds::new(
             self.scene.seed,
             self.scene.grid.cols,
@@ -1222,6 +1240,7 @@ impl Renderer {
         // The GPU places the layers and the moon, so motion needs only new
         // offsets (and an upload when a layer buffer was rebased).
         self.scene.scroll(motion_dt, self.speed);
+        self.update_searchlights(now);
         let city_changed = self.scene.view.take_dirty() || finished;
         if city_changed {
             self.scene.compose_city();
@@ -1237,6 +1256,38 @@ impl Renderer {
         self.write_params();
         self.update_status(elapsed);
         self.update_message();
+    }
+
+    /// Works out this frame's searchlight beams (`--searchlights`): a show
+    /// keeps the road view from when it started, so its lights stay put in
+    /// the world.
+    fn update_searchlights(&mut self, now: Instant) {
+        let seconds = self.seconds(now);
+        let seed = self.scene.seed;
+        let mode = self
+            .options
+            .searchlights
+            .for_scene(self.scene.endless.is_some());
+        let view = self.scene.road_view();
+        self.searchlight_anchor = match (show_start(seed, mode, seconds), self.searchlight_anchor) {
+            (Some(start), Some((anchored, anchor))) if anchored == start => {
+                Some((anchored, anchor))
+            }
+            (Some(start), _) => Some((start, view)),
+            (None, _) => None,
+        };
+        self.beams = self
+            .searchlight_anchor
+            .map_or_else(Vec::new, |(_, anchor)| {
+                beams_at(
+                    seed,
+                    mode,
+                    seconds,
+                    f64::from(self.scene.grid.cols),
+                    anchor,
+                    view,
+                )
+            });
     }
 
     /// Shows the silly startup lines while an Endless city is being built,
@@ -1336,8 +1387,36 @@ impl Renderer {
                 front: &self.front_texture,
                 vehicles: &self.vehicle_texture,
                 clouds: &self.cloud_texture,
+                glow: &self.glow_texture,
             },
             &self.params,
+        );
+    }
+
+    /// Writes one city glow row (`row` 0: still city; 1-4: Endless layers).
+    fn write_glow_row(&self, row: u32, glow: &[[f32; 3]]) {
+        let width = self.glow_texture.size().width;
+        let mut rgba = glow_rgba(glow);
+        rgba.resize(width as usize * 4, 0);
+        rgba.truncate(width as usize * 4);
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.glow_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y: row, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d {
+                width,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
     }
 
@@ -1375,7 +1454,15 @@ impl Renderer {
                 },
                 self.layer_textures[index].size(),
             );
+            let glow = glow_row(
+                image.rgba,
+                image.window_index,
+                image.width,
+                image.height,
+                |_| true,
+            );
             self.layer_revisions[index] = image.revision;
+            self.write_glow_row(1 + index as u32, &glow);
         }
         if recreated {
             self.rebind();
@@ -1465,6 +1552,27 @@ impl Renderer {
                 front(b) as f32 + back_on
             }
         }));
+        // City glow: x the ground row (cells).
+        params.extend([self.scene.grid.ground_row as f32, 0.0, 0.0, 0.0]);
+        // Searchlights: their color (the palette's star color, linear) and
+        // count, then per slot the beam's foot (device pixels on screen),
+        // lean, and power.
+        let star = palette_at(self.palette_index).star.0;
+        let [r, g, b] = star.map(|c| decode_srgb(f64::from(c) / 255.0) as f32);
+        params.extend([r, g, b, self.beams.len().min(SEARCHLIGHTS) as f32]);
+        let road = self.scene.road_view();
+        let foot_y = f64::from(self.scene.grid.ground_row) * f64::from(cell);
+        for slot in 0..SEARCHLIGHTS {
+            match self.beams.get(slot) {
+                Some(beam) => params.extend([
+                    ((beam.x - road) * f64::from(cell)) as f32,
+                    foot_y as f32,
+                    beam.angle as f32,
+                    beam.power as f32,
+                ]),
+                None => params.extend([0.0; 4]),
+            }
+        }
         let bytes: Vec<u8> = params
             .iter()
             .flat_map(|value| value.to_le_bytes())
@@ -1556,6 +1664,12 @@ impl Renderer {
             self.still_texture = create_city_texture(&self.device, &self.scene.grid);
             self.rebind();
         }
+        if self.glow_texture.size().width != glow_width(&self.scene.grid) {
+            self.glow_texture = create_glow_texture(&self.device, glow_width(&self.scene.grid));
+            self.rebind();
+            // Every layer's glow row must be rewritten.
+            self.layer_revisions = [0; 4];
+        }
         self.write_grid_texture(&self.city_texture, &self.scene.sky);
         self.upload_still();
         self.upload_overlay();
@@ -1568,6 +1682,16 @@ impl Renderer {
     fn upload_still(&mut self) {
         if !self.scene.city.is_empty() {
             self.write_grid_texture(&self.still_texture, &self.scene.city);
+            let grid = &self.scene.grid;
+            let city = &self.scene.city;
+            let glow = glow_row(
+                city,
+                &self.scene.ownership.window_index,
+                grid.cols as usize,
+                grid.rows as usize,
+                |cell| city[cell * 4 + 3] > 0,
+            );
+            self.write_glow_row(0, &glow);
         }
     }
 
@@ -1856,7 +1980,7 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
-const PARAMS_BYTES: u64 = (11 + VEHICLE_SLOTS as u64) * 16;
+const PARAMS_BYTES: u64 = (13 + SEARCHLIGHTS as u64 + VEHICLE_SLOTS as u64) * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 
@@ -1872,6 +1996,33 @@ fn create_vehicle_texture(device: &wgpu::Device) -> wgpu::Texture {
 
 /// Creates an Endless layer texture: one sRGB texel per cell, alpha 0 on
 /// sky. The shader decodes it to linear light when it loads a texel.
+/// Rows of the city glow texture: the still city and four Endless layers.
+const GLOW_ROWS: u32 = 5;
+
+/// The city glow texture's width: wide enough for an Endless layer buffer
+/// (wider than the screen).
+fn glow_width(grid: &Grid) -> u32 {
+    buffer_width(grid.cols).max(grid.cols).max(1) as u32
+}
+
+/// The city glow texture: linear (not sRGB) RGBA, one row per city image.
+fn create_glow_texture(device: &wgpu::Device, width: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("City glow rows"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: GLOW_ROWS,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
 fn create_layer_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Endless layer buffer"),
@@ -1900,6 +2051,7 @@ struct BindTextures<'a> {
     front: &'a wgpu::Texture,
     vehicles: &'a wgpu::Texture,
     clouds: &'a wgpu::Texture,
+    glow: &'a wgpu::Texture,
 }
 
 fn create_bind_group(
@@ -1924,6 +2076,7 @@ fn create_bind_group(
         (10, view(textures.front)),
         (11, view(textures.vehicles)),
         (12, view(textures.clouds)),
+        (13, view(textures.glow)),
     ];
     let mut entries: Vec<wgpu::BindGroupEntry> = views
         .iter()
