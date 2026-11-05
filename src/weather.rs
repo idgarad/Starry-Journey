@@ -34,6 +34,9 @@ pub const RAIN_DENSITY: [f64; PRECIP_LAYERS] = [0.12, 0.09, 0.065, 0.045];
 /// Fall speeds in cells per second at scale 1.
 pub const RAIN_SPEED: f64 = 220.0;
 pub const SNOW_SPEED: f64 = 14.0;
+// Checked when building: snow falls at least 75% slower than rain (owner,
+// 2026-11-05).
+const _: () = assert!(SNOW_SPEED <= 0.25 * RAIN_SPEED);
 /// How much the wind pushes each kind sideways, per cell per second of
 /// wind: rain falls so fast that the real push would leave it vertical, so
 /// it is exaggerated until a storm slants it clearly; snow drifts with
@@ -303,11 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn snow_falls_at_least_75_percent_slower_than_rain_in_one_cell_flakes() {
-        assert!(
-            SNOW_SPEED <= 0.25 * RAIN_SPEED,
-            "owner: at least 75% slower"
-        );
+    fn snowflakes_are_one_cell_no_bigger_than_a_window() {
         let snow = Precipitation::default().layers(PrecipKind::Snow, 1.0);
         assert!(
             snow.iter().all(|flake| flake.size == 0.5),

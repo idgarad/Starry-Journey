@@ -538,7 +538,7 @@
     - the clouds' drift factor uses the wind's strength (`abs`);
     - a test ties both directions to the clouds' actual on-screen motion.
   - Snow (owner, 2026-11-05): "at least 75% slower than rain ... the max size of a snowflake is the same as a window size in the city":
-    - snow already fell at 14 cells/s against rain's 220 (94% slower); a test now pins snow at no more than 25% of rain's speed;
+    - snow already fell at 14 cells/s against rain's 220 (94% slower); a build-time check now keeps snow at no more than 25% of rain's speed;
     - windows are single cells, so every flake is exactly the one cell its center falls in (was up to 2 cells across);
     - farther flakes read as smaller by being dimmer (0.66-0.95 opacity, far to near);
     - the side-to-side wobble is unchanged;
