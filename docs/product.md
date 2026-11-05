@@ -110,6 +110,15 @@ These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are 
   - **Motion:** in Endless mode, faster parallax than the road (about 1.3 to 1.5 times road speed). Trees sway by shifting crown rows one cell at a time with a per-tree seeded phase.
   - **Street lamps:** warm lamps with a small glow along the road edge, colored from the palette's headlight color.
 - A river with window reflections below the road. This needs rows below the road, which means raising the city and road, so it is a separate, larger layout change.
+- **Torn Paper effect (owner idea, 2026-11-05):** under Ink on Parchment the puffy clouds look like torn paper, so each building layer could get a torn-paper edge, as if the skyline were layers of torn paper stacked in depth. The technique may also be worth reusing in another project.
+  - **Why the clouds read as torn paper:**
+    - metaball heaps give soft, lumpy outlines;
+    - billowy noise roughens only the edges, giving a fibrous, irregular border;
+    - dithered, translucent edge cells read as the thin, frayed rim of torn paper;
+    - flat, self-shadowed tones in the palette's pale paper colors stack in layers with a slightly darker underside, like layered paper with depth.
+    - (`cloudgen::heap_field`, `fractal(..., billow)`, `dithered_alpha`, and `tone_ramp`.)
+  - **For buildings:** tear the top edge of each layer's silhouette (or each building) with the same billow-noise roughening and dithered rim, add a faint paper-colored shadow under each layer, and keep the windows inside. Probably only on paper-like palettes (Ink on Parchment), or as a palette effect.
+- The building parts catalog (the rest of GitHub issue #2): a versioned catalog of the shared kinds as parts (a Rust table with a JSON export), portable fixtures, and per-deviation classification tests. Deferred by the owner on 2026-11-05.
 - Background music. The Rebuild Prompt specifies no sound, so this is a deliberate addition. Users supply their own tracks in `Sounds/Music/`, which is gitignored; the app ships no music. Playback needs an audio dependency and a decision on controls (mute, volume, track choice).
 
 ## Current increment status
