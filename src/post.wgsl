@@ -84,6 +84,10 @@ const TEXT_BLOOM: f32 = 0.9;
 // The Green code rain (Rebuild Prompt, "Green"): cells in CSS pixels, the
 // glyph's offset in its cell, and the share of columns that rain.
 const RAIN_CELL: vec2<f32> = vec2<f32>(18.0, 20.0);
+// Each glyph pixel is this many device pixels wide (times the display
+// scale): owner, 2026-11-05, "the glyphs need to be a bit bigger ... 3
+// texel wide". The spec's cells, offsets, and halo scale with it.
+const RAIN_PIXEL: f32 = 3.0;
 const RAIN_GLYPH_OFFSET: vec2<i32> = vec2<i32>(5, 2);
 const RAIN_COLUMNS: f32 = 0.42;
 const RAIN_GLYPHS: f32 = 157.0;
@@ -256,7 +260,7 @@ fn rain_strength(cell: vec2<f32>, rows: f32) -> f32 {
 // the glyph (alternate rows 25% darker) and a small halo are screen-blended
 // on in linear light.
 fn code_rain(color: vec3<f32>, position: vec2<f32>) -> vec3<f32> {
-    let scale = max(post.rain.y, 0.5);
+    let scale = max(post.rain.y, 0.5) * RAIN_PIXEL;
     let css = position / scale;
     let cell = floor(css / RAIN_CELL);
     let rows = ceil(max(post.lines.w, 1.0) / scale / RAIN_CELL.y);

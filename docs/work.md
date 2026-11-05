@@ -770,6 +770,7 @@
     - halo weights 0.11 near and 0.05 far, capped at 0.35 (spec 0.045 / 0.015 / 0.12);
     - beam burst: where the refresh beam has just passed, a glyph's emission grows by up to 150% and the blend may reach full weight (spec maximum 0.7), tinted toward the head color, fading over 4% of the screen height behind the beam. It comes once per 15 s sweep, so there's no flashing.
     - Checked with a snapshot (Green at 33 s, beam at y ≈ 144): tails just above the beam are brighter than tails elsewhere; rows and glow are visibly stronger.
+  - Bigger glyphs (owner, 2026-11-05: "the glyphs need to be a bit bigger. I am think 3 texel wide"): each glyph pixel is 3 device pixels (`RAIN_PIXEL`, times the display scale), so glyphs are 24 x 48 in 54 x 60 cells at scale 1. The spec's cell, offset, halo, and alternate-row geometry all scale with it; speeds stay in rows a second, so heads move 3x farther in pixels. A deviation from the spec's 1 CSS pixel. Side effect: about a third as many columns, and with the spec's 12-row wrap a head spends longer below the screen, so the rain is sparser (at 720p, 12 visible rows against a 24-row cycle).
   - Tests: glyph order and count; atlas slot placement against the bitmaps, MSB left; empty padding slots; the clock's 1/30 s cap. Both shaders validate.
   - `cargo test`: PASS, 330 tests.
   - `cargo fmt --check`: PASS.
