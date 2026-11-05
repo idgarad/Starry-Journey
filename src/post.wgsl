@@ -20,6 +20,13 @@ struct PostParams {
     message: vec4<f32>,
 }
 
+// Color bleed is stronger than the Rebuild Prompt's (owner, 2026-11-05:
+// "color bleed effects in some of palettes could be a little stronger"):
+// chroma is sampled this many times the neighbor reach away, and weighted
+// further from the center. Luma keeps the spec's weights, so edges stay
+// readable while color smears.
+const BLEED_SPREAD: i32 = 2;
+
 @group(0) @binding(0) var scene: texture_2d<f32>;
 @group(0) @binding(1) var message_box: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> post: PostParams;
@@ -106,10 +113,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         let c0 = color;
         let l1 = source(p - r);
         let r1 = source(p + r);
-        let l2 = source(p - 2 * r);
-        let r2 = source(p + 2 * r);
         let y = 0.84 * luma(c0) + 0.08 * (luma(l1) + luma(r1));
-        var iq = 0.4 * chroma(c0) + 0.24 * (chroma(l1) + chroma(r1)) + 0.06 * (chroma(l2) + chroma(r2));
+        // Chroma (stronger than the spec's 0.4/0.24/0.06 at 1x/2x reach).
+        let b = BLEED_SPREAD * r;
+        let cl1 = source(p - b);
+        let cr1 = source(p + b);
+        let cl2 = source(p - 2 * b);
+        let cr2 = source(p + 2 * b);
+        var iq = 0.3 * chroma(c0) + 0.22 * (chroma(cl1) + chroma(cr1)) + 0.13 * (chroma(cl2) + chroma(cr2));
         let phase = select(-1.0, 1.0, (p.x / reach) % 2 == 0);
         iq += vec2<f32>(0.12, 0.08) * (luma(r1) - luma(l1)) * phase;
         color = yiq_to_rgb(y, iq);
@@ -118,10 +129,11 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
     } else if (effect == 3u) {
         // C64: milder chroma bleed (luma unchanged) and a tight halo.
-        let r = vec2<i32>(reach, 0);
-        let l1 = source(p - r);
-        let r1 = source(p + r);
-        let iq = 0.7 * chroma(color) + 0.15 * (chroma(l1) + chroma(r1));
+        // Chroma (stronger than the spec's 0.7/0.15 at 1x reach).
+        let b = vec2<i32>(BLEED_SPREAD * reach, 0);
+        let l1 = source(p - b);
+        let r1 = source(p + b);
+        let iq = 0.5 * chroma(color) + 0.25 * (chroma(l1) + chroma(r1));
         let reconstructed = yiq_to_rgb(luma(color), iq);
         color = halo(p, reach, decode_srgb(reconstructed), 0.045);
         if (dark_row(p.y)) {

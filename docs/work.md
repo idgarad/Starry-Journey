@@ -694,6 +694,13 @@
     - the message box crisp in every palette;
     - `--effects off`: Amber's rows equal, the Game Boy grid kept.
   - Not done yet: ArtDeco material, Green Terminal code rain (Unifont), and Amber's message grapheme animation; the spec's "fallback" paths are for the browser's 2D canvas and do not apply.
+  - Stronger color bleed (owner, 2026-11-05: "color bleed effects in some of palettes could be a little stronger"; a deliberate deviation from the spec):
+    - chroma is sampled twice as far (`BLEED_SPREAD`);
+    - Apple II chroma weights are 0.3 center, 0.22 each at 2x reach, 0.13 each at 4x (spec: 0.4/0.24/0.06 at 1x/2x);
+    - C64 is 0.5 center, 0.25 each at 2x reach (spec: 0.7/0.15 at 1x);
+    - luma keeps the spec's weights, so edges stay readable;
+    - CGA keeps none, as the spec's crisp RGB monitor;
+    - checked with before/after crops.
   - `cargo test`: PASS, 326 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
