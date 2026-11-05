@@ -95,6 +95,8 @@ const PRECIP_WRAP: i32 = 4096;
 // Rain is a little dimmer than the palette's star color; snow is the star
 // color.
 const RAIN_SHADE: f32 = 0.7;
+// A comet drop's tail end, as a share of its head's brightness.
+const RAIN_TAIL: f32 = 0.25;
 
 // Lightning (src/lightning.rs): its color (a cool white, linear); how much
 // it lights clouds near it from inside and the open sky around it; the
@@ -425,10 +427,14 @@ fn precip_alpha(layer: u32, cell_pos: vec2<f32>) -> f32 {
                     return look.z;
                 }
             } else {
+                // A comet drop (owner, 2026-11-05): one cell wide, its head
+                // (the end it falls toward) brightest and its tail fading
+                // behind it.
                 let along = dot(offset, direction);
                 let across = abs(offset.x * direction.y - offset.y * direction.x);
                 if (abs(along) <= 0.5 * look.x && across <= look.y) {
-                    return look.z;
+                    let toward_head = along / look.x + 0.5;
+                    return look.z * (RAIN_TAIL + (1.0 - RAIN_TAIL) * toward_head * toward_head);
                 }
             }
         }

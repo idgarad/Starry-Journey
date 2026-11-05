@@ -27,6 +27,10 @@ pub const TILE: f64 = 9.0;
 /// Share of tiles holding a drop at full strength, far to near: farther
 /// layers are denser, so the distance reads as a haze of rain.
 pub const DENSITY: [f64; PRECIP_LAYERS] = [0.36, 0.27, 0.19, 0.13];
+/// Rain is far sparser than snow: a few comet drops read as rain, many as
+/// a speckle (owner, 2026-11-05: "way too dense. It looked more like snow
+/// than rain"). Share of tiles with a drop at full strength, far to near.
+pub const RAIN_DENSITY: [f64; PRECIP_LAYERS] = [0.12, 0.09, 0.065, 0.045];
 /// Fall speeds in cells per second at scale 1.
 pub const RAIN_SPEED: f64 = 220.0;
 pub const SNOW_SPEED: f64 = 14.0;
@@ -186,13 +190,19 @@ impl Precipitation {
         std::array::from_fn(|k| {
             let scale = LAYER_SCALE[k];
             let (length, size, alpha) = match kind {
-                PrecipKind::Rain => (2.5 + 4.0 * scale, 0.25 + 0.3 * scale, 0.12 + 0.25 * scale),
+                // Comet drops (owner, 2026-11-05): 3-4 cells long and one
+                // cell wide, a bright head and a fading tail (see the
+                // shader); brighter now they are sparse.
+                PrecipKind::Rain => (2.5 + 1.5 * scale, 0.5, 0.35 + 0.45 * scale),
                 PrecipKind::Snow => (0.8 * scale, 0.35 + 0.65 * scale, 0.55 + 0.4 * scale),
             };
             PrecipLayer {
                 offset: self.offsets[k],
                 tile: TILE * scale,
-                density: DENSITY[k] * intensity,
+                density: match kind {
+                    PrecipKind::Rain => RAIN_DENSITY[k],
+                    PrecipKind::Snow => DENSITY[k],
+                } * intensity,
                 length,
                 size,
                 alpha,
@@ -253,9 +263,16 @@ mod tests {
         let layers = Precipitation::default().layers(PrecipKind::Rain, 1.0);
         for pair in layers.windows(2) {
             let (far, near) = (pair[0], pair[1]);
-            assert!(far.tile < near.tile && far.size < near.size && far.length < near.length);
+            // Rain drops stay one cell wide in every layer (comet drops);
+            // only their length grows.
+            assert!(far.tile < near.tile && far.size == near.size && far.length < near.length);
             assert!(far.density > near.density && far.alpha < near.alpha);
         }
+        let snow = Precipitation::default().layers(PrecipKind::Snow, 1.0);
+        assert!(
+            snow.windows(2).all(|pair| pair[0].size < pair[1].size),
+            "far flakes are smaller"
+        );
         // Light rain has fewer drops in every layer.
         let light = Precipitation::default().layers(PrecipKind::Rain, 0.35);
         assert!(light
@@ -266,6 +283,25 @@ mod tests {
             .layers(PrecipKind::Snow, 0.0)
             .iter()
             .all(|l| l.density == 0.0));
+    }
+
+    #[test]
+    fn rain_is_comet_drops_far_sparser_than_snow() {
+        let p = Precipitation::default();
+        let (rain, snow) = (
+            p.layers(PrecipKind::Rain, 1.0),
+            p.layers(PrecipKind::Snow, 1.0),
+        );
+        for (r, s) in rain.iter().zip(&snow) {
+            assert!(
+                r.density * 2.5 < s.density,
+                "{} vs {}",
+                r.density,
+                s.density
+            );
+            assert!((3.0..=4.0).contains(&r.length), "3-4 cells: {}", r.length);
+            assert_eq!(r.size, 0.5, "one cell wide");
+        }
     }
 
     #[test]

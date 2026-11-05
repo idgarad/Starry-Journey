@@ -527,12 +527,17 @@
   - Tuned with snapshots (seed 7, 960x540, storm and overcast, rain and snow):
     - first pass: storm rain was a solid curtain, so density and opacity came down;
     - at the real wind, rain was vertical, so its push was raised to 6×, then 10×.
+  - Comet raindrops (owner, 2026-11-05): "they need more of a streak ... a 3 pixel raindrop with a more intense tip and a tail ... comet-style raindrops ... way too dense. It looked more like snow than rain."
+    - Each drop is one cell wide and 3.3-4 cells long (far to near). Brightness runs from 25% at the tail to full at the head, along the fall, falling off with the square of the distance from the head.
+    - Rain has its own density, 0.12/0.09/0.065/0.045 (about a third of before; snow keeps 0.36-0.13), and is brighter (0.6-0.8) now it is sparse.
+    - Checked with snapshots (storm and overcast, and a 4x zoom of the comet shape).
+    - Tests: rain stays one cell wide and 3-4 long at well under half snow's density; far snow flakes are smaller.
   - Assumptions to confirm:
     - rain is the default;
     - nothing falls from broken or lighter cover;
     - wind blows left to right.
   - Tests: precipitation follows cover and mode, far layers smaller/denser/fainter, the slant (snow more than rain, storm rain above 18°), smooth bounded gusts, travel direction, parallax and wrapping, wind driving the clouds, and option parsing.
-  - `cargo test`: PASS, 305 tests.
+  - `cargo test`: PASS, 306 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only; motion is not checked).
