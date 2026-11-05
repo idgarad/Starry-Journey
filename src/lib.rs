@@ -19,6 +19,7 @@ pub mod message;
 pub mod model;
 pub mod moon;
 pub mod quips;
+pub mod rain;
 pub mod raster;
 pub mod reveal;
 pub mod searchlights;

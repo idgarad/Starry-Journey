@@ -100,9 +100,10 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - a vignette on every CRT palette;
   - a CRT power-on when switching into one;
   - scanlines on EGA and VGA (the spec leaves them unprocessed).
-  - Classic and Parchment stay unprocessed. Still to come: ArtDeco's sheen material, Green Terminal's falling code (with Unifont glyphs), and Amber's message animation.
+  - Green Terminal's falling code rain across the whole scene, with 157 GNU Unifont 16.0.04 glyphs.
+  - Classic and Parchment stay unprocessed. Still to come: ArtDeco's sheen material and Amber's message animation.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
-- **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
+- **Green Terminal glyphs:** 157 GNU Unifont 16.0.04 bitmaps compiled into the app ([src/rain_glyph_data.rs](../src/rain_glyph_data.rs)), shipped with their SIL OFL 1.1 notice in [src/fonts/unifont-OFL.txt](../src/fonts/unifont-OFL.txt).
 
 ## Future extensions (beyond the rebuild baseline)
 
