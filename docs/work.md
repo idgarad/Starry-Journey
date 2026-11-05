@@ -735,6 +735,10 @@
       - Amber and Green lit pixels glow into the dark around them: two highlight halos at 1 and 2 reaches (the second at half weight), screen-blended;
       - each of the four neighbors weighs 0.05 at rest, plus 0.12 where the beam's line or fresh trail is;
       - checked with before/after crops: windows glow fuller, filling the scanline gaps, and hotter in the band the beam just refreshed.
+    - Refreshed band shaped like a real one (owner, 2026-11-05, with a photo of a green terminal's refresh pass: "we want ours a little tighter"):
+      - a hard leading edge at the beam and a band behind it starting 30% brighter, fading over 15% of the screen height (the photo's is about 40%);
+      - the separate beam line is down to 12%, so the band carries the effect;
+      - checked with a snapshot (Green at 36 s): the buildings above the beam are visibly brighter, with an edge at the beam's row.
   - Backlog: one toggle per effect once there are menu options (owner); `D` switches them all for now.
   - Tests: effect mapping per palette (Green 6, EGA 7, VGA 8; only Game Boy when off); both shaders validate; snapshot names differ for consecutive frames.
   - `cargo test`: PASS, 326 tests.
