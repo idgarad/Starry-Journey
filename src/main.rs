@@ -1836,12 +1836,15 @@ impl Renderer {
                         layer.density as f32,
                     ]);
                 }
+                // The clock for spinning flakes, wrapped daily so it keeps
+                // its precision in a long run.
+                let spin_clock = self.seconds(self.now()).rem_euclid(86_400.0);
                 for layer in &layers {
                     params.extend([
                         layer.length as f32,
                         layer.size as f32,
                         layer.alpha as f32,
-                        0.0,
+                        spin_clock as f32,
                     ]);
                 }
             }

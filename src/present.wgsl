@@ -85,7 +85,8 @@ struct Params {
     // the tile size (cells), w the share of tiles with a drop.
     precip_layers: array<vec4<f32>, 4>,
     // Per layer: x rain's streak length or snow's wobble (cells), y the
-    // streak's half-width or the flake's radius (cells), z opacity.
+    // streak's half-width or the flake's size (cells; 2 is the spinning
+    // cross), z opacity, w the clock (seconds) that spins the big flakes.
     precip_looks: array<vec4<f32>, 4>,
 }
 
@@ -97,6 +98,11 @@ const PRECIP_WRAP: i32 = 4096;
 const RAIN_SHADE: f32 = 0.7;
 // A comet drop's tail end, as a share of its head's brightness.
 const RAIN_TAIL: f32 = 0.25;
+// The big flakes' spin: radians per second at their slowest and the extra
+// at their fastest (about one turn every 7-15 s), each flake clockwise or
+// anticlockwise at random (owner, 2026-11-05).
+const FLAKE_SPIN: f32 = 0.42;
+const FLAKE_SPIN_EXTRA: f32 = 0.48;
 
 // Lightning (src/lightning.rs): its color (a cool white, linear); how much
 // it lights clouds near it from inside and the open sky around it; the
@@ -428,9 +434,28 @@ fn precip_alpha(layer: u32, cell_pos: vec2<f32>, pixel: vec2<f32>) -> f32 {
                 let flake = center + grid.xy + vec2<f32>(wobble, 0.0);
                 let from_flake = floor(cell_pos) - floor(flake);
                 if (look.y > 1.5) {
-                    let d = abs(from_flake);
-                    if (all(d == vec2<f32>(0.0)) || all(d == vec2<f32>(1.0))) {
-                        return look.z;
+                    // The big flakes move smoothly and spin slowly (owner,
+                    // 2026-11-05): two crossed bars, 3 cells long and one
+                    // thick (an X or a + as they turn), drawn in screen
+                    // pixels at their exact place, their edges blended
+                    // over a pixel so motion never steps or flickers. The
+                    // wobble follows the flake's own height, not the cell
+                    // being drawn, so it is smooth too.
+                    let cell = params.cell.x;
+                    let smooth_wobble = sin((center.y + grid.y) * 0.18 + h.y * 6.2832) * look.x;
+                    let middle = (center + grid.xy + vec2<f32>(smooth_wobble, 0.0)) * cell;
+                    let turn = select(-1.0, 1.0, h.z < 0.5) * (FLAKE_SPIN + FLAKE_SPIN_EXTRA * h.y);
+                    let angle = h.x * 6.2832 + turn * look.w;
+                    let c = cos(angle);
+                    let s = sin(angle);
+                    let rel = pixel + vec2<f32>(0.5) - middle;
+                    let r = vec2<f32>(c * rel.x + s * rel.y, -s * rel.x + c * rel.y);
+                    let arm = vec2<f32>(1.5, 0.5) * cell;
+                    let bar1 = max(abs(r.x) - arm.x, abs(r.y) - arm.y);
+                    let bar2 = max(abs(r.y) - arm.x, abs(r.x) - arm.y);
+                    let coverage = clamp(0.5 - min(bar1, bar2), 0.0, 1.0);
+                    if (coverage > 0.0) {
+                        return look.z * coverage;
                     }
                 } else if (look.y >= 1.0) {
                     if (all(from_flake == vec2<f32>(0.0))) {

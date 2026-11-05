@@ -550,6 +550,14 @@
     - Checked with snapshots (storm, and a 4x zoom showing the X flakes, single cells, and pixel specks).
     - Test: flakes grow far to near, the far two are under a cell, then one cell, then the X.
     - Fewer big flakes (owner, 2026-11-05): "drop the density of the biggest flakes by about 75%". The nearest layer's density is 0.0325 (was 0.13). The rain/snow density test now compares the three farther layers and checks the nearest is a quarter of before.
+    - Smooth, spinning big flakes (owner, 2026-11-05): "the biggest pixels need their motion smoothed out and if possible we should give them a slow rotation either clockwise or anti-clockwise ... we are dealing with subpixels anyway."
+      - The nearest layer's flake is now two crossed bars, 3 cells long and one thick (an X or a + as it turns), drawn in screen pixels at its exact place.
+      - Its edges are blended over one pixel (coverage from the bars' distance), so motion and spin never step.
+      - Its wobble follows the flake's own height, so that is smooth too.
+      - Each flake spins at 0.42-0.9 rad/s (about one turn every 7-15 s), clockwise or anticlockwise at random, from a random start angle.
+      - The spin clock (app seconds, wrapped daily) rides in `precip_looks[k].w`.
+      - The smaller flakes keep their cell or pixel squares.
+      - Checked with snapshots at 40 s and 42 s (a 4x zoom shows the soft, angled crosses). The motion and spin themselves can only be seen running; the shader passes WGSL validation, but there is no automated test of the drawing.
   - Assumptions to confirm:
     - rain is the default;
     - nothing falls from broken or lighter cover.
