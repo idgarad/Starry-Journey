@@ -399,7 +399,7 @@ fn precip_hash(id: vec2<i32>, layer: u32) -> vec3<f32> {
 // How much of precipitation layer `layer` covers the cell at `cell_pos`
 // (cell units, the cell's center), 0..1. Each tile of the moving grid holds
 // at most one drop: a rain streak along the fall, or a wobbling flake.
-fn precip_alpha(layer: u32, cell_pos: vec2<f32>) -> f32 {
+fn precip_alpha(layer: u32, cell_pos: vec2<f32>, pixel: vec2<f32>) -> f32 {
     let grid = params.precip_layers[layer];
     let look = params.precip_looks[layer];
     if (grid.w <= 0.0) {
@@ -421,13 +421,28 @@ fn precip_alpha(layer: u32, cell_pos: vec2<f32>) -> f32 {
             let center = (vec2<f32>(id) + vec2<f32>(0.15 + 0.7 * h.y, 0.15 + 0.7 * h.z)) * tile;
             var offset = q - center;
             if (snow) {
-                // A flake fills exactly the one cell its center is in: never
-                // bigger than a city window (owner, 2026-11-05). It drifts
-                // side to side as it falls down the screen.
+                // A flake drifts side to side as it falls down the screen.
+                // Its size (owner, 2026-11-05): the nearest a 5-cell X, then
+                // one cell, then smaller than a cell, drawn in screen pixels.
                 let wobble = sin(cell_pos.y * 0.18 + h.y * 6.2832) * look.x;
                 let flake = center + grid.xy + vec2<f32>(wobble, 0.0);
-                if (all(floor(flake) == floor(cell_pos))) {
-                    return look.z;
+                let from_flake = floor(cell_pos) - floor(flake);
+                if (look.y > 1.5) {
+                    let d = abs(from_flake);
+                    if (all(d == vec2<f32>(0.0)) || all(d == vec2<f32>(1.0))) {
+                        return look.z;
+                    }
+                } else if (look.y >= 1.0) {
+                    if (all(from_flake == vec2<f32>(0.0))) {
+                        return look.z;
+                    }
+                } else {
+                    let cell = params.cell.x;
+                    let size = max(1.0, round(look.y * cell));
+                    let corner = floor(flake * cell);
+                    if (all(pixel >= corner) && all(pixel < corner + vec2<f32>(size))) {
+                        return look.z;
+                    }
                 }
             } else {
                 // A comet drop (owner, 2026-11-05): one cell wide, its head
@@ -560,7 +575,7 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         let drop_color = params.searchlight_color.rgb * shade;
         let cell_pos = floor(position.xy / cell) + vec2<f32>(0.5);
         for (var layer = 0u; layer < 4u; layer++) {
-            color = mix(color, drop_color, precip_alpha(layer, cell_pos));
+            color = mix(color, drop_color, precip_alpha(layer, cell_pos, floor(position.xy)));
         }
     }
 

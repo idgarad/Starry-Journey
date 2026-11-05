@@ -543,6 +543,12 @@
     - farther flakes read as smaller by being dimmer (0.66-0.95 opacity, far to near);
     - the side-to-side wobble is unchanged;
     - checked with snapshots (storm, overcast, and a 4x zoom).
+  - Bigger and smaller flakes (owner, 2026-11-05): "nearer snow flakes to go as big as 5 cell in an X shape ... Could we do a sub-cell size for the smallest flakes?" This replaces the one-cell rule.
+    - `weather::SNOW_FLAKE`, far to near, is 1/3 cell, 2/3 cell, 1 cell, and a 5-cell X (a cell and its four diagonal neighbours).
+    - The far two are squares drawn in screen pixels (`round(size × cell)`, at least one pixel): 1 and 2 pixels at the default 3-pixel cells.
+    - Opacity is 0.75-0.95, far to near.
+    - Checked with snapshots (storm, and a 4x zoom showing the X flakes, single cells, and pixel specks).
+    - Test: flakes grow far to near, the far two are under a cell, then one cell, then the X.
   - Assumptions to confirm:
     - rain is the default;
     - nothing falls from broken or lighter cover.

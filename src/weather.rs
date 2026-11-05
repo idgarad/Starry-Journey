@@ -31,6 +31,13 @@ pub const DENSITY: [f64; PRECIP_LAYERS] = [0.36, 0.27, 0.19, 0.13];
 /// a speckle (owner, 2026-11-05: "way too dense. It looked more like snow
 /// than rain"). Share of tiles with a drop at full strength, far to near.
 pub const RAIN_DENSITY: [f64; PRECIP_LAYERS] = [0.12, 0.09, 0.065, 0.045];
+/// Snow flake size per layer, far to near, in cells: under 1 is a square
+/// that many cells across, drawn in screen pixels (at least one); 1 is one
+/// cell; [`SNOW_X`] is a 5-cell X (a cell and its four diagonal
+/// neighbours).
+pub const SNOW_FLAKE: [f64; PRECIP_LAYERS] = [1.0 / 3.0, 2.0 / 3.0, 1.0, SNOW_X];
+/// The flake size code for a 5-cell X.
+pub const SNOW_X: f64 = 2.0;
 /// Fall speeds in cells per second at scale 1.
 pub const RAIN_SPEED: f64 = 220.0;
 pub const SNOW_SPEED: f64 = 14.0;
@@ -210,11 +217,10 @@ impl Precipitation {
                 // cell wide, a bright head and a fading tail (see the
                 // shader); brighter now they are sparse.
                 PrecipKind::Rain => (2.5 + 1.5 * scale, 0.5, 0.35 + 0.45 * scale),
-                // A flake is never bigger than a city window, one cell
-                // (owner, 2026-11-05), so every flake is exactly one cell
-                // (see the shader); farther ones read smaller by being
-                // dimmer.
-                PrecipKind::Snow => (0.8 * scale, 0.5, 0.3 + 0.65 * scale),
+                // Flake sizes (owner, 2026-11-05): the nearest layer's are
+                // a 5-cell X, the next one cell, and the far two smaller
+                // than a cell (see SNOW_FLAKE and the shader).
+                PrecipKind::Snow => (0.8 * scale, SNOW_FLAKE[k], 0.5 + 0.45 * scale),
             };
             PrecipLayer {
                 offset: self.offsets[k],
@@ -306,12 +312,18 @@ mod tests {
     }
 
     #[test]
-    fn snowflakes_are_one_cell_no_bigger_than_a_window() {
+    fn snowflakes_grow_from_sub_cell_specks_to_a_5_cell_x() {
         let snow = Precipitation::default().layers(PrecipKind::Snow, 1.0);
         assert!(
-            snow.iter().all(|flake| flake.size == 0.5),
-            "no bigger than a window (one cell)"
+            snow.windows(2).all(|pair| pair[0].size < pair[1].size),
+            "far flakes are smaller"
         );
+        assert!(
+            snow[0].size < 1.0 && snow[1].size < 1.0,
+            "the far two are under a cell"
+        );
+        assert_eq!(snow[2].size, 1.0);
+        assert_eq!(snow[3].size, SNOW_X, "the nearest are a 5-cell X");
     }
 
     #[test]
