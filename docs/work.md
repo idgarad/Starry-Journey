@@ -744,6 +744,27 @@
   - `cargo test`: PASS, 326 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **ArtDeco material (owner, 2026-11-05: "We are ready to continue on"; branch `feature/artdeco-sheen`):** the Rebuild Prompt's "ArtDeco material, before compositing".
+  - [src/artdeco.rs](../src/artdeco.rs) has the formulas, as the spec gives them:
+    - `u` = the cell's center across its building's footprint (all tiers);
+    - warm sheen `exp(-((u-0.3)/0.18)^2)` and cool reflection `exp(-((u-0.8)/0.25)^2)`;
+    - body x `(0.96 + sheen x 0.22)`, plus `[226,196,146] x sheen x 0.055` and `[138,155,177] x reflection x 0.018`;
+    - grain from a height-anchored modulo-17 phase within ±0.7 encoded levels;
+    - spill from each same-building axial neighbor that is a lit window: up to 2.5% of its shaded RGB, scaled by `max(0, (max/255 - 0.55)/0.45)`, the strongest per channel (not summed);
+    - rounded and clamped.
+  - [src/raster.rs](../src/raster.rs): `RasterOptions::material` repaints body and unlit-window cells after the normal pass (`material_color`). Lit windows, masts, sky, and stars are untouched, and decorations still paint over it. Clouds, road, and the message box are other layers, so they never get it.
+  - On exactly when the palette is ArtDeco and display effects are on (`Renderer::sync_material`, called on start, palette change, `D`, resize, restart, and the Endless toggle). `Scene::set_material` and `EndlessCity::set_material` redraw without touching geometry, lights, or construction progress, so turning it off gives back the original colors exactly (tested).
+  - Flicker: with the material on, a changed window repaints its own cell and its same-building neighbors (`material_window_patches`), so the spill follows the lights; tested to match a full redraw.
+  - Deviations and choices, documented:
+    - the grain's phase steps 7 of 17 per row, so neighboring rows differ (the spec says only "a normalized modulo-17 phase");
+    - the built view is drawn once with the windows' target lights, so during construction a revealed wall can show the faint spill of a window next to it before that window is revealed (at most 2.5%); the spec asks for a refresh on each window reveal;
+    - the city glow on clouds samples building colors, so clouds shift by at most 1 level with the material on;
+    - there is no Canvas fallback.
+  - Checked with snapshots (seed 7, `--timer 10s`, 1280 x 720 and 2560 x 1440 Endless): an amplified on/off difference map shows the warm band about a third of the way across every building and a cool edge toward the right, with lit windows unchanged; accent towers go from 88 to 119 red at the sheen. Endless runs take 6.5 s with or without it (1,200 frames at 1440p), so no measurable cost.
+  - Tests: formula peaks, warm tint, grain bounds and period, spill threshold and per-channel maximum; only body and dark-window cells change; spill reaches only axial neighbors; window patches match a full redraw; Endless on then off gives back the original buffers.
+  - `cargo test`: PASS, 339 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Green Terminal code rain (owner, 2026-11-05: "lets move on to finish green's glyphs"; branch `feature/green-rain`):**
   - Glyphs: the owner chose to download GNU Unifont. The agent fetched Unifont 16.0.04 (`unifont-16.0.04.hex.gz`) from unifoundry.com and extracted the spec's 157 entries (U+0021..007E, U+FF61..FF9F; all 8 pixels wide, checked) into [src/rain_glyph_data.rs](../src/rain_glyph_data.rs) as 16 bytes each, MSB left. The extraction script lives outside the repo; the file says it is generated.
   - Licence: [src/fonts/unifont-OFL.txt](../src/fonts/unifont-OFL.txt) is Unifont's own `OFL-1.1.txt` with an attribution header (Roman Czyborra, Paul Hardy, and contributors; Unifont is dual-licensed OFL 1.1 / GPLv2+ with the font embedding exception, used here under OFL 1.1).

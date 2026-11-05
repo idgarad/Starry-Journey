@@ -375,6 +375,9 @@ struct Scene {
     sway: (f64, f64),
     /// The palette the scene is drawn in (palettes are static data).
     palette: &'static Palette,
+    /// The ArtDeco material is drawn on the buildings (ArtDeco with display
+    /// effects on; see `Renderer::sync_material`).
+    material: bool,
     /// The scrolling layers in Endless mode; `None` in Normal mode. They
     /// start moving once construction is complete.
     endless: Option<EndlessCity>,
@@ -449,7 +452,15 @@ impl Scene {
         let cells = reveal.advance_to(progress).to_vec();
         light_revealed(&mut buildings, &ownership, &cells);
         let endless_tint = city.is_some();
-        let view = Self::view_for(&grid, &buildings, &stars, palette, &reveal, endless_tint);
+        let view = Self::view_for(
+            &grid,
+            &buildings,
+            &stars,
+            palette,
+            &reveal,
+            endless_tint,
+            false,
+        );
         let street = StreetLayer::new(&grid, seed, palette);
         let sky = CityRaster::render(&grid, &[], &stars, palette).rgba;
         let mut scene = Self {
@@ -466,6 +477,7 @@ impl Scene {
             traffic: None,
             sway: (0.0, 0.0),
             palette,
+            material: false,
             endless: city,
             sky,
             overlay: Vec::new(),
@@ -673,10 +685,12 @@ impl Scene {
         palette: &Palette,
         reveal: &Reveal,
         endless_tint: bool,
+        material: bool,
     ) -> ConstructionView {
         let options = RasterOptions {
             lighting: WindowLighting::Target,
             endless_tint,
+            material,
             ..RasterOptions::default()
         };
         let built = CityRaster::render_options(grid, buildings, stars, palette, options);
@@ -694,11 +708,35 @@ impl Scene {
             palette,
             &self.reveal,
             self.endless.is_some(),
+            self.material,
         );
         self.street = StreetLayer::for_span(&self.grid, self.seed, palette, self.street_span);
         self.sky = CityRaster::render(&self.grid, &[], &self.stars, palette).rgba;
         if let Some(city) = &mut self.endless {
             city.set_palette(palette);
+        }
+        self.compose();
+    }
+
+    /// Turns the ArtDeco material on or off, redrawing the buildings if it
+    /// changed. Geometry, lights, and construction progress are untouched,
+    /// so turning it off gives back the original colors exactly.
+    fn set_material(&mut self, material: bool) {
+        if self.material == material {
+            return;
+        }
+        self.material = material;
+        self.view = Self::view_for(
+            &self.grid,
+            &self.buildings,
+            &self.stars,
+            self.palette,
+            &self.reveal,
+            self.endless.is_some(),
+            material,
+        );
+        if let Some(city) = &mut self.endless {
+            city.set_material(self.palette, material);
         }
         self.compose();
     }
@@ -1214,6 +1252,7 @@ impl Renderer {
             wind: 0.0,
         };
         renderer.pending_events = renderer.options.events.clone();
+        renderer.sync_material();
         renderer.upload();
         renderer.update_message();
         Ok(renderer)
@@ -1298,6 +1337,7 @@ impl Renderer {
                 self.scene.endless_camera(),
                 self.options.buildings,
             );
+            self.sync_material();
             self.moon_state = None;
             self.update_moon(self.now());
             self.rebuild_clouds();
@@ -1318,6 +1358,7 @@ impl Renderer {
             self.scene.endless.is_some().then_some(0.0),
             self.options.buildings,
         );
+        self.sync_material();
         // Restart restarts a duration timer (Rebuild Prompt); resizing keeps it.
         self.construction_start = self.now();
         self.paused = false;
@@ -1334,6 +1375,7 @@ impl Renderer {
         self.palette_index = (self.palette_index + 1) % palettes().len();
         let palette = palette_at(self.palette_index);
         self.scene.set_palette(palette);
+        self.sync_material();
         self.notice.flash(palette.label, self.seconds(self.now()));
         // Switching into a CRT palette powers the monitor on.
         if self.effects && is_crt(palette.key) {
@@ -1467,6 +1509,7 @@ impl Renderer {
             endless.then_some(0.0),
             self.options.buildings,
         );
+        self.sync_material();
         self.paused = false;
         self.moon_state = None;
         self.update_moon(self.now());
@@ -1662,10 +1705,22 @@ impl Renderer {
         if !self.scene.city.is_empty() {
             // The still city (Normal, and Endless while it is built).
             let endless_tint = self.scene.endless.is_some();
+            let material = self.scene.material;
             let ownership = &self.scene.ownership;
             let changed = self.flicker.step(&mut self.scene.buildings, step, 1.0);
             let mut patches = Vec::new();
             for (b, w) in changed {
+                if material {
+                    // The window and the spill on its neighbors.
+                    patches.extend(ownership.material_window_patches(
+                        &grid,
+                        &self.scene.buildings,
+                        (b, w),
+                        palette,
+                        endless_tint,
+                    ));
+                    continue;
+                }
                 let building = &self.scene.buildings[b];
                 let (x, row) = (
                     building.windows.x[w],
@@ -1708,6 +1763,7 @@ impl Renderer {
             }
         } else if let Some(city) = self.scene.endless.as_mut() {
             // The scrolling layers: their buffers, in buffer cells.
+            let material = self.scene.material;
             for layer in 0..4 {
                 let (buildings, raster, revision) = city.layer_mut(layer);
                 let image = 2 + layer as u8;
@@ -1718,6 +1774,16 @@ impl Renderer {
                 let changed = self.flicker.step(buildings, step, 1.0);
                 let mut patches = Vec::new();
                 for (b, w) in changed {
+                    if material {
+                        patches.extend(raster.material_window_patches(
+                            &grid,
+                            buildings,
+                            (b, w),
+                            palette,
+                            true,
+                        ));
+                        continue;
+                    }
                     let building = &buildings[b];
                     let (x, row) = (
                         building.windows.x[w],
@@ -2028,12 +2094,23 @@ impl Renderer {
     /// the message box. The Game Boy grid stays (it is part of the palette).
     fn toggle_effects(&mut self) {
         self.effects = !self.effects;
+        self.sync_material();
+        self.scene.compose();
+        self.upload();
         let label = if self.effects {
             "Display effects on"
         } else {
             "Display effects off"
         };
         self.notice.flash(label, self.seconds(self.now()));
+    }
+
+    /// Draws the ArtDeco material on the buildings exactly when the palette
+    /// is ArtDeco and display effects are on (Rebuild Prompt: "No effect
+    /// should silently leak into another palette").
+    fn sync_material(&mut self) {
+        let material = self.effects && palette_at(self.palette_index).key == "artdeco";
+        self.scene.set_material(material);
     }
 
     /// The display effect for the current palette (see post.wgsl), and the
