@@ -649,6 +649,20 @@
   - `cargo test`: PASS, 321 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Pixel-art lightning (owner decisions, 2026-11-05):** a 1-cell stair-step bolt, stepped tones for the flash light, and fades in 3 brightness steps.
+  - `lightning::envelope` now steps: up through the steps over the 0.08 s rise, full, then down to half, quarter, and off over the 0.4 s fade, following the old smooth shape (thresholds 0.7, 0.35, 0.1).
+    - Steps fall monotonically within a flash, so they add no flashes; the caps stand (events at least 4 s apart, flashes 0.34 s apart).
+    - Each step lasts at least two frames at 60 fps.
+  - Shader:
+    - the bolt is whole cells: a cell is on the line when its center is within half a cell of a segment, measured square (the larger of across and down), which gives a one-cell-wide stepped line;
+    - the line is drawn at the flash's brightness, with a one-cell ring of glow at 35% around it;
+    - the flash light is worked out at each cell's center, banded into quarters, and dithered between bands with a 4x4 Bayer threshold.
+  - Checked with snapshots (seed 7, broken, 960x540; strike, bolt, and flicker at 30.15/40.15/50.15 s; a 3x zoom of the bolt shows the stepped line, its ring, and the dithered sky).
+  - Tests: the old smooth-fade test is replaced (owner decision) by one checking the fade only takes the values 0, 0.25, 0.5, and 1, steps down through each after the peak, and holds each for at least two frames.
+    - The overlap test now finds a burst whose second flash starts before the first has stepped off: stepped tails end sooner than smooth ones.
+  - `cargo test`: PASS, 321 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

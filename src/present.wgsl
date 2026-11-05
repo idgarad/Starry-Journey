@@ -135,9 +135,13 @@ const FLASH_SKY: f32 = 0.18;
 const FLASH_LIGHT: f32 = 0.25;
 // The oval's height as a share of its width.
 const FLASH_FLATNESS: f32 = 0.3;
-const BOLT_CORE: f32 = 0.6;
-const BOLT_GLOW: f32 = 3.0;
-const BOLT_GLOW_STRENGTH: f32 = 0.45;
+// Pixel-art lightning (owner, 2026-11-05): the bolt is whole cells, one
+// cell wide and stepping diagonally, with a one-cell ring of glow in a
+// dimmer tone; the flash light is banded into tones with a dither between
+// them, cell by cell.
+const BOLT_GLOW_TONE: f32 = 0.35;
+// Brightness bands the flash light falls into.
+const FLASH_BANDS: f32 = 4.0;
 
 // Searchlight beams: how fast they widen (radians each side) and how wide
 // their foot is (cells); how bright the beam is in the air and how bright
@@ -394,18 +398,32 @@ fn beam_through(light: vec4<f32>, position: vec2<f32>) -> f32 {
     return through;
 }
 
-// Distance (device pixels) from `position` to the nearest bolt segment.
-fn bolt_distance(position: vec2<f32>) -> f32 {
+// How far (in cells, measured square: the larger of across and down) the
+// cell whose center is `cell_center` (cells) is from the nearest bolt
+// segment. Cells within half a cell make a one-cell-wide stepped line,
+// like a pixel-art line.
+fn bolt_cells(cell_center: vec2<f32>) -> f32 {
     var nearest = 1e9;
     let count = u32(params.lightning_info.x);
+    let cell = params.cell.x;
     for (var i = 0u; i < min(count, 24u); i++) {
-        let segment = params.bolt[i];
+        let segment = params.bolt[i] / cell;
         let a = segment.xy;
         let ab = segment.zw - a;
-        let t = clamp(dot(position - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
-        nearest = min(nearest, length(position - (a + ab * t)));
+        let t = clamp(dot(cell_center - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+        let d = abs(cell_center - (a + ab * t));
+        nearest = min(nearest, max(d.x, d.y));
     }
     return nearest;
+}
+
+// The 4x4 Bayer threshold (0..1) for cell `cell`, for dithering between
+// flash light bands.
+fn bayer(cell: vec2<i32>) -> f32 {
+    let m = array<f32, 16>(0.0, 8.0, 2.0, 10.0, 12.0, 4.0, 14.0, 6.0, 3.0, 11.0, 1.0, 9.0, 15.0, 7.0, 13.0, 5.0);
+    let x = u32(cell.x) & 3u;
+    let y = u32(cell.y) & 3u;
+    return (m[y * 4u + x] + 0.5) / 16.0;
 }
 
 // Three seeded numbers in 0..1 for precipitation tile `id` of layer
@@ -553,15 +571,25 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let flash = params.lightning_info.z;
     var flash_here = 0.0;
     let reach = vec2<f32>(1.0, FLASH_FLATNESS) * max(params.lightning_info.w, 1.0);
+    // Worked out once per cell, at its center, so the light is blocky.
+    let cell_center = (floor(position.xy / cell) + vec2<f32>(0.5)) * cell;
     for (var i = 0u; i < 3u; i++) {
         let light = params.flash_lights[i];
         if (light.w > 0.0) {
-            let offset = (position.xy - light.xy) / reach;
+            let offset = (cell_center - light.xy) / reach;
             let q = dot(offset, offset);
             if (q < 1.0) {
                 flash_here += light.w * FLASH_LIGHT * (1.0 - q) * (1.0 - q);
             }
         }
+    }
+    if (flash_here > 0.0) {
+        // Banded into tones, dithered between bands (a cell takes the next
+        // band up when its share past this one beats its Bayer threshold).
+        let peak = FLASH_LIGHT;
+        let level = clamp(flash_here / peak, 0.0, 4.0) * FLASH_BANDS;
+        let band = floor(level) + select(0.0, 1.0, fract(level) > bayer(vec2<i32>(floor(position.xy / cell))));
+        flash_here = band / FLASH_BANDS * peak;
     }
     if (flash_here > 0.0) {
         color += FLASH_COLOR * flash_here * FLASH_SKY * params.lightning_info.y;
@@ -594,13 +622,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         }
         color = over(cloud, color);
     }
-    // The bolt, in front of the clouds and behind the city: a bright core
-    // and a soft glow.
+    // The bolt, in front of the clouds and behind the city: whole cells,
+    // a one-cell-wide stepped line at full brightness and a one-cell ring
+    // of glow around it in a dimmer tone.
     if (flash > 0.0 && params.lightning_info.x > 0.0) {
-        let d = bolt_distance(position.xy) / cell;
-        let core = 1.0 - smoothstep(BOLT_CORE * 0.5, BOLT_CORE, d);
-        let glow = BOLT_GLOW_STRENGTH * exp(-d / BOLT_GLOW);
-        color += FLASH_COLOR * flash * (core + glow);
+        let d = bolt_cells(floor(position.xy / cell) + vec2<f32>(0.5));
+        if (d <= 0.5) {
+            color = mix(color, FLASH_COLOR, flash);
+        } else if (d <= 1.5) {
+            color += FLASH_COLOR * flash * BOLT_GLOW_TONE;
+        }
     }
     // How much of this pixel is a near building, for flasher light.
     var building = 0.0;
