@@ -29,7 +29,7 @@ cargo run
 | Key | Action |
 | --- | --- |
 | `P` | Next palette (its name shows in the message box for 2 seconds) |
-| `R` | New city (construction restarts) |
+| `R` | New city: the current one dissolves (about 6 s at 1x; Endless stops meanwhile), then construction restarts. Press again to skip the dissolve. |
 | `C` | Cycle the cloud cover (its name shows in the message box) |
 | `W` | Cycle what falls in showers: rain, snow, or nothing |
 | `D` | Toggle the palette display effects (scanlines, color bleed, RGB stripes, phosphor trails, Green's code rain, convergence error, vignette, CRT power-on; the Game Boy grid and ghosting always stay) |

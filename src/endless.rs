@@ -377,6 +377,40 @@ impl EndlessCity {
         )
     }
 
+    /// The buffer cells of `layer` that a building covers on screen now:
+    /// the columns from the view's left edge to one past the right (for the
+    /// fractional position). For dissolving the city. O(screen cells).
+    pub fn visible_building_cells(&self, layer: usize) -> Vec<usize> {
+        let layer_data = &self.layers[layer];
+        let raster = &layer_data.raster;
+        let left = self.view_x(layer).floor() as i32 - layer_data.origin_x;
+        let columns = (self.grid.cols.max(1) + 1) as usize;
+        let start = left.max(0) as usize;
+        let end = (start + columns).min(raster.width);
+        let mut cells = Vec::new();
+        for row in 0..raster.height {
+            for col in start..end {
+                let cell = row * raster.width + col;
+                if raster.owner[cell] >= 0 && raster.rgba[cell * 4 + 3] > 0 {
+                    cells.push(cell);
+                }
+            }
+        }
+        cells
+    }
+
+    /// Makes `cells` of `layer`'s buffer transparent (the sky shows
+    /// through) and marks the buffer changed. O(cells).
+    pub fn clear_cells(&mut self, layer: usize, cells: impl IntoIterator<Item = usize>) {
+        let layer = &mut self.layers[layer];
+        for cell in cells {
+            if let Some(alpha) = layer.raster.rgba.get_mut(cell * 4 + 3) {
+                *alpha = 0;
+            }
+        }
+        layer.revision = next_revision();
+    }
+
     /// How far into `layer`'s buffer the screen's left edge is, in device
     /// pixels: `(viewX - originX) * cell`. Fractional; computed in f64 so it
     /// stays exact however far the camera has gone.
@@ -456,6 +490,42 @@ mod tests {
         city.set_material(deco, false);
         let after: Vec<Vec<u8>> = (0..4).map(|l| city.layer_image(l).rgba.to_vec()).collect();
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn visible_cells_are_on_screen_buildings_and_clearing_hides_them() {
+        let grid = grid();
+        let classic = classic();
+        let mut city = EndlessCity::new(6, &grid, classic);
+        let cells = city.visible_building_cells(3);
+        assert!(!cells.is_empty());
+        let revision = city.layer_image(3).revision;
+        city.clear_cells(3, cells.iter().copied());
+        let image = city.layer_image(3);
+        assert_ne!(image.revision, revision);
+        assert!(cells.iter().all(|&c| image.rgba[c * 4 + 3] == 0));
+        assert!(city.visible_building_cells(3).is_empty());
+        // Nothing is left on screen once every layer is cleared.
+        for layer in 0..3 {
+            let cells = city.visible_building_cells(layer);
+            city.clear_cells(layer, cells);
+        }
+        let (mut frame, mut buildings) = (Vec::new(), Vec::new());
+        let sky = sky(&grid, 6, classic);
+        city.compose(&sky, &mut frame, &mut buildings);
+        let cols = grid.cols as usize;
+        for (target, built) in buildings.iter().enumerate() {
+            if *built {
+                // compose copies alpha 0 cells; their alpha shows they are gone.
+                assert_eq!(
+                    frame[target * 4 + 3],
+                    0,
+                    "cell {}x{}",
+                    target % cols,
+                    target / cols
+                );
+            }
+        }
     }
 
     fn sky(grid: &Grid, seed: u32, palette: &Palette) -> Vec<u8> {

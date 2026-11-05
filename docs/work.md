@@ -744,6 +744,20 @@
   - `cargo test`: PASS, 326 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **City dissolve on `R` (owner, 2026-11-05: "when we hit R to get a new city, we should reverse the process to fade the current city out and start a new city. In endless mode we should stop while the city dissolves and rebuilds"; branch `feature/city-dissolve`, made from `feature/artdeco-sheen` because both change `restart`):**
+  - [src/reveal.rs](../src/reveal.rs) `Dissolve`: construction in reverse. The cells on screen are put in a seeded shuffle (its own stream, `DISSOLVE_SEED_XOR`) and removed over `DISSOLVE_SECONDS` = 6 s at 1x (scaled by the speed setting, frame time clamped to 0.25 s like construction). The 6 s is an agent choice, quick enough that `R` still feels like a response.
+  - Normal mode, and Endless during construction: the still city's cells go transparent. The removed cells are remembered, so a palette change mid-dissolve doesn't bring them back.
+  - Endless while scrolling: the camera, traffic, and construction stop, and each layer's on-screen building cells (`EndlessCity::visible_building_cells`) go transparent in its own buffer (`clear_cells`), so the road, trees, and clouds stay where they are instead of jumping to camera 0. A palette or `D` change mid-dissolve redraws the layers and brings the rest of the city back; it still finishes on time.
+  - While it dissolves, window flicker and the landmark lights on the city pause; stars, clouds, weather, and the moon go on.
+  - When it is gone, `restart` builds the new city as before (new seed, timer restarted). In Endless the new city builds at camera 0 and only scrolls once complete, so the scene stays still throughout.
+  - `R` again during a dissolve skips straight to the new city.
+  - The new city also brings its own clouds and stars, which swap in at once when the dissolve finishes.
+  - `--events restart@T` fires it for snapshots, with a seed derived from the current one so runs repeat.
+  - Checked with snapshots (seed 7, `--timer 10s`, restart at 20 s): Normal full at 19 s, thinning at 22 s and 25 s, gone at 26.5 s, the new city building at 32 s and built by 40 s. Endless the same; between 21 s and 23 s, of the bright pixels present in both frames 4,832 match exactly and 864 differ (cells removed, showing farther layers), so the camera had stopped.
+  - Tests: the dissolve's seeded order, timing, clamped stall, and that every cell goes exactly once; an empty dissolve completes; Endless visible cells are on-screen buildings and clearing them leaves nothing; `--events restart`.
+  - `cargo test`: PASS, 342 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **ArtDeco material (owner, 2026-11-05: "We are ready to continue on"; branch `feature/artdeco-sheen`):** the Rebuild Prompt's "ArtDeco material, before compositing".
   - [src/artdeco.rs](../src/artdeco.rs) has the formulas, as the spec gives them:
     - `u` = the cell's center across its building's footprint (all tiers);
