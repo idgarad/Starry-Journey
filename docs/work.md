@@ -671,6 +671,32 @@
   - `cargo test`: PASS, 323 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **Display effects, first sprint (owner, 2026-11-05: "get our palette specific shaders added"):**
+  - Owner decisions:
+    - the `D` key and `--effects`;
+    - download Unifont 16.0.04 for Green later;
+    - order: screen effects, then ArtDeco, then Green, then Amber's message.
+  - The renderer now draws in two passes. The scene goes into a surface-sized `scene_texture`, then `post.wgsl` applies the palette's effect and draws the message box (moved out of `present.wgsl`) on top, so text stays clear of every effect.
+  - The effects follow the Rebuild Prompt, in encoded sRGB on device pixels, screen-fixed. Period is `max(2, round(2 x scale))`; dark rows are `max(1, round(scale))`; neighbor reach is `max(1, round(scale))`; edges are clamped.
+    - **Amber:** dark rows keep 75%.
+    - **Apple II:** YIQ with chroma 0.4/0.24/0.06 across reach and twice the reach, luma 0.84/0.08, an alternating-column fringe of `[0.12, 0.08] x (rightY - leftY) x phase`; dark rows keep 70%.
+    - **C64:** chroma 0.7/0.15, luma unchanged, plus a four-neighbor highlight halo (`smoothstep(0.55, 0.85, max) x 0.045`, decoded, screen-blended); dark rows keep 80%.
+    - **CGA (both):** halo at 0.012, then reach-wide R/G/B stripes (matching channel 100%, others 96%); dark rows keep 75%.
+    - **Game Boy:** `rgba(3, 19, 3, 0.55)` gaps of `max(1, round(cell x 0.2))` at the end of each cell, across and down, compounding where they cross. It is always on.
+  - `display_effect(key, effects)` maps palettes to effects. A test checks that each palette gets only its own effect, and that only Game Boy's stays when switched off.
+  - Checked with snapshots (seed 7, 960x540, scale 1, `--message "Back soon"`), against the spec's GPU checks:
+    - Amber 255/208/112 → 191/156/84 (75%);
+    - Apple II white 255 → 178;
+    - C64 217 → 173 (80%);
+    - CGA white → 255/245/245 stripes rotating across columns, dark rows 191/184/184;
+    - Game Boy grid rows every third pixel at 3-pixel cells;
+    - Classic unchanged;
+    - the message box crisp in every palette;
+    - `--effects off`: Amber's rows equal, the Game Boy grid kept.
+  - Not done yet: ArtDeco material, Green Terminal code rain (Unifont), and Amber's message grapheme animation; the spec's "fallback" paths are for the browser's 2D canvas and do not apply.
+  - `cargo test`: PASS, 326 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - the sun (with a day/night cycle); city glow, searchlights, and lightning are done.

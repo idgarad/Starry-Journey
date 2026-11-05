@@ -251,6 +251,11 @@ impl ApplicationHandler for App {
                                 renderer.next_precip();
                             }
                         }
+                        KeyCode::KeyD => {
+                            if let Some(renderer) = &mut self.renderer {
+                                renderer.toggle_effects();
+                            }
+                        }
                         KeyCode::KeyC => {
                             if let Some(renderer) = &mut self.renderer {
                                 renderer.next_cover();
@@ -713,6 +718,16 @@ impl Scene {
 struct Renderer {
     /// The window surface; `None` in snapshot mode, which draws offscreen.
     surface: Option<wgpu::Surface<'static>>,
+    /// The display-effects pass (post.wgsl): its pipeline, bind group
+    /// layout and group, and parameters.
+    post_pipeline: wgpu::RenderPipeline,
+    post_layout: wgpu::BindGroupLayout,
+    post_bind_group: wgpu::BindGroup,
+    post_params: wgpu::Buffer,
+    /// The scene drawn before the display effects (surface-sized).
+    scene_texture: wgpu::Texture,
+    /// Palette display effects on (`--effects`, `D`).
+    effects: bool,
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
@@ -1025,6 +1040,19 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let (post_pipeline, post_layout) = create_post_pipeline(&device, surface_format);
+        let post_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Display effect parameters"),
+            size: POST_PARAMS_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let scene_texture = create_scene_texture(
+            &device,
+            surface_config.width,
+            surface_config.height,
+            surface_format,
+        );
 
         let wanted = options.palette.as_deref().unwrap_or(DEFAULT_PALETTE_KEY);
         let palette_index = palettes()
@@ -1070,8 +1098,21 @@ impl Renderer {
             },
             &params,
         );
+        let post_bind_group = create_post_bind_group(
+            &device,
+            &post_layout,
+            &scene_texture,
+            &message_texture,
+            &post_params,
+        );
         let mut renderer = Self {
             surface,
+            post_pipeline,
+            post_layout,
+            post_bind_group,
+            post_params,
+            scene_texture,
+            effects: options.effects,
             device,
             queue,
             surface_config,
@@ -1189,6 +1230,13 @@ impl Renderer {
         if let Some(surface) = &self.surface {
             surface.configure(&self.device, &self.surface_config);
         }
+        self.scene_texture = create_scene_texture(
+            &self.device,
+            size.width,
+            size.height,
+            self.surface_config.format,
+        );
+        self.rebind();
         // The scene grid always reserves the road rows (see Scene::new).
         let new_grid = Grid::with_scaling(size.width, size.height, true, self.scaling());
         if new_grid != self.scene.grid {
@@ -1907,6 +1955,53 @@ impl Renderer {
             },
             &self.params,
         );
+        self.post_bind_group = create_post_bind_group(
+            &self.device,
+            &self.post_layout,
+            &self.scene_texture,
+            &self.message_texture,
+            &self.post_params,
+        );
+    }
+
+    /// Turns the palette display effects on or off (`D`) and says so in
+    /// the message box. The Game Boy grid stays (it is part of the palette).
+    fn toggle_effects(&mut self) {
+        self.effects = !self.effects;
+        let label = if self.effects {
+            "Display effects on"
+        } else {
+            "Display effects off"
+        };
+        self.notice.flash(label, self.seconds(self.now()));
+    }
+
+    /// The display effect for the current palette (see post.wgsl), and the
+    /// pass's parameters: neighbor reach, scanline period and dark rows
+    /// from the display scale, and the Game Boy gap from the cell size.
+    fn post_params(&self) -> [f32; 12] {
+        let effect = display_effect(palette_at(self.palette_index).key, self.effects);
+        let scale = self.scale_factor.max(0.5);
+        let reach = scale.round().max(1.0);
+        let period = (2.0 * scale).round().max(2.0);
+        let dark = scale.round().max(1.0);
+        let cell = f64::from(self.scene.grid.cell);
+        let gap = (cell * 0.2).round().max(1.0);
+        let [x, y, width, height] = self.message_rect;
+        [
+            effect,
+            reach as f32,
+            cell as f32,
+            period as f32,
+            dark as f32,
+            gap as f32,
+            0.0,
+            0.0,
+            x,
+            y,
+            width,
+            height,
+        ]
     }
 
     /// Writes one city glow row (`row` 0: still city; 1-4: Endless layers).
@@ -2469,6 +2564,15 @@ impl Renderer {
 
     /// Draws the scene into `view` (the window frame or a snapshot).
     fn draw_to(&self, view: &wgpu::TextureView) {
+        let post: Vec<u8> = self
+            .post_params()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        self.queue.write_buffer(&self.post_params, 0, &post);
+        let scene_view = self
+            .scene_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -2478,7 +2582,7 @@ impl Renderer {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Present city"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: &scene_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -2491,6 +2595,26 @@ impl Renderer {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        {
+            // The palette's display effect, then the message box.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Display effects"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.post_pipeline);
+            pass.set_bind_group(0, &self.post_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
@@ -2664,6 +2788,150 @@ const FORCED_SHOWER: f64 = 0.35;
 const SWAY_WIND: f64 = 1.0;
 /// Flasher lights the shader takes (two police cars' light bars).
 const FLASHER_LIGHTS: usize = 4;
+/// The display effect (post.wgsl) for the palette `key`: Amber 1, Apple II
+/// 2, C64 3, both CGAs 4, Game Boy 5 (its grid always, as the spec says),
+/// and 0 for every other palette or when `effects` is off. ArtDeco's
+/// effect is a material on the city, not this pass; Parchment, Classic,
+/// EGA, and VGA stay unprocessed.
+fn display_effect(key: &str, effects: bool) -> f32 {
+    match key {
+        "gameboy" => 5.0,
+        _ if !effects => 0.0,
+        "amber" => 1.0,
+        "appleii" => 2.0,
+        "c64" => 3.0,
+        "cga" | "cga2" => 4.0,
+        _ => 0.0,
+    }
+}
+
+/// Bytes of the display-effects parameters (post.wgsl): three vec4s.
+const POST_PARAMS_BYTES: u64 = 3 * 16;
+
+/// The scene texture the display-effects pass reads: surface-sized, in the
+/// surface's format.
+fn create_scene_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Scene before display effects"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
+/// The display-effects pipeline (post.wgsl) and its bind group layout:
+/// the scene, the message box, and the parameters.
+fn create_post_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Display effects shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("post.wgsl").into()),
+    });
+    let texture = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    };
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("Display effect inputs"),
+        entries: &[
+            texture(0),
+            texture(1),
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("Display effects pipeline layout"),
+        bind_group_layouts: &[&layout],
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("Display effects pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+    (pipeline, layout)
+}
+
+/// The display-effects bind group.
+fn create_post_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    scene: &wgpu::Texture,
+    message: &wgpu::Texture,
+    params: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    let scene = scene.create_view(&wgpu::TextureViewDescriptor::default());
+    let message = message.create_view(&wgpu::TextureViewDescriptor::default());
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Display effect inputs"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&scene),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&message),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: params.as_entire_binding(),
+            },
+        ],
+    })
+}
+
 /// How much of a shooting star's flight its trail spans.
 const METEOR_TRAIL: f64 = 0.35;
 
@@ -3041,6 +3309,45 @@ mod tests {
             .map(|p| p.key)
             .collect();
         assert_eq!(ink, vec!["blackonwhite"]);
+    }
+
+    #[test]
+    fn each_palette_gets_only_its_own_display_effect() {
+        let on: Vec<(&str, f32)> = palettes()
+            .iter()
+            .map(|p| (p.key, display_effect(p.key, true)))
+            .collect();
+        let expect = |key: &str| on.iter().find(|(k, _)| *k == key).unwrap().1;
+        assert_eq!(expect("amber"), 1.0);
+        assert_eq!(expect("appleii"), 2.0);
+        assert_eq!(expect("c64"), 3.0);
+        assert_eq!((expect("cga"), expect("cga2")), (4.0, 4.0));
+        assert_eq!(expect("gameboy"), 5.0);
+        for plain in ["classic", "ega", "vga", "blackonwhite", "artdeco", "green"] {
+            assert_eq!(expect(plain), 0.0, "{plain} has no screen effect here");
+        }
+        // Switched off, only the Game Boy grid stays.
+        for palette in palettes() {
+            let off = display_effect(palette.key, false);
+            assert_eq!(
+                off,
+                if palette.key == "gameboy" { 5.0 } else { 0.0 },
+                "{}",
+                palette.key
+            );
+        }
+    }
+
+    #[test]
+    fn display_effects_shader_passes_wgsl_validation() {
+        let module =
+            naga::front::wgsl::parse_str(include_str!("post.wgsl")).expect("shader should parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("shader should validate");
     }
 
     #[test]

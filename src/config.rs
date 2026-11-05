@@ -77,6 +77,9 @@ Options:
   --searchlights S   Ground searchlights: auto (now and then a show of two or
                      three sweeping beams for up to 2 minutes, very rarely in
                      Endless; default), always, or off.
+  --effects E        Palette display effects (scanlines, color bleed, RGB
+                     stripes): on (default) or off. Press D to toggle. The
+                     Game Boy grid is always on.
   --events E@T,...   Fire test events at moments T (durations as for
                      --timer): meteor, police, utility, strike, bolt,
                      flicker, shower. For example
@@ -94,7 +97,7 @@ Options:
                      each run gets its own YYYYMMDD-HHMMSS folder.
   -h, --help         Show this help.
 
-Keys: P palette, C clouds, W rain/snow; tests: Shift+S shooting star,
+Keys: P palette, C clouds, W rain/snow, D display effects; tests: Shift+S shooting star,
 Shift+E police car, Shift+U utility truck, Shift+L lightning strike, Shift+B
 cloud-to-cloud bolt, Shift+I in-cloud flicker, Shift+R shower; R new city, +/- speed, E Normal/Endless, Space pause,
 F fullscreen, Tab next display, Esc quit.";
@@ -136,6 +139,8 @@ pub struct LaunchOptions {
     pub precip: PrecipMode,
     /// Whether storms have lightning (`--lightning`).
     pub lightning: LightningMode,
+    /// Palette display effects (`--effects`, toggled with `D`).
+    pub effects: bool,
     /// The palette to start in (`--palette`); `None` is the default.
     pub palette: Option<String>,
     /// Which building kinds and footprints (`--buildings`).
@@ -169,6 +174,7 @@ impl Default for LaunchOptions {
             clouds: Cover::default(),
             buildings: BuildingProfile::default(),
             palette: None,
+            effects: true,
             lightning: LightningMode::default(),
             precip: PrecipMode::default(),
             searchlights: SearchlightMode::default(),
@@ -363,6 +369,16 @@ where
                     .or_else(|| args.next())
                     .ok_or("--events needs events, for example --events police@30s")?;
                 options.events = parse_events(&value)?;
+            }
+            "--effects" => {
+                let value = inline
+                    .or_else(|| args.next())
+                    .ok_or("--effects needs on or off")?;
+                options.effects = match value.trim().to_ascii_lowercase().as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => return Err(format!("--effects must be on or off, got '{value}'")),
+                };
             }
             "--palette" => {
                 if options.palette.is_some() {
@@ -561,6 +577,14 @@ fn parse_pixel_size(value: &str) -> Result<PixelSize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effects_option_defaults_on() {
+        assert!(parse(&[]).unwrap().effects);
+        assert!(!parse(&["--effects", "off"]).unwrap().effects);
+        assert!(parse(&["--effects=ON"]).unwrap().effects);
+        assert!(parse(&["--effects", "maybe"]).is_err());
+    }
 
     #[test]
     fn palette_option_picks_a_known_palette() {
