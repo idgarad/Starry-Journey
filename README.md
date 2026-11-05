@@ -86,6 +86,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 
 | Option | Effect |
 | --- | --- |
+| `--palette KEY` | Start in a palette: `classic` (default), `artdeco`, `blackonwhite`, `cga`, `cga2`, `ega`, `vga`, `c64`, `appleii`, `gameboy`, `amber`, `green`. `P` cycles. |
 | `--pixel-size N` | Each virtual pixel is N screen pixels (1–16, times display scaling). Default 3. Bigger windows show more city and more sky. |
 | `--pixel-size spec` | Scale pixels with screen height instead, so every screen shows about 240 virtual rows (the Rebuild Prompt formula). |
 | `--timer D`, `--deadline D` | Finish building the city in exactly D, whatever the speed. A bare number is minutes; `90s`, `25m`, `1h30m` also work. |
