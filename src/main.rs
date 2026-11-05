@@ -730,10 +730,10 @@ struct Renderer {
 /// One frame of lightning for the shader, in device pixels.
 #[derive(Debug, Clone, PartialEq)]
 struct Flash {
-    /// Where its light centers, and how far it reaches.
-    center: (f64, f64),
-    radius: f64,
-    /// Brightness now, 0..1.
+    /// Each flash lit now: where its light centers (device pixels) and its
+    /// brightness (0..1).
+    lights: Vec<(f64, f64, f64)>,
+    /// The bolt's brightness now, 0..1.
     intensity: f64,
     /// How much it brightens the open sky around it (0 for in-cloud).
     sky: f64,
@@ -1332,12 +1332,12 @@ impl Renderer {
         let cell = f64::from(self.scene.grid.cell);
         let sky = f64::from(self.scene.grid.ground_row) * cell;
         let at = (event.at.0 * width, event.at.1 * sky);
-        let (segments, center, sky_light, radius) = match event.kind {
-            BoltKind::InCloud => (Vec::new(), at, 0.0, 0.12 * width),
+        let (segments, center, sky_light) = match event.kind {
+            BoltKind::InCloud => (Vec::new(), at, 0.0),
             BoltKind::CloudToCloud => {
                 let to = (event.to.0 * width, event.to.1 * sky);
                 let middle = ((at.0 + to.0) / 2.0, (at.1 + to.1) / 2.0);
-                (bolt_path(event.seed, at, to), middle, 0.6, 0.15 * width)
+                (bolt_path(event.seed, at, to), middle, 0.6)
             }
             BoltKind::Strike => {
                 let target = match self.strike_target {
@@ -1352,17 +1352,19 @@ impl Renderer {
                     target.0 + (event.at.0 - 0.5) * 0.25 * width,
                     at.1.min(target.1 * 0.5),
                 );
-                (
-                    bolt_path(event.seed, from, target),
-                    target,
-                    1.0,
-                    0.2 * width,
-                )
+                (bolt_path(event.seed, from, target), target, 1.0)
             }
         };
+        // Each flash's light sits along the cloud band at its own place,
+        // shifted with the event's center (the bolt's middle, or a
+        // strike's target).
+        let lights = event
+            .lights(seconds)
+            .into_iter()
+            .map(|(x, brightness)| (center.0 + (x - event.at.0) * width, center.1, brightness))
+            .collect();
         self.lightning = Some(Flash {
-            center,
-            radius,
+            lights,
             intensity: event.intensity(seconds),
             sky: sky_light,
             segments,
@@ -1724,25 +1726,31 @@ impl Renderer {
                 None => params.extend([0.0; 4]),
             }
         }
-        // Lightning: its light's center and reach (device pixels) and
-        // brightness; then the bolt's segment count and how much it lights
-        // the open sky; then the segments.
-        match &self.lightning {
-            Some(flash) => {
-                params.extend([
-                    flash.center.0 as f32,
-                    flash.center.1 as f32,
-                    flash.radius as f32,
-                    flash.intensity as f32,
-                ]);
-                params.extend([
-                    flash.segments.len().min(BOLT_SEGMENTS) as f32,
-                    flash.sky as f32,
-                    0.0,
-                    0.0,
-                ]);
+        // Lightning: up to three lights (center in device pixels and
+        // brightness); then the bolt's segment count, how much it lights
+        // the open sky, its brightness, and half the screen's width (the
+        // oval's reach); then the segments.
+        let lights = self
+            .lightning
+            .as_ref()
+            .map_or(&[][..], |flash| &flash.lights[..]);
+        for slot in 0..FLASH_LIGHTS {
+            match lights.get(slot) {
+                Some(&(x, y, brightness)) => {
+                    params.extend([x as f32, y as f32, 0.0, brightness as f32])
+                }
+                None => params.extend([0.0; 4]),
             }
-            None => params.extend([0.0; 8]),
+        }
+        let half_width = f64::from(self.surface_size().0) / 2.0;
+        match &self.lightning {
+            Some(flash) => params.extend([
+                flash.segments.len().min(BOLT_SEGMENTS) as f32,
+                flash.sky as f32,
+                flash.intensity as f32,
+                half_width as f32,
+            ]),
+            None => params.extend([0.0, 0.0, 0.0, half_width as f32]),
         }
         for slot in 0..BOLT_SEGMENTS {
             match self
@@ -2161,8 +2169,11 @@ fn create_message_texture(device: &wgpu::Device, width: u32, height: u32) -> wgp
 
 /// Size of the shader's `Params` uniform: cell, message, and four layer
 /// vectors of four floats.
+/// Lightning lights the shader takes (one per flash of an event).
+const FLASH_LIGHTS: usize = 3;
 const PARAMS_BYTES: u64 =
-    (15 + SEARCHLIGHTS as u64 + BOLT_SEGMENTS as u64 + VEHICLE_SLOTS as u64) * 16;
+    (14 + FLASH_LIGHTS as u64 + SEARCHLIGHTS as u64 + BOLT_SEGMENTS as u64 + VEHICLE_SLOTS as u64)
+        * 16;
 /// Vehicle sprite slots in the shader (the most vehicles on a road).
 const VEHICLE_SLOTS: usize = 6;
 

@@ -68,10 +68,11 @@ struct Params {
     // Per searchlight: x, y its foot in device pixels on screen; z its lean
     // from straight up (radians, positive right); w its power (0..1).
     searchlights: array<vec4<f32>, 3>,
-    // Lightning: x, y the center of its light and z its reach (device
-    // pixels), w its brightness (0..1; 0 when there is none).
-    lightning: vec4<f32>,
-    // x the bolt's segment count, y how much it lights the open sky.
+    // Lightning: one light per flash of the current event: x, y its center
+    // (device pixels), w its brightness (0..1; 0 when off).
+    flash_lights: array<vec4<f32>, 3>,
+    // x the bolt's segment count, y how much it lights the open sky, z the
+    // bolt's brightness, w half the screen width (the light's reach).
     lightning_info: vec4<f32>,
     // The bolt's segments: x, y one end and z, w the other (device pixels).
     bolt: array<vec4<f32>, 24>,
@@ -83,6 +84,13 @@ struct Params {
 const FLASH_COLOR: vec3<f32> = vec3<f32>(0.82, 0.88, 1.0);
 const FLASH_CLOUD: f32 = 1.0;
 const FLASH_SKY: f32 = 0.18;
+// Each flash's light is a flat oval as wide as the screen, centred on the
+// flash, fading smoothly to nothing at its edge (on screen or not), so
+// several flashes layer over one another. Each starts at a quarter of full
+// strength; overlaps add up (owner, 2026-11-05).
+const FLASH_LIGHT: f32 = 0.25;
+// The oval's height as a share of its width.
+const FLASH_FLATNESS: f32 = 0.3;
 const BOLT_CORE: f32 = 0.6;
 const BOLT_GLOW: f32 = 3.0;
 const BOLT_GLOW_STRENGTH: f32 = 0.45;
@@ -392,14 +400,20 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let beam_light = params.searchlight_color.rgb * beam;
     // Lightning: how bright it is here (fading with distance from its
     // center), lighting the open sky a little and the clouds from inside.
-    let flash = params.lightning.w;
+    let flash = params.lightning_info.z;
     var flash_here = 0.0;
-    if (flash > 0.0) {
-        let reach = max(params.lightning.z, 1.0);
-        // A gaussian falloff keeps the light local: bright near the bolt
-        // or flicker, gone a couple of reaches away, never a sky-wide flash.
-        let r = length(position.xy - params.lightning.xy) / reach;
-        flash_here = flash * exp(-r * r);
+    let reach = vec2<f32>(1.0, FLASH_FLATNESS) * max(params.lightning_info.w, 1.0);
+    for (var i = 0u; i < 3u; i++) {
+        let light = params.flash_lights[i];
+        if (light.w > 0.0) {
+            let offset = (position.xy - light.xy) / reach;
+            let q = dot(offset, offset);
+            if (q < 1.0) {
+                flash_here += light.w * FLASH_LIGHT * (1.0 - q) * (1.0 - q);
+            }
+        }
+    }
+    if (flash_here > 0.0) {
         color += FLASH_COLOR * flash_here * FLASH_SKY * params.lightning_info.y;
     }
     let glow = city_glow_at(position.xy);

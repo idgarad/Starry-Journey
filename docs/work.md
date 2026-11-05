@@ -493,9 +493,14 @@
   - Shader: a cool white (0.82, 0.88, 1.0). Light falls off as a gaussian of distance over its reach (12-20% of the screen width). It lights clouds from inside (×1.0 of cloud alpha) and the open sky a little (×0.18, for bolts only).
   - The bolt is a 0.6-cell core plus a soft 3-cell glow, drawn in front of the clouds and behind the city.
   - Tuned with snapshots (seed 7, storm, 960x540; in-cloud at 81 s, dark at 90 s, cloud-to-cloud at 127 s, strike at 134 s). With an exponential falloff the whole sky went grey on every flash; the gaussian keeps it local.
+  - Flat ovals (owner, 2026-11-05): "It is a bit too circular ... make it an flatter oval that is as wide as the screen ... the drop off hits zero at the edge ... this will allow multiples to layer over one another. Drop the initial intensity also be 25%."
+    - Each flash of an event now has its own place along the cloud band (within 0.2 of the screen width of the event's), and the shader takes up to three lights.
+    - Each light is a flat oval, half the screen width each side and 0.3 of that tall, falling as `(1 - q)²` to zero at its edge (on screen or not). It starts at 25% strength (`FLASH_LIGHT`), and overlapping lights add. The bolt line stays at full brightness.
+    - Rechecked with snapshots (seed 7, storm): wide, flat sheets of light across the cloud band instead of round spots. The event times moved because each flash now draws its place.
+    - A new test checks that each flash lights its own nearby spot and that overlapping flashes both light.
   - Seen: searchlight shows still run in storms. The owner's rule is "never on if it is raining", and there is no rain yet; this is waiting for the weather work.
   - Tests: no faster than three flashes a second, and gaps across minutes; smooth rise and fade (no 60 fps frame jumps by more than a third); the kind mix and event rate; storms only and off; bolt ends, segment bounds and jaggedness; deterministic events; option parsing.
-  - `cargo test`: PASS, 297 tests.
+  - `cargo test`: PASS, 298 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only).

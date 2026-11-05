@@ -79,8 +79,11 @@ pub struct Event {
     /// Seconds into the run.
     pub start: f64,
     pub kind: BoltKind,
-    /// Each flash's offset from `start` (seconds) and peak strength (0..1).
-    pub flashes: Vec<(f64, f64)>,
+    /// Each flash's offset from `start` (seconds), peak strength (0..1),
+    /// and place across the screen (0..1). Flashes of one event light
+    /// different spots, and their lights add where they overlap (owner,
+    /// 2026-11-05: "let overlaps bring that up organically").
+    pub flashes: Vec<(f64, f64, f64)>,
     /// Where it happens: across the screen (0..1) and down the sky (0 top,
     /// 1 the ground row).
     pub at: (f64, f64),
@@ -93,7 +96,18 @@ pub struct Event {
 impl Event {
     /// When its last flash has faded.
     pub fn end(&self) -> f64 {
-        self.start + self.flashes.last().map_or(0.0, |(at, _)| *at) + FALL
+        self.start + self.flashes.last().map_or(0.0, |(at, _, _)| *at) + FALL
+    }
+
+    /// Each flash lit at `seconds`: its place across the screen (0..1) and
+    /// brightness now (0..1). O(flashes).
+    pub fn lights(&self, seconds: f64) -> Vec<(f64, f64)> {
+        let t = seconds - self.start;
+        self.flashes
+            .iter()
+            .map(|&(at, peak, x)| (x, peak * envelope(t - at)))
+            .filter(|&(_, brightness)| brightness > 0.0)
+            .collect()
     }
 
     /// Its brightness at `seconds` (0..1): the brightest of its flashes,
@@ -102,7 +116,7 @@ impl Event {
         let t = seconds - self.start;
         self.flashes
             .iter()
-            .map(|&(at, peak)| peak * envelope(t - at))
+            .map(|&(at, peak, _)| peak * envelope(t - at))
             .fold(0.0, f64::max)
     }
 }
@@ -151,14 +165,16 @@ pub fn events_in(seed: u32, slot: i64) -> Vec<Event> {
             BoltKind::CloudToCloud => (0.75, 0.95),
             BoltKind::Strike => (0.9, 1.0),
         };
-        let mut flashes = vec![(0.0, lo + (hi - lo) * next())];
-        for _ in 1..count {
-            let last = flashes.last().map_or(0.0, |(at, _)| *at);
-            let at = last + MIN_FLASH_SPACING + 0.25 * next();
-            let peak = flashes[0].1 * (0.5 + 0.4 * next());
-            flashes.push((at, peak));
-        }
         let at = (0.1 + 0.8 * next(), 0.1 + 0.3 * next());
+        let mut flashes = vec![(0.0, lo + (hi - lo) * next(), at.0)];
+        for _ in 1..count {
+            let last = flashes.last().map_or(0.0, |(at, _, _)| *at);
+            let time = last + MIN_FLASH_SPACING + 0.25 * next();
+            let peak = flashes[0].1 * (0.5 + 0.4 * next());
+            // Nearby along the cloud band.
+            let x = (at.0 + 0.4 * (next() - 0.5)).clamp(0.0, 1.0);
+            flashes.push((time, peak, x));
+        }
         let span = (0.15 + 0.25 * next()) * if next() < 0.5 { -1.0 } else { 1.0 };
         let to = (
             (at.0 + span).clamp(0.02, 0.98),
@@ -255,7 +271,7 @@ mod tests {
             let events = hour(seed, 60);
             let peaks: Vec<f64> = events
                 .iter()
-                .flat_map(|e| e.flashes.iter().map(move |(at, _)| e.start + at))
+                .flat_map(|e| e.flashes.iter().map(move |(at, _, _)| e.start + at))
                 .collect();
             assert!(peaks
                 .windows(2)
@@ -270,6 +286,27 @@ mod tests {
                 .windows(2)
                 .all(|w| w[1].start - w[0].end() >= EVENT_GAP.0 - 1e-9));
         }
+    }
+
+    #[test]
+    fn each_flash_lights_its_own_nearby_spot() {
+        let events: Vec<Event> = (0..5).flat_map(|seed| hour(seed, 60)).collect();
+        for burst in events.iter().filter(|e| e.flashes.len() > 1) {
+            assert_eq!(burst.flashes[0].2, burst.at.0);
+            assert!(burst
+                .flashes
+                .iter()
+                .all(|f| (f.2 - burst.at.0).abs() <= 0.2 + 1e-9));
+        }
+        // Where a second flash starts before the first has faded, both
+        // light at once, and their lights add.
+        let burst = events
+            .iter()
+            .find(|e| e.flashes.len() > 1 && e.flashes[1].0 < RISE + FALL - 0.05)
+            .expect("an overlapping burst");
+        let both = burst.start + burst.flashes[1].0 + 0.02;
+        assert_eq!(burst.lights(both).len(), 2, "{:?}", burst.flashes);
+        assert!(burst.lights(burst.start - 1.0).is_empty());
     }
 
     #[test]
