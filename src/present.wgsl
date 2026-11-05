@@ -8,6 +8,8 @@
 // 2b. the procedural clouds (src/skyclouds.rs) in four layers far to
 //    near, lit on a background thread, each slid with its own wind and
 //    share of the Endless camera, in front of the moon and behind the city;
+//    the city's glow (src/cityglow.rs) lights them here, every frame, so
+//    it stays under the windows that cast it;
 // 3. the city: in Normal mode and during construction, the still city
 //    (transparent where nothing is built yet); while Endless scrolls, the
 //    four layers, far to near, at fractional positions;
@@ -54,7 +56,28 @@ struct Params {
     cloud_back_offsets: vec4<f32>,
     cloud_fades: vec4<f32>,
     cloud_slots: vec4<f32>,
+    // City glow: x the ground row in cells; y, z, w unused.
+    glow: vec4<f32>,
 }
+
+// How strongly the city glow lights a cloud at the skyline.
+const CITY_GLOW_STRENGTH: f32 = 1.0;
+// The glow fades with height above the ground as exp(-height / this share
+// of the sky's rows).
+const CITY_GLOW_HEIGHT: f32 = 0.45;
+// Rows below a cloud pixel checked for its underside, near and far: the
+// more open sky below, the more the pixel is a base, lit most by the city.
+// Two reaches make the glow a soft wash up from cloud bottoms rather than
+// a line at every edge where one heap overlaps another.
+const UNDERSIDE_NEAR: f32 = 3.0;
+const UNDERSIDE_FAR: f32 = 8.0;
+// How much each Endless layer (far to near) adds to the glow. Each layer
+// is a whole city, and nearer buildings hide most windows behind them, so
+// together they count about as much as one Normal skyline's visible
+// windows.
+const ENDLESS_GLOW_WEIGHTS: vec4<f32> = vec4<f32>(0.1, 0.15, 0.3, 0.75);
+// Share of the glow a cloud's top and middle get (its base gets all).
+const GLOW_ON_TOPS: f32 = 0.12;
 
 // Cloud strips stacked in one texture: per layer (far at the top), two
 // keyframe slots.
@@ -79,6 +102,7 @@ const VEHICLE_ROWS: i32 = 2;
 @group(0) @binding(10) var street_front: texture_2d<f32>;
 @group(0) @binding(11) var vehicle_atlas: texture_2d<f32>;
 @group(0) @binding(12) var cloud_strip: texture_2d<f32>;
+@group(0) @binding(13) var city_glow: texture_2d<f32>;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
@@ -183,6 +207,45 @@ fn cloud_sample(band: u32, offset: f32, position: vec2<f32>) -> vec4<f32> {
     return mix(top, bottom, t.y);
 }
 
+// One city glow texel: column `x` of glow row `row`, black outside.
+fn glow_texel(x: i32, row: i32) -> vec3<f32> {
+    let dims = vec2<i32>(textureDimensions(city_glow));
+    if (x < 0 || x >= dims.x || row < 0 || row >= dims.y) {
+        return vec3<f32>(0.0);
+    }
+    return textureLoad(city_glow, vec2<i32>(x, row), 0).rgb;
+}
+
+// The city's glow under screen position `position` (linear RGB): from the
+// still city, or the four Endless layers each at its own offset.
+fn city_glow_at(position: vec2<f32>) -> vec3<f32> {
+    let cell = params.cell.x;
+    if (params.cell.z > 0.5) {
+        return glow_texel(i32(floor(position.x / cell)), 0);
+    }
+    var glow = vec3<f32>(0.0);
+    if (params.cell.y > 0.5) {
+        for (var layer = 0; layer < 4; layer++) {
+            let x = i32(floor((position.x + params.layers[layer].x) / cell));
+            glow += glow_texel(x, 1 + layer) * ENDLESS_GLOW_WEIGHTS[layer];
+        }
+    }
+    return glow;
+}
+
+// One cloud layer's keyframes, cross-faded (premultiplied, linear).
+fn cloud_layer(band: u32, position: vec2<f32>) -> vec4<f32> {
+    let slots = params.cloud_slots[band];
+    let front = u32(slots) % 2u;
+    let fade = params.cloud_fades[band];
+    var cloud = cloud_sample(band * CLOUD_SLOTS + front, params.cloud_front_offsets[band], position) * fade;
+    if (slots >= 2.0) {
+        let back = 1u - front;
+        cloud += cloud_sample(band * CLOUD_SLOTS + back, params.cloud_back_offsets[band], position) * (1.0 - fade);
+    }
+    return cloud;
+}
+
 fn over(front: vec4<f32>, back: vec3<f32>) -> vec3<f32> {
     return front.rgb + back * (1.0 - front.a);
 }
@@ -204,18 +267,23 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // (including by the moon) on a background thread; they let some of the
     // moon and stars behind them through.
     // Each layer cross-fades (in linear light, premultiplied) from its back
-    // keyframe to its front one.
+    // keyframe to its front one. The city glow then lights it: strongest on
+    // undersides (less cloud just below) and low clouds, fading with height.
+    let glow = city_glow_at(position.xy);
+    let ground = params.glow.x;
+    let height = max(ground - position.y / cell, 0.0);
+    let glow_light = glow * CITY_GLOW_STRENGTH * exp(-height / (CITY_GLOW_HEIGHT * max(ground, 1.0)));
+    let near_below = position.xy + vec2<f32>(0.0, UNDERSIDE_NEAR * cell);
+    let far_below = position.xy + vec2<f32>(0.0, UNDERSIDE_FAR * cell);
     for (var band = 0u; band < CLOUD_LAYERS; band++) {
-        let slots = params.cloud_slots[band];
-        if (slots < 0.0) {
+        if (params.cloud_slots[band] < 0.0) {
             continue;
         }
-        let front = u32(slots) % 2u;
-        let fade = params.cloud_fades[band];
-        var cloud = cloud_sample(band * CLOUD_SLOTS + front, params.cloud_front_offsets[band], position.xy) * fade;
-        if (slots >= 2.0) {
-            let back = 1u - front;
-            cloud += cloud_sample(band * CLOUD_SLOTS + back, params.cloud_back_offsets[band], position.xy) * (1.0 - fade);
+        var cloud = cloud_layer(band, position.xy);
+        if (cloud.a > 0.0 && any(glow_light > vec3<f32>(0.0))) {
+            let open_below = 1.0 - 0.5 * (cloud_layer(band, near_below).a + cloud_layer(band, far_below).a);
+            let underside = clamp(open_below, 0.0, 1.0);
+            cloud = vec4<f32>(cloud.rgb + glow_light * cloud.a * mix(GLOW_ON_TOPS, 1.0, underside), cloud.a);
         }
         color = over(cloud, color);
     }

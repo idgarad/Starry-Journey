@@ -117,6 +117,7 @@ Never commit `target/` or music files in `Sounds/Music/`; `.gitignore` excludes 
 | [src/snapshot.rs](src/snapshot.rs) | Snapshot mode helpers: a dependency-free PNG writer and run folder names. |
 | [src/message.rs](src/message.rs), [src/fonts/](src/fonts/) | Message box: `--message` validation, the palette-name notice, text wrapping, and CPU rasterization with the bundled Noto Sans font (SIL OFL 1.1, notice in `src/fonts/NotoSans-OFL.txt`). |
 | [src/clouds.rs](src/clouds.rs) | Cloud shapes, coverage presets, wind and parallax, and moonlit four-tone drawing. |
+| [src/cityglow.rs](src/cityglow.rs) | City glow on the clouds: each column's lit-window light, blurred into a glow row the shader reads under every cloud pixel. |
 | [src/endless.rs](src/endless.rs), [src/quips.rs](src/quips.rs) | Endless mode's four scrolling layer cities with bounded buffers, and the startup quips. |
 | [src/raster.rs](src/raster.rs) | CPU rasterizer: city to logical-grid RGBA buffer with ownership arrays. |
 | [src/lib.rs](src/lib.rs), [src/model/](src/model/) | Pure city model with no graphics dependencies: `rng` (Mulberry32 and stream seeds), `grid` (logical cell grid), `palette` (palette data and window tones), `building` (building, tier, and window records), `layers` (per-layer generator parameters), `shapes` (tier builders for each building kind), `mast`, `tint`, `windows`, `decorations`, and `city` (the generator that assembles them). |

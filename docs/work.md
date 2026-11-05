@@ -414,6 +414,19 @@
   - `cargo test`: PASS, 267 tests.
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
+- **City glow on the clouds (owner, 2026-11-04):** the first cloud-lighting slice. The owner chose glow plus searchlights for this sprint (sunlight waits for a day cycle), ground searchlights, and glow "from the windows".
+  - `cityglow::glow_row` sums each column's window cells (decoded to linear light; unlit windows are dark and add little), box-blurs the sums 16 cells either side, and scales them so 30 window cells is full glow.
+  - The renderer keeps a linear `Rgba8Unorm` glow texture with 5 rows: row 0 is the still city, rewritten whenever it is uploaded; rows 1-4 are the Endless layers, rewritten when a layer buffer changes. It is bound at binding 13; `Params.glow.x` is the ground row.
+  - The shader lights each cloud layer every frame, so the glow stays under the windows that cast it while Endless scrolls. It adds `glow × CITY_GLOW_STRENGTH (1.0) × exp(-height / (0.45 × ground row))`, scaled by cloud alpha, and more on undersides. "Underside" is the open sky 3 and 8 rows below the pixel in the same layer; tops and middles get 12%.
+  - Endless layers are weighted 0.1/0.15/0.3/0.75 (far to near). Each layer is a whole city with windows hidden behind nearer ones; summed at full weight, the Endless sky went olive.
+  - Tuned with snapshots (seed 7, 960x540, `--timer 10s`, 40 s; broken and overcast; Endless at 90 s), compared against `main` rendered from a worktree:
+    - with a single "underside" sample 3 rows down, the glow drew stripes wherever heaps overlap inside a mass; two reaches made it a soft wash up from cloud bottoms.
+  - Looks: with the default palette's yellow windows, the glow on gray cloud reads as a warm olive-khaki. This is waiting for owner review.
+  - Tests: glow color and spread, denser columns brighter and capped at full, only shown window cells glow, size checks, and byte encoding.
+  - `cargo test`: PASS, 272 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
+  - GUI: not run by the agent (snapshots only).
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

@@ -142,6 +142,9 @@ pub struct LayerImage<'a> {
     /// RGBA bytes, row-major, sRGB-encoded; alpha is 0 on sky, 255 on
     /// buildings.
     pub rgba: &'a [u8],
+    /// Window index per cell (see [`crate::raster::CityRaster`]), for the
+    /// city glow on the clouds.
+    pub window_index: &'a [i32],
     /// Columns.
     pub width: usize,
     /// Rows.
@@ -315,6 +318,7 @@ impl EndlessCity {
         let layer = &self.layers[layer];
         LayerImage {
             rgba: &layer.raster.rgba,
+            window_index: &layer.raster.window_index,
             width: layer.raster.width,
             height: layer.raster.height,
             origin_x: layer.origin_x,
