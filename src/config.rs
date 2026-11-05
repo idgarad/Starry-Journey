@@ -74,7 +74,8 @@ Options:
                      three sweeping beams for up to 2 minutes, very rarely in
                      Endless; default), always, or off.
   --events E@T,...   Fire test events at moments T (durations as for
-                     --timer): meteor, police, utility. For example
+                     --timer): meteor, police, utility, strike, bolt,
+                     flicker, shower. For example
                      --events police@30s,meteor@45s. The same as the Shift
                      test keys, for snapshots.
   --seed N           Build city number N (0-4294967295) instead of a random
@@ -90,7 +91,8 @@ Options:
   -h, --help         Show this help.
 
 Keys: P palette, C clouds, W rain/snow; tests: Shift+S shooting star,
-Shift+E police car, Shift+U utility truck; R new city, +/- speed, E Normal/Endless, Space pause,
+Shift+E police car, Shift+U utility truck, Shift+L lightning strike, Shift+B
+cloud-to-cloud bolt, Shift+I in-cloud flicker, Shift+R shower; R new city, +/- speed, E Normal/Endless, Space pause,
 F fullscreen, Tab next display, Esc quit.";
 
 /// How big a virtual pixel is.
@@ -416,6 +418,32 @@ pub enum TestEvent {
     Police,
     /// A utility truck (Shift+U).
     Utility,
+    /// A lightning strike on the tallest point (Shift+L).
+    Strike,
+    /// A cloud-to-cloud bolt (Shift+B).
+    Bolt,
+    /// An in-cloud flicker (Shift+I).
+    Flicker,
+    /// A shower, easing in at once (Shift+R).
+    Shower,
+}
+
+/// Parses a moment of a run for `--snapshot` and `--events`: `0`, a
+/// duration as for `--timer`, or decimal seconds such as `30.1s` (a flash
+/// lasts well under a second, so frames just after an event need them).
+fn parse_moment(text: &str) -> Result<f64, String> {
+    let text = text.trim();
+    if text == "0" {
+        return Ok(0.0);
+    }
+    if let Some(number) = text.strip_suffix('s').filter(|n| n.contains('.')) {
+        return number
+            .parse::<f64>()
+            .ok()
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0 && *seconds <= 86_400.0)
+            .ok_or_else(|| format!("'{text}' is not a moment; use 30s, 1m30s, or 30.5s"));
+    }
+    parse_duration(text)
 }
 
 /// Parses `--events`: comma-separated `name@moment`, sorted by moment.
@@ -429,18 +457,18 @@ fn parse_events(value: &str) -> Result<Vec<(TestEvent, f64)>, String> {
             "meteor" => TestEvent::Meteor,
             "police" => TestEvent::Police,
             "utility" => TestEvent::Utility,
+            "strike" => TestEvent::Strike,
+            "bolt" => TestEvent::Bolt,
+            "flicker" => TestEvent::Flicker,
+            "shower" => TestEvent::Shower,
             _ => {
                 return Err(format!(
-                    "--events: unknown event '{name}' (meteor, police, utility)"
+                    "--events: unknown event '{name}' (meteor, police, utility, strike, bolt, flicker, shower)"
                 ))
             }
         };
         let at = at.trim();
-        let seconds = if at == "0" {
-            0.0
-        } else {
-            parse_duration(at).map_err(|message| format!("--events: {message}"))?
-        };
+        let seconds = parse_moment(at).map_err(|message| format!("--events: {message}"))?;
         events.push((event, seconds));
     }
     events.sort_by(|a, b| a.1.total_cmp(&b.1));
@@ -453,11 +481,7 @@ fn parse_snapshot_times(value: &str) -> Result<Vec<f64>, String> {
     let mut times = Vec::new();
     for part in value.split(',') {
         let part = part.trim();
-        let seconds = if part == "0" {
-            0.0
-        } else {
-            parse_duration(part).map_err(|message| format!("--snapshot: {message}"))?
-        };
+        let seconds = parse_moment(part).map_err(|message| format!("--snapshot: {message}"))?;
         times.push(seconds);
     }
     times.sort_by(f64::total_cmp);
@@ -516,6 +540,21 @@ mod tests {
 
     #[test]
     fn events_parse_in_time_order_and_reject_bad_ones() {
+        let fractions = parse(&["--snapshot", "30.1s,0,2m", "--events", "strike@29.95s"]).unwrap();
+        assert_eq!(fractions.snapshot, Some(vec![0.0, 30.1, 120.0]));
+        assert_eq!(fractions.events, vec![(TestEvent::Strike, 29.95)]);
+        assert!(parse(&["--snapshot", "-1.5s"]).is_err());
+        assert!(parse(&["--snapshot", "1.5.5s"]).is_err());
+        let lightning = parse(&["--events", "strike@1s,bolt@2s,flicker@3s,shower@4s"]).unwrap();
+        assert_eq!(
+            lightning.events.iter().map(|e| e.0).collect::<Vec<_>>(),
+            vec![
+                TestEvent::Strike,
+                TestEvent::Bolt,
+                TestEvent::Flicker,
+                TestEvent::Shower
+            ]
+        );
         let options = parse(&["--events", "meteor@45s, police@30s,utility@1m"]).unwrap();
         assert_eq!(
             options.events,
