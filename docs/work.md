@@ -731,6 +731,10 @@
       - one sweep every 15 s;
       - the line 30% brighter and one scanline period thick;
       - the trail starting 18% brighter and fading over 8% of the screen height.
+    - Phosphor bloom (owner, 2026-11-05, with a photo of a real amber terminal: "There should be a little bloom to the active pixels as the scan refreshes them"):
+      - Amber and Green lit pixels glow into the dark around them: two highlight halos at 1 and 2 reaches (the second at half weight), screen-blended;
+      - each of the four neighbors weighs 0.05 at rest, plus 0.12 where the beam's line or fresh trail is;
+      - checked with before/after crops: windows glow fuller, filling the scanline gaps, and hotter in the band the beam just refreshed.
   - Backlog: one toggle per effect once there are menu options (owner); `D` switches them all for now.
   - Tests: effect mapping per palette (Green 6, EGA 7, VGA 8; only Game Boy when off); both shaders validate; snapshot names differ for consecutive frames.
   - `cargo test`: PASS, 326 tests.

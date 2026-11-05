@@ -68,6 +68,10 @@ const BEAM_LINE: f32 = 0.3;
 const BEAM_TRAIL: f32 = 0.18;
 const BEAM_FADE: f32 = 0.08;
 const BEAM_THICKNESS: f32 = 1.0;
+// Phosphor bloom on Amber and Green: each of four neighbors' share of glow
+// at rest, and the extra where the beam has just passed.
+const PHOSPHOR_BLOOM: f32 = 0.05;
+const BEAM_BLOOM: f32 = 0.12;
 // Phosphor bloom around Amber and Green message text.
 const TEXT_BLOOM: f32 = 0.9;
 
@@ -271,6 +275,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> Output {
         let period = max(post.effect.w, 2.0);
         let line = 1.0 - smoothstep(0.0, BEAM_THICKNESS * period, behind);
         let trail = exp(-behind / (BEAM_FADE * height));
+        // Phosphor bloom (owner, 2026-11-05, from a real amber terminal):
+        // lit pixels glow softly into the dark around them, one and two
+        // reaches out, more where the beam has just refreshed them.
+        let energy = max(line, trail);
+        let weight = PHOSPHOR_BLOOM + BEAM_BLOOM * energy;
+        color = halo(p, reach, decode_srgb(color), weight);
+        color = halo(p, 2 * reach, decode_srgb(color), weight * 0.5);
         color = min(color * (1.0 + BEAM_LINE * line + BEAM_TRAIL * trail), vec3<f32>(1.0));
     }
     // Every CRT palette: a gentle vignette toward the corners.
