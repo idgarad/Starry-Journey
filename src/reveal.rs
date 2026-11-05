@@ -96,6 +96,66 @@ impl Reveal {
     }
 }
 
+/// Seconds a city takes to dissolve at 1x speed before a new one is built
+/// (`R`; owner, 2026-11-05: "reverse the process to fade the current city
+/// out"). An agent choice: far quicker than construction, so `R` still
+/// feels like a response, but slow enough to read as a dissolve.
+pub const DISSOLVE_SECONDS: f64 = 6.0;
+/// Seed XOR for the dissolve-order stream.
+pub const DISSOLVE_SEED_XOR: u32 = 0x27d4_eb2f;
+
+/// Construction in reverse: the cells on screen disappear one at a time in
+/// a seeded random order, leaving the sky. Each cell is `(image, index)`:
+/// which buffer it is in (the caller's numbering) and where.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dissolve {
+    order: Vec<(u8, usize)>,
+    removed: usize,
+    progress: f64,
+}
+
+impl Dissolve {
+    /// Shuffles `cells` with the dissolve stream for `seed`. O(cells).
+    pub fn new(mut cells: Vec<(u8, usize)>, seed: u32) -> Self {
+        let mut rng = Mulberry32::new(seed ^ DISSOLVE_SEED_XOR);
+        for i in (1..cells.len()).rev() {
+            let j = rng.rand_int(0, i as i64) as usize;
+            cells.swap(i, j);
+        }
+        Self {
+            order: cells,
+            removed: 0,
+            progress: 0.0,
+        }
+    }
+
+    /// Progress in `0..=1`.
+    pub fn progress(&self) -> f64 {
+        self.progress
+    }
+
+    /// True once every cell is gone.
+    pub fn is_complete(&self) -> bool {
+        self.progress >= 1.0
+    }
+
+    /// Advances by `dt` seconds (clamped to `0..=0.25`, as construction) at
+    /// `speed`, and returns the cells removed by this step.
+    /// O(newly removed cells).
+    pub fn advance(&mut self, dt: f64, speed: f64) -> &[(u8, usize)] {
+        let step = dt.clamp(0.0, MAX_FRAME_DT) * speed.max(0.0) / DISSOLVE_SECONDS;
+        self.progress = (self.progress + step).min(1.0);
+        let target = if self.progress >= 1.0 {
+            self.order.len()
+        } else {
+            ((self.progress * self.order.len() as f64).floor() as usize).min(self.order.len())
+        };
+        let start = self.removed;
+        self.removed = target.max(start);
+        &self.order[start..self.removed]
+    }
+}
+
 /// Untimed construction progress after `dt` seconds at `speed`:
 /// `progress + dt * speed / 240`, with `dt` clamped to `0..=0.25`.
 pub fn untimed_step(progress: f64, dt: f64, speed: f64) -> f64 {
@@ -174,6 +234,42 @@ impl ConstructionView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dissolve_removes_every_cell_once_in_a_seeded_order_over_its_time() {
+        let cells: Vec<(u8, usize)> = (0..1000).map(|i| ((i % 3) as u8, i)).collect();
+        let mut dissolve = Dissolve::new(cells.clone(), 7);
+        assert_eq!(dissolve, Dissolve::new(cells.clone(), 7));
+        assert_ne!(dissolve, Dissolve::new(cells.clone(), 8));
+        let mut gone = Vec::new();
+        // Half the time at 1x removes half the cells.
+        for _ in 0..90 {
+            gone.extend_from_slice(dissolve.advance(1.0 / 30.0, 1.0));
+        }
+        assert!((dissolve.progress() - 0.5).abs() < 1e-9);
+        // (Summed frame times land a hair under 0.5, so one cell of rounding.)
+        assert!((499..=500).contains(&gone.len()), "{}", gone.len());
+        // A long stall is clamped like construction's frame time.
+        gone.extend_from_slice(dissolve.advance(10.0, 1.0));
+        assert!((dissolve.progress() - (0.5 + 0.25 / DISSOLVE_SECONDS)).abs() < 1e-9);
+        while !dissolve.is_complete() {
+            gone.extend_from_slice(dissolve.advance(1.0 / 30.0, 4.0));
+        }
+        gone.sort_unstable();
+        let mut all = cells;
+        all.sort_unstable();
+        assert_eq!(gone, all);
+    }
+
+    #[test]
+    fn dissolving_nothing_completes() {
+        let mut dissolve = Dissolve::new(Vec::new(), 1);
+        assert!(dissolve.advance(0.25, 1.0).is_empty());
+        for _ in 0..30 {
+            dissolve.advance(0.25, 1.0);
+        }
+        assert!(dissolve.is_complete());
+    }
     use crate::model::city::generate_normal_city;
     use crate::model::grid::Grid;
     use crate::model::palette::palette_by_key;

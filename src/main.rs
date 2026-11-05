@@ -43,7 +43,7 @@ use starry_journey::raster::{
     decoration_color, generate_stars, star_color, window_cell_color, CityRaster, RasterOptions,
     Star, WindowLighting, WINDOW_MAST,
 };
-use starry_journey::reveal::{light_revealed, ConstructionView, Reveal};
+use starry_journey::reveal::{light_revealed, ConstructionView, Dissolve, Reveal};
 use starry_journey::searchlights::{
     beams_at, show_start, Beam, SearchlightMode, MAX_LIGHTS as SEARCHLIGHTS,
 };
@@ -273,7 +273,7 @@ impl ApplicationHandler for App {
                         }
                         KeyCode::KeyR => {
                             if let Some(renderer) = &mut self.renderer {
-                                renderer.restart(random_seed());
+                                renderer.begin_restart(random_seed());
                             }
                         }
                         KeyCode::Equal | KeyCode::NumpadAdd => {
@@ -383,6 +383,12 @@ struct Scene {
     endless: Option<EndlessCity>,
     /// Background and stars only: the bottom of the picture.
     sky: Vec<u8>,
+    /// The city dissolving before a new one is built (`R`), if it is.
+    /// Image 0 is the still city; 1 to 4 are the Endless layers.
+    dissolve: Option<Dissolve>,
+    /// Still-city cells the dissolve has removed, kept so recomposing the
+    /// city (for example on a palette change) leaves them gone.
+    dissolved_still: Vec<usize>,
     /// The street's back layer (road and background trees, lit by
     /// headlights), drawn by the GPU over the city (transparent elsewhere).
     overlay: Vec<u8>,
@@ -480,6 +486,8 @@ impl Scene {
             material: false,
             endless: city,
             sky,
+            dissolve: None,
+            dissolved_still: Vec::new(),
             overlay: Vec::new(),
             overlay_front: Vec::new(),
         };
@@ -502,7 +510,8 @@ impl Scene {
     /// The GPU places them, so the frame needs no composing. Returns true if
     /// any layer moved to a new whole column.
     fn scroll(&mut self, dt: f64, speed: f64) -> bool {
-        if !self.reveal.is_complete() {
+        // Endless stops while the city dissolves (owner, 2026-11-05).
+        if !self.reveal.is_complete() || self.dissolve.is_some() {
             return false;
         }
         let moved = match &mut self.endless {
@@ -581,6 +590,11 @@ impl Scene {
         for (cell, pixel) in self.city.chunks_exact_mut(4).enumerate() {
             let built = self.ownership.owner[cell] >= 0 && self.reveal.is_revealed(cell);
             pixel[3] = if built { 255 } else { 0 };
+        }
+        for &cell in &self.dissolved_still {
+            if let Some(alpha) = self.city.get_mut(cell * 4 + 3) {
+                *alpha = 0;
+            }
         }
     }
 
@@ -718,6 +732,69 @@ impl Scene {
         self.compose();
     }
 
+    /// Starts dissolving the city on screen: the built still-city cells, or
+    /// while Endless scrolls, each layer's on-screen building cells. Its
+    /// order comes from the city's seed. O(screen cells).
+    fn start_dissolve(&mut self) {
+        let mut cells = Vec::new();
+        match &self.endless {
+            Some(city) if self.is_scrolling() => {
+                for layer in 0..4 {
+                    let image = 1 + layer as u8;
+                    cells.extend(
+                        city.visible_building_cells(layer)
+                            .into_iter()
+                            .map(|cell| (image, cell)),
+                    );
+                }
+            }
+            _ => {
+                for (cell, pixel) in self.city.chunks_exact(4).enumerate() {
+                    if pixel[3] > 0 {
+                        cells.push((0, cell));
+                    }
+                }
+            }
+        }
+        self.dissolve = Some(Dissolve::new(cells, self.seed));
+    }
+
+    /// Dissolves one frame's worth of cells. Returns true if the still
+    /// city changed (the layers mark their own buffers changed).
+    /// O(cells removed this frame).
+    fn step_dissolve(&mut self, dt: f64, speed: f64) -> bool {
+        let Some(dissolve) = self.dissolve.as_mut() else {
+            return false;
+        };
+        let removed = dissolve.advance(dt, speed).to_vec();
+        let mut layers: [Vec<usize>; 4] = Default::default();
+        let mut still = false;
+        for (image, cell) in removed {
+            if image == 0 {
+                if let Some(alpha) = self.city.get_mut(cell * 4 + 3) {
+                    *alpha = 0;
+                }
+                self.dissolved_still.push(cell);
+                still = true;
+            } else if let Some(cells) = layers.get_mut(usize::from(image) - 1) {
+                cells.push(cell);
+            }
+        }
+        if let Some(city) = &mut self.endless {
+            for (layer, cells) in layers.into_iter().enumerate() {
+                if !cells.is_empty() {
+                    city.clear_cells(layer, cells);
+                }
+            }
+        }
+        still
+    }
+
+    /// True once the city has dissolved completely.
+    fn dissolved(&self) -> bool {
+        self.dissolve.as_ref().is_some_and(Dissolve::is_complete)
+    }
+
     /// Turns the ArtDeco material on or off, redrawing the buildings if it
     /// changed. Geometry, lights, and construction progress are untouched,
     /// so turning it off gives back the original colors exactly.
@@ -775,6 +852,8 @@ struct Renderer {
     power_on_start: Option<f64>,
     /// The Green code rain's glyph atlas (`starry_journey::rain`).
     glyph_atlas: wgpu::Texture,
+    /// The seed of the city to build once the current one has dissolved.
+    next_seed: Option<u32>,
     /// The Green code rain's clock (seconds): independent of speed, at
     /// most 1/30 second a frame, frozen when paused or not showing.
     rain_clock: std::cell::Cell<f64>,
@@ -1183,6 +1262,7 @@ impl Renderer {
             last_draw: std::cell::Cell::new(None),
             power_on_start: None,
             glyph_atlas,
+            next_seed: None,
             rain_clock: std::cell::Cell::new(0.0),
             scene_texture,
             effects: options.effects,
@@ -1346,8 +1426,22 @@ impl Renderer {
         }
     }
 
+    /// `R`: dissolves the current city, then builds a new one with `seed`
+    /// (owner, 2026-11-05: "reverse the process to fade the current city
+    /// out and start a new city"). Pressed again while it dissolves, the
+    /// new city starts at once.
+    fn begin_restart(&mut self, seed: u32) {
+        if self.scene.dissolve.is_some() {
+            self.restart(seed);
+            return;
+        }
+        self.next_seed = Some(seed);
+        self.scene.start_dissolve();
+    }
+
     /// Generates a new city with a new seed and restarts construction.
     fn restart(&mut self, seed: u32) {
+        self.next_seed = None;
         self.scene = Scene::with_profile(
             seed,
             self.surface_config.width,
@@ -1540,15 +1634,22 @@ impl Renderer {
             .map_or(0.0, |last| now.duration_since(last).as_secs_f64());
         self.last_frame = Some(now);
         let elapsed = now.duration_since(self.construction_start).as_secs_f64();
-        let progress = self
-            .clock
-            .progress(self.scene.reveal.progress(), dt, self.speed, elapsed);
+        // Construction holds while the city dissolves.
+        let dissolving = self.scene.dissolve.is_some();
+        let progress = if dissolving {
+            self.scene.reveal.progress()
+        } else {
+            self.clock
+                .progress(self.scene.reveal.progress(), dt, self.speed, elapsed)
+        };
         let was_complete = self.scene.reveal.is_complete();
         self.scene.advance_to(progress);
         // The frame that completes an Endless city switches to the layers.
         let finished = !was_complete && self.scene.reveal.is_complete();
         self.update_moon(now);
-        let motion_dt = if self.paused { 0.0 } else { dt };
+        // Endless stops while the city dissolves (owner, 2026-11-05).
+        let stopped = self.paused || (dissolving && self.scene.endless.is_some());
+        let motion_dt = if stopped { 0.0 } else { dt };
         let traffic_moved = self.scene.step_traffic(motion_dt, self.speed);
         // The GPU places the layers and the moon, so motion needs only new
         // offsets (and an upload when a layer buffer was rebased).
@@ -1569,6 +1670,9 @@ impl Renderer {
             self.scene.compose_city();
             self.upload_still();
         }
+        if self.scene.step_dissolve(dt, self.speed) {
+            self.upload_still();
+        }
         // Trees sway whenever the wind is strong enough to move them.
         let swaying = self.wind.abs() > SWAY_WIND;
         if traffic_moved || city_changed || swaying {
@@ -1581,6 +1685,11 @@ impl Renderer {
         self.write_params();
         self.update_status(elapsed);
         self.update_message();
+        // The old city is gone: build the new one.
+        if self.scene.dissolved() {
+            let seed = self.next_seed.unwrap_or_else(random_seed);
+            self.restart(seed);
+        }
     }
 
     /// Works out this frame's searchlight beams (`--searchlights`): a show
@@ -1633,6 +1742,10 @@ impl Renderer {
             TestEvent::Bolt => self.force_lightning(BoltKind::CloudToCloud),
             TestEvent::Flicker => self.force_lightning(BoltKind::InCloud),
             TestEvent::Shower => self.forced_shower = Some(self.weather_clock),
+            // A seed from this one, so snapshot runs stay repeatable.
+            TestEvent::Restart => {
+                self.begin_restart(self.scene.seed.wrapping_mul(0x9e37_79b9).wrapping_add(1))
+            }
         }
     }
 
@@ -1702,7 +1815,9 @@ impl Renderer {
             );
         }
         let step = dt * self.speed;
-        if !self.scene.city.is_empty() {
+        if self.scene.dissolve.is_some() {
+            // The city is dissolving: its lights stay as they are.
+        } else if !self.scene.city.is_empty() {
             // The still city (Normal, and Endless while it is built).
             let endless_tint = self.scene.endless.is_some();
             let material = self.scene.material;

@@ -37,7 +37,7 @@ Starry Journey is a native Rust rebuild of the Python/browser *Starry Night* app
   A Display Effects toggle controls the effects. Classic, EGA, VGA, and Ink on Parchment have no display effect.
 - **Timing:** speed from 0.25 to 4. Untimed, duration (`--timer`), or absolute local-clock deadline (`--ends-at`) construction. Pause and reduced-motion handling.
 - **Message:** optional literal on-screen text, at most 240 UTF-16 code units.
-- **Controls:** speed, palette, restart, pause, renderer selection, Display Effects, and message editing. Keyboard: `P` cycles palettes, `R` restarts, `+`/`-` change speed, `Space` pauses or resumes Endless mode.
+- **Controls:** speed, palette, restart, pause, renderer selection, Display Effects, and message editing. Keyboard: `P` cycles palettes, `R` dissolves the city and builds a new one (owner, 2026-11-05), `+`/`-` change speed, `Space` pauses or resumes Endless mode.
 - **Launch presets:** Standard, Endless, Meeting, Meeting-at, and the custom MWF meeting message.
 
 ## Native platform deviations

@@ -82,9 +82,9 @@ Options:
                      Game Boy grid is always on.
   --events E@T,...   Fire test events at moments T (durations as for
                      --timer): meteor, police, utility, strike, bolt,
-                     flicker, shower. For example
+                     flicker, shower, restart. For example
                      --events police@30s,meteor@45s. The same as the Shift
-                     test keys, for snapshots.
+                     test keys (and R for restart), for snapshots.
   --seed N           Build city number N (0-4294967295) instead of a random
                      one. The same seed gives the same city and clouds.
   --snapshot T,...   Open no window: run the app in simulated time and save
@@ -466,6 +466,8 @@ pub enum TestEvent {
     Flicker,
     /// A shower, easing in at once (Shift+R).
     Shower,
+    /// A new city: the current one dissolves first (R).
+    Restart,
 }
 
 /// Parses a moment of a run for `--snapshot` and `--events`: `0`, a
@@ -501,9 +503,10 @@ fn parse_events(value: &str) -> Result<Vec<(TestEvent, f64)>, String> {
             "bolt" => TestEvent::Bolt,
             "flicker" => TestEvent::Flicker,
             "shower" => TestEvent::Shower,
+            "restart" => TestEvent::Restart,
             _ => {
                 return Err(format!(
-                    "--events: unknown event '{name}' (meteor, police, utility, strike, bolt, flicker, shower)"
+                    "--events: unknown event '{name}' (meteor, police, utility, strike, bolt, flicker, shower, restart)"
                 ))
             }
         };
@@ -608,6 +611,8 @@ mod tests {
         assert_eq!(fractions.events, vec![(TestEvent::Strike, 29.95)]);
         assert!(parse(&["--snapshot", "-1.5s"]).is_err());
         assert!(parse(&["--snapshot", "1.5.5s"]).is_err());
+        let restart = parse(&["--events", "restart@5s"]).unwrap();
+        assert_eq!(restart.events, vec![(TestEvent::Restart, 5.0)]);
         let lightning = parse(&["--events", "strike@1s,bolt@2s,flicker@3s,shower@4s"]).unwrap();
         assert_eq!(
             lightning.events.iter().map(|e| e.0).collect::<Vec<_>>(),
