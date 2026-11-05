@@ -71,7 +71,9 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
   - They appear in both modes, in front of the moon and behind the city.
   - Six coverage presets (clear, puffs, scattered, broken, overcast, storm) are chosen with `--clouds` and cycled with `C`.
   - Moonlight is self-shadowing and passes through thin cloud, following the Python version's GitHub issue #1.
-  - City glow, searchlights, the sun, and lightning (inside clouds, between clouds, and to the tallest building) are planned.
+  - The city's window glow lights cloud undersides.
+  - Ground searchlights (`--searchlights`) put on occasional shows of two or three sweeping beams. A show lasts at most 2 minutes; shows are very rare in Endless. Beams pass in front of distant clouds and pool on the near clouds overhead.
+  - The sun and lightning (inside clouds, between clouds, and to the tallest building) are planned.
 - **Native additions:** multi-monitor fullscreen (`F` toggles fullscreen, `Tab` selects the next display, `Esc` quits).
 - **Green Terminal glyphs:** require GNU Unifont 16.0.04 bitmaps, or another suitably licensed equivalent, shipped with their SIL OFL 1.1 notice. They are not yet in this repository.
 
@@ -80,7 +82,7 @@ These parts of the Rebuild Prompt are replaced or do not apply in a native build
 These earlier Starry Journey ideas are not part of the Rebuild Prompt. They are deferred until the rebuild baseline is complete and each one is separately approved:
 
 - Natural landscape below a wave-shaped city boundary, distant mountains and forests with palette-tinted depth layers.
-- Weather (rain, wind) and seasonal variation.
+- Weather (rain, wind) and seasonal variation. Rule for rain (owner, 2026-11-05): searchlights are never on while it rains.
 - An automatic day/night cycle with a sunrise and sunset (sun on the sky layer, like the moon), including sunset sky gradients.
 - An Atari palette.
 - Android as a later target.

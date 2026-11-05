@@ -60,7 +60,8 @@ Options:
                      chance (30% it is destroyed, default), destroy (blows up
                      about 15 s after opening on that lap), or survive.
   --searchlights S   Ground searchlights: auto (now and then a show of two or
-                     three sweeping beams, default), always, or off.
+                     three sweeping beams for up to 2 minutes, very rarely in
+                     Endless; default), always, or off.
   --seed N           Build city number N (0-4294967295) instead of a random
                      one. The same seed gives the same city and clouds.
   --snapshot T,...   Open no window: run the app in simulated time and save

@@ -78,7 +78,7 @@ It runs the app on simulated time through the real GPU shader and writes one PNG
 | `--message TEXT` | Show TEXT in a box over the city, for example `--message "This meeting will start shortly"`. Up to 240 UTF-16 units; blank text shows no box. Shown literally (no markup). |
 | `--moon-phase P` | Phase the moon opens on: `new`, `waxing-crescent`, `first-quarter`, `waxing-gibbous`, `full`, `waning-gibbous`, `last-quarter`, `waning-crescent` (or 0–7). It advances one phase per 10-minute lap. |
 | `--station-fate F` | On the new-moon lap a battle station is under attack: `chance` (30% it is destroyed, default), `destroy` (blows up about 15 s after opening on that lap), or `survive`. |
-| `--searchlights S` | Ground searchlights: `auto` (now and then a show of two or three sweeping beams, default), `always`, or `off`. |
+| `--searchlights S` | Ground searchlights: `auto` (now and then a show of two or three sweeping beams for up to 2 minutes, very rarely in Endless; default), `always`, or `off`. |
 | `--seed N` | Build city number N (0 to 4294967295) instead of a random one. The same seed gives the same city and clouds. |
 | `--snapshot T,...` | Open no window; save a PNG of each moment T (durations as for `--timer`, or `0`). See above. |
 | `--size WxH` | Snapshot size in pixels (default `1920x1080`; each side 16 to 8192). Only with `--snapshot`. |

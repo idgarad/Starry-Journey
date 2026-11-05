@@ -2,11 +2,15 @@
 //! spots", from street level between buildings, "like a grand opening").
 //!
 //! Now and then a **show** starts: two or three searchlights at street
-//! level sweep back and forth, beams crossing, for a minute or two, then
-//! switch off. Whether a show runs is seeded per 10-minute stretch of the
-//! run (an assumption: the owner chose ground spotlights without saying how
-//! often; recorded in `docs/work.md`). `--searchlights always` keeps one
-//! running and `off` disables them.
+//! level sweep back and forth, beams crossing, for a minute or two (never
+//! more than two; owner, 2026-11-05), then switch off. Whether a show runs
+//! is seeded per 10-minute stretch of the run: often enough to notice in
+//! Normal mode (an assumption the owner reviewed), and very rarely in
+//! Endless (owner, 2026-11-05). `--searchlights always` keeps one running
+//! and `off` disables them.
+//!
+//! When weather arrives: searchlights must never be on while it rains
+//! (owner, 2026-11-05: rain and beams together would be too much hassle).
 //!
 //! This module only decides where the beams are; the GPU draws them (see
 //! `present.wgsl`): a faint beam through the air, behind the city so the
@@ -17,9 +21,13 @@ use crate::model::rng::Mulberry32;
 
 /// Seconds in each stretch of the run that may hold one show.
 pub const SHOW_SLOT: f64 = 600.0;
-/// Chance a stretch holds a show.
+/// Chance a stretch holds a show in Normal mode.
 pub const SHOW_CHANCE: f64 = 0.6;
-/// Shortest and longest show, in seconds.
+/// Chance a stretch holds a show in Endless mode: very rare, about one
+/// show every hour and forty minutes.
+pub const SHOW_CHANCE_ENDLESS: f64 = 0.1;
+/// Shortest and longest show, in seconds, switching on and off included:
+/// never more than two minutes.
 pub const SHOW_SECONDS: (f64, f64) = (70.0, 120.0);
 /// Seconds a light takes to switch fully on or off.
 pub const SWITCH_SECONDS: f64 = 3.0;
@@ -29,9 +37,13 @@ pub const MAX_LIGHTS: usize = 3;
 /// When searchlights appear (`--searchlights`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchlightMode {
-    /// Occasional shows (default).
+    /// Occasional shows (default); in Endless mode see
+    /// [`SearchlightMode::for_scene`].
     #[default]
     Auto,
+    /// `Auto` as Endless mode uses it: very rare shows. Not a launch
+    /// option.
+    Rare,
     /// A show is always running.
     Always,
     /// Never.
@@ -39,6 +51,15 @@ pub enum SearchlightMode {
 }
 
 impl SearchlightMode {
+    /// The mode to use for a scene: in Endless, `Auto` becomes `Rare`.
+    pub fn for_scene(self, endless: bool) -> Self {
+        if endless && self == Self::Auto {
+            Self::Rare
+        } else {
+            self
+        }
+    }
+
     /// Parses `auto`, `always`, or `off` (any case).
     ///
     /// # Errors
@@ -96,8 +117,13 @@ fn show_in(seed: u32, slot: i64, mode: SearchlightMode) -> Option<Show> {
     let (start, end) = match mode {
         SearchlightMode::Off => return None,
         SearchlightMode::Always => (-SWITCH_SECONDS, f64::INFINITY),
-        SearchlightMode::Auto => {
-            if chance >= SHOW_CHANCE {
+        SearchlightMode::Auto | SearchlightMode::Rare => {
+            let threshold = if mode == SearchlightMode::Rare {
+                SHOW_CHANCE_ENDLESS
+            } else {
+                SHOW_CHANCE
+            };
+            if chance >= threshold {
                 return None;
             }
             let length = SHOW_SECONDS.0 + (SHOW_SECONDS.1 - SHOW_SECONDS.0) * next();
@@ -189,6 +215,35 @@ mod tests {
 
     fn at(seed: u32, mode: SearchlightMode, seconds: f64) -> Vec<Beam> {
         beams_at(seed, mode, seconds, 600.0, 0.0, 0.0)
+    }
+
+    #[test]
+    fn endless_shows_are_very_rare_and_never_longer_than_two_minutes() {
+        let count = |mode: SearchlightMode| {
+            (0..1000)
+                .filter(|&seed| show_in(seed, 0, mode).is_some())
+                .count()
+        };
+        let (normal, endless) = (count(SearchlightMode::Auto), count(SearchlightMode::Rare));
+        assert!((60..=140).contains(&endless), "{endless} of 1000 stretches");
+        assert!(endless * 4 < normal, "{endless} vs {normal}");
+        for seed in 0..1000 {
+            for mode in [SearchlightMode::Auto, SearchlightMode::Rare] {
+                if let Some(show) = show_in(seed, 3, mode) {
+                    assert!(show.end - show.start <= 120.0, "at most two minutes");
+                }
+            }
+        }
+        assert_eq!(SearchlightMode::Auto.for_scene(true), SearchlightMode::Rare);
+        assert_eq!(
+            SearchlightMode::Auto.for_scene(false),
+            SearchlightMode::Auto
+        );
+        assert_eq!(
+            SearchlightMode::Always.for_scene(true),
+            SearchlightMode::Always
+        );
+        assert!(SearchlightMode::parse("rare").is_err());
     }
 
     #[test]

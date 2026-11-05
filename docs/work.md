@@ -448,6 +448,13 @@
   - `cargo fmt --check`: PASS.
   - `cargo clippy --all-targets`: clean.
   - GUI: not run by the agent (snapshots only).
+- **Searchlight frequency and rules (owner, 2026-11-05):** "In endless mode I would assume they are very rare. ... when we get to weather they should never be on if it is raining ... At most 2 mins duration once they turn on."
+  - Endless: `SearchlightMode::for_scene` turns `Auto` into `Rare`, a 10% chance per 10-minute stretch (about one show every hour and forty minutes). Normal stays at 60% (assumption reviewed by the owner: "Looks great").
+  - Duration: shows were already 70-120 s including switching on and off. A test now checks no show exceeds 120 s.
+  - Rain: there is no weather yet. The rule is recorded in the module header and in `docs/product.md` under Weather, for the weather sprint.
+  - `cargo test`: PASS, 280 tests.
+  - `cargo fmt --check`: PASS.
+  - `cargo clippy --all-targets`: clean.
 - **Still open:**
   - reduced motion;
   - city glow, searchlights, sun, and lightning (`feature/cloud-lights`, `feature/lightning`).

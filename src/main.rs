@@ -1263,7 +1263,11 @@ impl Renderer {
     /// the world.
     fn update_searchlights(&mut self, now: Instant) {
         let seconds = self.seconds(now);
-        let (seed, mode) = (self.scene.seed, self.options.searchlights);
+        let seed = self.scene.seed;
+        let mode = self
+            .options
+            .searchlights
+            .for_scene(self.scene.endless.is_some());
         let view = self.scene.road_view();
         self.searchlight_anchor = match (show_start(seed, mode, seconds), self.searchlight_anchor) {
             (Some(start), Some((anchored, anchor))) if anchored == start => {
