@@ -8,6 +8,12 @@
 //! (`--message`, and the palette name after `P`) is rasterized on the CPU
 //! and drawn over the city at device resolution.
 
+// Release builds on Windows are GUI programs, so double-clicking the exe
+// opens no console window behind the art (owner decision, 2026-11-06).
+// Debug builds keep the console for diagnostics. `attach_parent_console`
+// restores text output when the exe is started from a terminal.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use std::{
     collections::HashMap,
     error::Error,
@@ -3528,7 +3534,32 @@ fn create_bind_group(
     })
 }
 
+/// Borrows the console of the terminal that started the program, if any.
+///
+/// A Windows GUI-subsystem program gets no console, so without this
+/// `--help`, argument errors, and snapshot paths would print nowhere when
+/// the release exe is run from a terminal. Started by double-click there is
+/// no parent console; the call then fails harmlessly and nothing is shown.
+/// Output may appear after the terminal has already printed its next prompt,
+/// because shells do not wait for GUI programs.
+#[cfg(all(windows, not(debug_assertions)))]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    /// `ATTACH_PARENT_PROCESS`, i.e. `(DWORD)-1`.
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+    // SAFETY: AttachConsole takes a plain integer and has no memory-safety
+    // preconditions. Failure (no parent console) is expected and ignored.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
+    #[cfg(all(windows, not(debug_assertions)))]
+    attach_parent_console();
     let options = match parse_args(std::env::args().skip(1)) {
         Ok(options) => options,
         Err(message) => {
