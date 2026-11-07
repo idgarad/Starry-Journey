@@ -120,6 +120,19 @@ cargo test
 
 `cargo test` runs the model and rasterizer unit tests, the shader validation test, and [tests/palette_spec.rs](tests/palette_spec.rs). That last test checks every palette value against the JSON in the spec.
 
+## Release package (Windows)
+
+```powershell
+cargo install cargo-about --locked --features cli   # once
+powershell -ExecutionPolicy Bypass -File scripts\release\package.ps1
+```
+
+This writes `target/dist/starry-journey-<version>-windows-x64.zip`: the exe (no console window, no Visual C++ runtime needed), the license files, and a player README. Upload it to a GitHub Release.
+
+## License
+
+Starry Journey is free software under the [GNU General Public License v3.0 or later](LICENSE). Bundled fonts are under the SIL Open Font License 1.1 (see [src/fonts/](src/fonts/)).
+
 ## Git workflow (feature branches)
 
 `main` always builds and passes its tests. Each feature is developed on its own branch and merged back with a merge commit.
